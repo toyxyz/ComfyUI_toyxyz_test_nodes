@@ -2,3 +2,4 @@
 
 This node was created to send a webcam to ComfyUI in real time. 
 
+This is primarily for use with LCM and TensorRT.

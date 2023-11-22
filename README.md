@@ -60,4 +60,9 @@ If either the width or height is zero, it will be automatically adjusted to fit 
 
 The ControlNet preprocessor slows down the process, so I recommend using other tools to prepare the ControlNet image.
 
+If you want ComfyUI to run continuously, use Auto Queue.
+
+![image](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/eafebe66-5a7e-4bfb-a0e9-cfa06e679813)
+
+
 

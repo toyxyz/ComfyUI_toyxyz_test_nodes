@@ -20,7 +20,7 @@ https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8536e96a-514a
 ![workflow (36)](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/7a8644d2-59f9-4ed5-a32a-82c75cdb0997)
 (Workflow embedded)
 
-1. Load Webcam Image
+### 1. Load Webcam Image
 
  Load an image from a path. 
 
@@ -32,7 +32,7 @@ https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8536e96a-514a
 
 
 
-2. Capture Webcam
+### 2. Capture Webcam
 
 Captures an image directly from the webcam selected with 'select_webcam'.
 
@@ -43,7 +43,7 @@ If you're using LCM, I recommend using the Load Webcam Image node.
 ![image](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/108baad7-842b-44af-9ed2-f8f6c63ad899)
 
 
-3. Webcam app
+### 3. Webcam app
 
 This script captures the selected webcam and saves it as an image file in real-time. 
 

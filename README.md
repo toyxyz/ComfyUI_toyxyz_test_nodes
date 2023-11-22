@@ -43,6 +43,8 @@ This script captures the selected webcam and saves it as an image file in real-t
 
 You can specify the resolution, format, and path of the image to be saved. 
 
-If you don't enter a path, it will be saved to the default path. If either the width or height is zero, it will be automatically adjusted to fit the other values entered. 
+If you don't enter a path, it will be saved to the default path. 
+
+If either the width or height is zero, it will be automatically adjusted to fit the other values entered. 
 
 ![image](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/75f536e9-c3b1-4640-aca3-be433c96612e)

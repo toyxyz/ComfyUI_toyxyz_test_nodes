@@ -6,6 +6,7 @@ This node is recommended for use with LCM.
 
 https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8536e96a-514a-48b2-b1aa-8eccbd3fa853
 
+(This video is at 4x speed)
 
 ## Installation
 

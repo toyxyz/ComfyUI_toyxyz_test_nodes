@@ -72,7 +72,7 @@ class LoadWebcamImage:
     def INPUT_TYPES(cls):
         return {
                 "required": {
-                    "image_path": ("STRING", {"default": './ComfyUI/custom_nodes/toyxyz_test/CaptureCam/captured_frames/capture.jpg', "multiline": False}), 
+                    "image_path": ("STRING", {"default": './ComfyUI/custom_nodes/ComfyUI_toyxyz_test_nodes/CaptureCam/captured_frames/capture.jpg', "multiline": False}), 
                 }
             }
 

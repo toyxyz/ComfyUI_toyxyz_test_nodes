@@ -36,6 +36,10 @@ https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8536e96a-514a
 
 Captures an image directly from the webcam selected with 'select_webcam'.
 
+This is very slow compared to the Load Webcam Image node. 
+
+If you're using LCM, I recommend using the Load Webcam Image node.
+
 ![image](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/108baad7-842b-44af-9ed2-f8f6c63ad899)
 
 

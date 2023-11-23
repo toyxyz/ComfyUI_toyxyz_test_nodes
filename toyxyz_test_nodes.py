@@ -210,7 +210,6 @@ class SaveImagetoPath:
             base_filename, file_extension = path2.stem, path2.suffix
             while path2.exists():
                 filename = f"{base_filename}_{format(count, '06')}{file_extension}"
-                print(filename)
                 path2 = Path(path2.parent, filename)
                 count += 1
 

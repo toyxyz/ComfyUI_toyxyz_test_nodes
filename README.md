@@ -85,7 +85,7 @@ If you entered a location other than the default path in Save Image to Path, you
 https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8723e014-caa5-4e16-8c8c-5c5edac6f141
 
 
-### 5. AI Render preview
+### 5. Render preview
 
 Load the image file saved with the Save image to path node. Pressing 'Q' while the window is active will copy the preview image to the clipboard. 
 

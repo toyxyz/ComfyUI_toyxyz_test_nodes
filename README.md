@@ -8,6 +8,10 @@ https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8536e96a-514a
 
 (This video is at 4x speed)
 
+Update 
+
+2023/11/24 - AddSave image to path node. Add Render preview, Add export video
+
 ## Installation
 
 1. Git clone this repo to the ComfyUI/custom_nodes path.
@@ -44,7 +48,16 @@ If you're using LCM, I recommend using the Load Webcam Image node.
 ![image](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/108baad7-842b-44af-9ed2-f8f6c63ad899)
 
 
-### 3. Webcam app
+### 3. Save image to path
+
+This node saves the generated images to a defined path. 
+
+If save_sequence is true, it saves the images in order without overwriting them.
+
+![image](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/71c3cb06-1a7a-42ee-8ebf-59ea59b82562)
+
+
+### 4. Webcam app
 
 This script captures the selected webcam and saves it as an image file in real-time. 
 
@@ -54,7 +67,22 @@ If you don't enter a path, it will be saved to the default path.
 
 If either the width or height is zero, it will be automatically adjusted to fit the other values entered. 
 
-![image](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/75f536e9-c3b1-4640-aca3-be433c96612e)
+You can combine a sequence of saved images into a video using the Export button. Make sure to set save_sequence in Save Image to Path to true. 
+
+To use AI Render, you need a Save Image to Path node.
+
+![image](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/2fc2b927-f478-4aaf-920a-650a3db5a57d)
+
+
+https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/1d61891b-072d-4763-8087-dca34bc3678b
+
+
+### 5. AI Render preview
+
+Load the image file saved with the Save image to path node. Pressing 'Q' while the window is active will copy the preview image to the clipboard. 
+
+![image](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/ff2b4d68-cf61-4665-b75d-eff1b65b7606)
+
 
 ### Note
 
@@ -63,6 +91,4 @@ The ControlNet preprocessor slows down the process, so I recommend using other t
 If you want ComfyUI to run continuously, use Auto Queue.
 
 ![image](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/eafebe66-5a7e-4bfb-a0e9-cfa06e679813)
-
-
 

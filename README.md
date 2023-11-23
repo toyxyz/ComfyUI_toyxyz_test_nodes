@@ -73,6 +73,8 @@ To use AI Render, you need a Save Image to Path node.
 
 If you entered a location other than the default path in Save Image to Path, you must select a newly created render image in Select Rendered image.
 
+![image](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/de13b447-e5c1-435c-8e0b-86b79d218c46)
+
 
 https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8723e014-caa5-4e16-8c8c-5c5edac6f141
 

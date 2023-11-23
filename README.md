@@ -22,7 +22,13 @@ Update
 
 
 ## Usage
+
+Default workflow
 ![workflow (36)](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/7a8644d2-59f9-4ed5-a32a-82c75cdb0997)
+(Workflow embedded)
+
+Render preview workflow
+![workflow (38)](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/ef16937e-30a0-4af8-a1f9-0f0eb080b103)
 (Workflow embedded)
 
 ### 1. Load Webcam Image

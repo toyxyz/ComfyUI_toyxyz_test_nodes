@@ -2,12 +2,42 @@ from PIL import Image, ImageFile
 import comfy.utils
 import numpy as np
 import torch
+import torchvision.transforms.functional as tf
 import os
 import time
 import cv2
+from pathlib import Path
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
+def save_image(img: torch.Tensor, path, image_format, jpg_quality, png_compress_level):
+    path = str(path)
+
+    if len(img.shape) != 3:
+        raise ValueError(f"can't take image batch as input, got {img.shape[0]} images")
+
+    img = img.permute(2, 0, 1)
+    if img.shape[0] != 3:
+        raise ValueError(f"image must have 3 channels, but got {img.shape[0]} channels")
+
+    img = img.clamp(0, 1)
+    img = tf.to_pil_image(img)
+    
+    ext = image_format
+
+    if ext == ".jpg":
+        # Save as JPEG with specified quality
+        img.save(path, format="JPEG", quality=jpg_quality)
+    elif ext == ".png":
+        # Save as PNG with specified compression level
+        img.save(path, format="PNG", compress_level=png_compress_level)
+    else:
+        # Raise an error for unsupported file formats
+        raise ValueError(f"Unsupported file format: {ext}")
+
+    subfolder, filename = os.path.split(path)
+
+    return {"filename": filename, "subfolder": subfolder, "type": "output"}
 
 class CaptureWebcam:
 
@@ -125,12 +155,117 @@ class LoadWebcamImage:
             m.update(f.read())
         return m.digest().hex()
 
+class SaveImagetoPath:
+
+    INPUT_TYPES = lambda: {
+        "required": {
+            "path": ("STRING", {"default": "./ComfyUI/custom_nodes/ComfyUI_toyxyz_test_nodes/CaptureCam/rendered_frames/render.jpg"}),
+            "image": ("IMAGE",),
+            "save_sequence": (("false", "true"), {"default": "false"}),
+            "image_format": ((".jpg", ".png"), {"default": ".jpg"}),
+            "jpg_quality": ("INT", {
+                    "default": 70,
+                    "min": 0,
+                    "max": 100,
+                    "step": 1,
+                    "display": "number"
+                }),
+            "png_compression": ("INT", {
+                    "default": 5,
+                    "min": 1,
+                    "max": 9,
+                    "step": 1,
+                    "display": "number"
+                }),
+        },
+    }
+    RETURN_TYPES = ()
+    OUTPUT_NODE = True
+    FUNCTION = "execute"
+    
+    CATEGORY = "ToyxyzTestNodes"
+
+    def execute(
+        self,
+        path: str,
+        image_format: str,
+        image: torch.Tensor,
+        save_sequence: str,
+        jpg_quality,
+        png_compression,
+    ):
+        assert isinstance(path, str)
+        assert isinstance(image_format, str)
+        assert isinstance(image, torch.Tensor)
+        assert isinstance(save_sequence, str)
+
+        save_sequence: bool = save_sequence == "true"
+
+        path: Path = Path(path)
+
+        path2 = path
+        
+        if save_sequence :
+            count = 0
+            base_filename, file_extension = path2.stem, path2.suffix
+            while path2.exists():
+                filename = f"{base_filename}_{format(count, '06')}{file_extension}"
+                print(filename)
+                path2 = Path(path2.parent, filename)
+                count += 1
+
+        path.parent.mkdir(exist_ok=True)
+        
+        if image.shape[0] == 1:
+            # batch has 1 image only
+            save_image(
+                image[0],
+                path,
+                image_format,
+                jpg_quality,
+                png_compression,
+            )
+            if save_sequence :
+                save_image(
+                    image[0],
+                    path2,
+                    image_format,
+                    jpg_quality,
+                    png_compression,
+                )
+            
+        else:
+            # batch has multiple images
+            for i, img in enumerate(image):
+                subpath = path.with_stem(f"{path.stem}-{i}")
+                save_image(
+                    img,
+                    subpath,
+                    image_format,
+                    jpg_quality,
+                    png_compression,
+                )
+                for i, img in enumerate(image):
+                    subpath = path.with_stem(f"{path2.stem}-{i}")
+                    save_image(
+                        img,
+                        subpath,
+                        image_format,
+                        jpg_quality,
+                        png_compression,
+                    )
+
+        return ()
+        
+
 NODE_CLASS_MAPPINGS = {
     "CaptureWebcam": CaptureWebcam,
     "LoadWebcamImage": LoadWebcamImage,
+    "SaveImagetoPath": SaveImagetoPath,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "CaptureWebcam": "Capture Webcam",
     "LoadWebcamImage": "Load Webcam Image",
+    "SaveImagetoPath": "Save Image to Path",
 }

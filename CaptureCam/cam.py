@@ -1,13 +1,27 @@
 import cv2
+import numpy as np
 import os
 import time
 import tkinter as tk
 from tkinter import ttk, filedialog # Import filedialog module for folder selection
 from threading import Thread
+from datetime import datetime
+from io import BytesIO
+import win32clipboard
+from PIL import Image
+    
+def send_to_clipboard(clip_type, data):
+        
+    win32clipboard.OpenClipboard()
+    win32clipboard.EmptyClipboard()
+    win32clipboard.SetClipboardData(clip_type, data)
+    win32clipboard.CloseClipboard()
+
 
 class WebcamApp:
-    def __init__(self, output_folder):
+    def __init__(self, output_folder, render_folder):
         self.output_folder = output_folder
+        self.render_folder = render_folder
         self.cam_index = 0  # Default webcam index
         self.width = 512  # Default width
         self.height = 0  # Default height
@@ -19,7 +33,7 @@ class WebcamApp:
         self.root.title("Webcam App")
 
         # Add margins left and right
-        self.root.geometry("250x650+100+100")
+        self.root.geometry("250x900+100+100")
 
         # Webcam selection dropdown
         self.webcam_label = tk.Label(self.root, text="Select Webcam:")
@@ -55,8 +69,20 @@ class WebcamApp:
         # Checkbox for show preview
         self.show_preview_var = tk.IntVar()
         self.show_preview_var.set(0)  # Default checked
-        self.show_preview_checkbox = tk.Checkbutton(self.root, text="Show Preview", variable=self.show_preview_var)
+        self.show_preview_checkbox = tk.Checkbutton(self.root, text="Show Webcan Preview", variable=self.show_preview_var)
         self.show_preview_checkbox.pack(pady=5, padx=10)
+        
+        # Checkbox for show render
+        self.show_render_var = tk.IntVar()
+        self.show_render_var.set(0)  # Default checked
+        self.show_render_checkbox = tk.Checkbutton(self.root, text="Show AI Render", variable=self.show_render_var)
+        self.show_render_checkbox.pack(pady=5, padx=10)
+        
+        # Checkbox for preivew always on top
+        self.show_top_var = tk.IntVar()
+        self.show_top_var.set(0)  # Default checked
+        self.show_top_checkbox = tk.Checkbutton(self.root, text="Preview always on top", variable=self.show_top_var)
+        self.show_top_checkbox.pack(pady=5, padx=10)
 
         # Output folder selection
         self.output_folder_label = tk.Label(self.root, text="Select Output Folder:")
@@ -67,6 +93,16 @@ class WebcamApp:
 
         self.output_folder_button = tk.Button(self.root, text="Browse", command=self.browse_output_folder)
         self.output_folder_button.pack(pady=5, padx=10)
+        
+        # Render file selection
+        self.render_folder_label = tk.Label(self.root, text="Select rendered image:")
+        self.render_folder_label.pack(pady=5, padx=10)
+
+        self.render_folder_entry = tk.Entry(self.root)
+        self.render_folder_entry.pack(pady=5, padx=10)
+
+        self.render_folder_button = tk.Button(self.root, text="Browse", command=self.browse_render_file)
+        self.render_folder_button.pack(pady=5, padx=10)
         
         # Image format selection
         self.format_label = tk.Label(self.root, text="Select Image Format:")
@@ -85,6 +121,26 @@ class WebcamApp:
 
         self.stop_button = tk.Button(self.root, text="Stop", command=self.stop_capture, state=tk.DISABLED)
         self.stop_button.pack(pady=5, padx=10)
+        
+        # Export video
+        
+        self.export_button_label = tk.Label(self.root, text="Export Video to rendered Folder:")
+        self.export_button_label.pack(pady=5, padx=10)
+        
+        self.export_button = tk.Button(self.root, text="Export", command=self.export_video)
+        self.export_button.pack(pady=5, padx=10)
+        
+        # Checkbox for image delete after export
+        self.delete_images_var = tk.IntVar()
+        self.delete_images_var.set(0)  # Default checked
+        self.delete_images_checkbox = tk.Checkbutton(self.root, text="Remove images after export", variable=self.delete_images_var)
+        self.delete_images_checkbox.pack(pady=5, padx=10)
+        
+        # FPS input field
+
+        self.exportfps_entry = tk.Entry(self.root)
+        self.exportfps_entry.insert(0, "12")  # Default exportfps (adjust as needed)
+        self.exportfps_entry.pack(pady=5, padx=10)
 
         self.is_capturing = False
 
@@ -94,6 +150,11 @@ class WebcamApp:
         self.output_folder = filedialog.askdirectory()
         self.output_folder_entry.delete(0, tk.END)
         self.output_folder_entry.insert(0, self.output_folder)
+        
+    def browse_render_file(self):
+        self.render_folder = filedialog.askopenfilename(filetypes=[("Image Files", "*.png;*.jpg")])
+        self.render_folder_entry.delete(0, tk.END)
+        self.render_folder_entry.insert(0, self.render_folder)
 
     def start_capture(self):
         self.cam_index = int(self.webcam_combobox.get().split()[-1])
@@ -129,8 +190,11 @@ class WebcamApp:
         # If no output folder is provided, create a 'capture' folder in the current directory
         if not self.output_folder:
             self.output_folder = os.path.join(os.getcwd(), "capture")
-
+            
         os.makedirs(self.output_folder, exist_ok=True)
+        
+        if not self.render_folder:
+            self.output_folder = os.path.join(os.getcwd(), "render")
         
         # Set the selected image format
         self.format = self.format_combobox.get()
@@ -156,6 +220,46 @@ class WebcamApp:
 
         # Return UI color to the original color after stopping capture
         self.root.configure(background='SystemButtonFace')
+        
+
+    def export_video(self):
+    
+        image_folder = os.path.dirname(self.render_folder)
+        
+        images = [img for img in os.listdir(image_folder) if img.endswith(".png") or img.endswith(".jpg")]
+        
+        # Output video file name
+        output_video = image_folder+'/export_'+str(datetime.now().strftime("%Y%m%d_%H%M%S"))+'.mp4'
+        
+        # Sort the images based on their filenames (ensure proper order)
+        images.sort()
+
+        # Get the image dimensions from the first image
+        img = cv2.imread(os.path.join(image_folder, images[0]))
+        height, width, layers = img.shape
+
+        # Define the video codec and create a VideoWriter object
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        export_fps = self.exportfps_entry.get()
+        video = cv2.VideoWriter(output_video, fourcc, int(export_fps), (width, height))
+
+        # Iterate through each image and add it to the video
+        for image in images:
+            img = cv2.imread(os.path.join(image_folder, image))
+            video.write(img)
+
+        # Release the VideoWriter object
+        video.release()
+        print("Exported!")
+        
+        # Remove the image files after video export
+        if self.delete_images_var.get():
+            for image in images:
+                os.remove(os.path.join(image_folder, image))
+            print("Image files deleted.")
+            
+            
+
 
     def capture_frames(self):
         while self.is_capturing:
@@ -169,15 +273,61 @@ class WebcamApp:
 
             frame_path = os.path.join(self.output_folder, f"capture.{self.format}")
             cv2.imwrite(frame_path, frame)
-
+            
+            render_path = os.path.join(self.render_folder)
+            
+            if os.path.exists(render_path):
+                renderimage = cv2.imread(render_path)
+            else :
+                h, w, c = frame.shape
+                renderimage =  np.zeros((h, w), dtype=np.uint8)
+                
+            if renderimage is None:
+                h, w, c = frame.shape
+                renderimage =  np.zeros((h, w), dtype=np.uint8)
+                
+            aspect_ratio = self.cap.get(cv2.CAP_PROP_FRAME_WIDTH) / self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+            
             # Show or hide the preview based on the checkbox
             if self.show_preview_var.get():
-                cv2.imshow("Webcam Capture", frame)
-            else:
-                cv2.destroyAllWindows()
+                cv2.namedWindow("Webcam_Capture", cv2.WINDOW_NORMAL)
+                
+                if self.show_top_var.get(): 
+                    cv2.setWindowProperty("Webcam_Capture", cv2.WND_PROP_TOPMOST, 1)                
+                cv2.imshow("Webcam_Capture", frame)
 
+                cv2.resizeWindow("Webcam_Capture", cv2.getWindowImageRect("Webcam_Capture")[2], int(cv2.getWindowImageRect("Webcam_Capture")[2]/aspect_ratio))
+
+            else:
+                if (cv2.getWindowProperty("Webcam_Capture", cv2.WND_PROP_VISIBLE) > 0):
+                    cv2.destroyWindow("Webcam_Capture")
+                
+            if self.show_render_var.get():
+                cv2.namedWindow("Render_Preview", cv2.WINDOW_NORMAL)  
+                
+                if self.show_top_var.get(): 
+                    cv2.setWindowProperty("Render_Preview", cv2.WND_PROP_TOPMOST, 1)
+                    
+                cv2.imshow("Render_Preview", renderimage)
+                
+                cv2.resizeWindow("Render_Preview", cv2.getWindowImageRect("Render_Preview")[2], int(cv2.getWindowImageRect("Render_Preview")[2]/aspect_ratio))
+            else:
+                if (cv2.getWindowProperty("Render_Preview", cv2.WND_PROP_VISIBLE) > 0):
+                    cv2.destroyWindow("Render_Preview")
+                
             if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+                
+                clip_path = os.path.join(self.render_folder)
+                
+                if os.path.exists(clip_path):
+                    image = Image.open(clip_path)
+
+                    output = BytesIO()
+                    image.convert("RGB").save(output, "BMP")
+                    data = output.getvalue()[14:]
+                    output.close()
+
+                    send_to_clipboard(win32clipboard.CF_DIB, data)
 
             time.sleep(self.delay_seconds)
 
@@ -189,5 +339,6 @@ class WebcamApp:
 
 if __name__ == "__main__":
     output_folder = "captured_frames"
-    app = WebcamApp(output_folder)
+    render_folder = "rendered_frames/render.jpg"
+    app = WebcamApp(output_folder, render_folder)
     app.run()

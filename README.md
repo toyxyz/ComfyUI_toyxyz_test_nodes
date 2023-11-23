@@ -71,10 +71,8 @@ You can combine a sequence of saved images into a video using the Export button.
 
 To use AI Render, you need a Save Image to Path node.
 
-![image](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/2fc2b927-f478-4aaf-920a-650a3db5a57d)
 
-
-https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/1d61891b-072d-4763-8087-dca34bc3678b
+https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8723e014-caa5-4e16-8c8c-5c5edac6f141
 
 
 ### 5. AI Render preview

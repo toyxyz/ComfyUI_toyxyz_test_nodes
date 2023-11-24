@@ -1,4 +1,5 @@
 import cv2
+import sys
 import numpy as np
 import os
 import time
@@ -9,6 +10,9 @@ from datetime import datetime
 from io import BytesIO
 import win32clipboard
 from PIL import Image
+
+cascPath = "haarcascade_frontalface_default.xml"
+faceCascade = cv2.CascadeClassifier(cascPath)
     
 def send_to_clipboard(clip_type, data):
         
@@ -16,7 +20,33 @@ def send_to_clipboard(clip_type, data):
     win32clipboard.EmptyClipboard()
     win32clipboard.SetClipboardData(clip_type, data)
     win32clipboard.CloseClipboard()
+    
+def face_detection(frame, mask_folder, mask_format, m_scale):
+        
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
+    faces = faceCascade.detectMultiScale(
+        gray,
+        scaleFactor=1.05,
+        minNeighbors=6,
+        minSize=(10, 10),
+        flags=cv2.CASCADE_SCALE_IMAGE
+    )
+        
+    fh, fw, fc = frame.shape
+    
+    mask_scale = int(m_scale)
+    
+    frame = np.zeros((fh, fw, 3), np.uint8)
+    
+    for (x, y, w, h) in faces:
+        cv2.rectangle(frame, (x-mask_scale, y-mask_scale), (x+w+mask_scale, y+h+mask_scale), (255, 255, 255), -1)
+            
+    mask_path = os.path.join(mask_folder, f"face_mask.{mask_format}")
+        
+    cv2.imwrite(mask_path, frame)
+
+    
 
 class WebcamApp:
     def __init__(self, output_folder, render_folder):
@@ -33,7 +63,7 @@ class WebcamApp:
         self.root.title("Webcam App")
 
         # Add margins left and right
-        self.root.geometry("250x900+100+100")
+        self.root.geometry("250x980+100+100")
 
         # Webcam selection dropdown
         self.webcam_label = tk.Label(self.root, text="Select Webcam:")
@@ -83,6 +113,20 @@ class WebcamApp:
         self.show_top_var.set(0)  # Default checked
         self.show_top_checkbox = tk.Checkbutton(self.root, text="Preview always on top", variable=self.show_top_var)
         self.show_top_checkbox.pack(pady=5, padx=10)
+        
+        # Checkbox for face detection
+        self.face_detect_var = tk.IntVar()
+        self.face_detect_var.set(0)  # Default checked
+        self.face_detect_checkbox = tk.Checkbutton(self.root, text="Face detect mask", variable=self.face_detect_var)
+        self.face_detect_checkbox.pack(pady=5, padx=10)
+        
+        # Mask scale
+        
+        self.mask_size_label = tk.Label(self.root, text="Mask padding:")
+        self.mask_size_label.pack(pady=5, padx=10)
+        self.mask_size_entry = tk.Entry(self.root)
+        self.mask_size_entry.insert(0, "20")  # Default exportfps (adjust as needed)
+        self.mask_size_entry.pack(pady=5, padx=10)
 
         # Output folder selection
         self.output_folder_label = tk.Label(self.root, text="Select Output Folder:")
@@ -257,9 +301,6 @@ class WebcamApp:
             for image in images:
                 os.remove(os.path.join(image_folder, image))
             print("Image files deleted.")
-            
-            
-
 
     def capture_frames(self):
         while self.is_capturing:
@@ -274,6 +315,12 @@ class WebcamApp:
             frame_path = os.path.join(self.output_folder, f"capture.{self.format}")
             cv2.imwrite(frame_path, frame)
             
+            #Face detect mask generate
+            if self.face_detect_var.get():
+            
+                face_detection(frame, self.output_folder, self.format, self.mask_size_entry.get())
+              
+            #Save render preview
             render_path = os.path.join(self.render_folder)
             
             if os.path.exists(render_path):

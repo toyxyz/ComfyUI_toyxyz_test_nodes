@@ -100,3 +100,8 @@ If you want ComfyUI to run continuously, use Auto Queue.
 
 ![image](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/eafebe66-5a7e-4bfb-a0e9-cfa06e679813)
 
+For maximum speed, set the VAE to taesd.
+
+![image](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/c14ad91e-f2c5-4bbb-a26b-fdc6583a8c88)
+
+

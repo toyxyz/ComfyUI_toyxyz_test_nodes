@@ -92,6 +92,13 @@ Load the image file saved with the Save image to path node. Pressing 'Q' while t
 ![image](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/ff2b4d68-cf61-4665-b75d-eff1b65b7606)
 
 
+### 6. Face detection
+
+Detect faces and create masks.  Use it for inpainting with the Load Webcam Image node.
+
+![image](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/633e46fe-5f04-4f95-9cb1-3be335a63bb3)
+
+
 ### Note
 
 The ControlNet preprocessor slows down the process, so I recommend using other tools to prepare the ControlNet image.

@@ -165,6 +165,8 @@ M: Mask paint toggle. Allows you to paint the mask directly in the Webcam previe
 
 N: Erase all painted masks.
 
+Z: Pause image capture. Use for Webcam or AI Render.
+
 ### Render preview
 
 Load the image file saved with the Save image to path node. Pressing 'Q' while the window is active will copy the preview image to the clipboard. 

@@ -11,6 +11,8 @@ https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8536e96a-514a
 Update 
 
 2023/11/24 - AddSave image to path node. Add Render preview, Add export video, Add face detection (After the update, you will need to run CaptrueCam/setup.bat one more time.)
+
+2023/11/29 - Add Region Capture. Made the Webcam app UI smaller. 
          
 
 ## Installation

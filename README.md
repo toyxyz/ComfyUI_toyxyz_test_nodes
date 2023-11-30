@@ -1,6 +1,6 @@
 # ComfyUI_toyxyz_test_nodes
 
-This node was created to send a webcam to ComfyUI in real time. 
+This node was created to send a webcam/screen to ComfyUI in real time. 
 
 This node is recommended for use with LCM. 
 

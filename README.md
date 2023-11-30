@@ -2,7 +2,7 @@
 
 This node was created to send a webcam/screen to ComfyUI in real time. 
 
-This node is recommended for use with LCM. 
+This node is recommended for use with LCM/SDXL turbo
 
 https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8536e96a-514a-48b2-b1aa-8eccbd3fa853
 

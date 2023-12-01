@@ -742,14 +742,14 @@ class WebcamApp:
                         if saved_list.capture_window_name == active_title:
                             if not saved_list.target_window_name == "Disable" :
                                 if saved_list.ai_image_enable:
-                                    print("AI render overlay enabled")
+                                    print("AI render overlay disabled")
                                     saved_list.ai_image_enable = False
                                     saved_list.overlay_alpha = self.overlay_alpha_entry.get()
                                     render_path = os.path.join(self.render_folder)
                                     time.sleep(0.5)
                                     saved_list.show_ai_image(render_path)
                                 else:
-                                    print("AI render overlay disabled")
+                                    print("AI render overlay enabled")
                                     saved_list.ai_image_enable = True
                                     render_path = os.path.join(self.render_folder)
                                     saved_list.show_ai_image(render_path)

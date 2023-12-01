@@ -1,4 +1,4 @@
-![image](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/d08be42b-4828-4f83-87a1-71f5f3bc473e)# ComfyUI_toyxyz_test_nodes
+# ComfyUI_toyxyz_test_nodes
 
 This node was created to send a webcam/screen to ComfyUI in real time. 
 

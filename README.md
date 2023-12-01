@@ -13,6 +13,8 @@ Update
 2023/11/24 - AddSave image to path node. Add Render preview, Add export video, Add face detection (After the update, you will need to run CaptrueCam/setup.bat one more time.)
 
 2023/11/29 - Add Region Capture. Made the Webcam app UI smaller. 
+
+2023/12/1 - Add Ai render overlay 
          
 
 ## Installation
@@ -170,7 +172,7 @@ N: Erase all painted masks.
 
 Z: Pause image capture. Use for Webcam or AI Render.
 
-P: Displays the AI Render image as an overlay on the currently selected Region window. This is unstable and should be used with caution. It can only be enabled when capture is stopped and requires a target window to be set. Does not run even if there is no render image to load. 
+P: Displays the AI Render image as an overlay on the currently selected Region window. This is unstable and should be used with caution. It can only be enabled/disabled when capture is stopped and requires a target window to be set. Does not run even if there is no render image to load. 
 
 ### Render preview
 

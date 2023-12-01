@@ -7,14 +7,17 @@ import mttkinter as tkinter
 import tkinter as tk #GUI
 import tkinter.font as tkFont
 from tkinter import ttk, filedialog # Import filedialog module for folder selection
+from tkinter import *
 from threading import Thread
 from datetime import datetime
 from io import BytesIO
 import win32clipboard #Clipboard
-from PIL import Image #pillow
+from PIL import Image, ImageTk #pillow
 import mss #Screen Capture
 import win32gui
 import win32ui
+import win32con
+import win32api
 from win32gui import FindWindow, GetWindowRect #Get window size and location
 import ctypes #for Find window
 from ctypes import windll, wintypes
@@ -25,7 +28,18 @@ import shutil
 import pygetwindow
 
 cascPath = "haarcascade_frontalface_default.xml"
-faceCascade = cv2.CascadeClassifier(cascPath) 
+faceCascade = cv2.CascadeClassifier(cascPath)
+
+def setClickthrough(hwnd):
+    print("setting window properties")
+    try:
+        styles = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+        styles = win32con.WS_EX_LAYERED | win32con.WS_EX_TRANSPARENT
+        time.sleep(0.5)
+        win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, styles)
+        win32gui.SetLayeredWindowAttributes(hwnd, 0, 255, win32con.LWA_ALPHA)
+    except Exception as e:
+        print(e)
 
 
 def capture_win_target(handle, window_capture_area_name: str, capture_full_window, window_margin):
@@ -289,7 +303,7 @@ def Capture_window(name:str, margin)-> tuple:
             return(img)
             
    
-def keep_aspect_ratio(target_width, target_height, window_name, margin):
+def Diredt_window_keep_aspect_ratio(target_width, target_height, window_name, margin):
     if not((target_width == 0) or (target_height == 0)):
         try:
             hwnd = win32gui.FindWindow(None, window_name)
@@ -314,42 +328,109 @@ def keep_aspect_ratio(target_width, target_height, window_name, margin):
                     win32gui.MoveWindow(hwnd, x0, y0, w, new_height, True)
         except:
             pass
+     
 
-
-def get_aspect_ratio_window(window_name):
-
-    try:
-        hwnd = win32gui.FindWindow(None, window_name)
+class CaptureWindow(tk.Toplevel):
         
-        if hwnd:
+    def __init__(self, name, target, target_handle, crop, layer, index_n, init_width, init_height, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        #Window var
+        self.title(name)
+        self.geometry(f"{init_width}x{init_height}")
+        self.configure(background='green')
+        self.attributes('-transparentcolor', 'green', '-topmost', 1)
+        self.keep_aspect_ratio = False
+        self.aspect_ratio = init_width/init_height
+        self.bind("<Configure>", self.on_resize)
+        self.attributes("-alpha", 1.0)
+        self.update_width = init_width
+        self.update_height = init_height
         
-            x0, y0, x1, y1 = win32gui.GetWindowRect(hwnd)
-            
-            w = x1 - x0 
-            h = y1 - y0
-            
-            target_ratio = w/h
-            
-            #print(target_ratio)
-            
-            return(target_ratio)
-
-    except:
-        print("Fail to get aspect ratio")
-
-        
-
-class CaptureWindow:
-    def __init__(self, name, target, target_handle, crop, layer, index_n): 
+        #Other var
         self.capture_window_name = name
         self.target_window_name = target
         self.target_window_handle = target_handle
         self.target_crop_enable = crop
         self.layer_list = layer
         self.current_layer = 0
+        self.ai_image_enable = False
+        self.overlay_alpha = 0.9
+        self.render_path =""
+
+    
+    def show_ai_image(self, render_path):
         
+        if os.path.exists(render_path):
+            if self.ai_image_enable :
+            
+                try:
+                    self.render_path = render_path
+                    self.attributes("-alpha", self.overlay_alpha)
+                    self.image = Image.open(self.render_path)
+                    self.background_image = ImageTk.PhotoImage(self.image)
+                    self.background = tk.Label(self, image=self.background_image)
+                    self.background.pack(fill=tk.BOTH, expand=tk.YES)
+                    setClickthrough(self.background.winfo_id())
+                except:
+                    pass
+                
+            else:
+                self.attributes("-alpha", 1.0)
+                try:
+                    time.sleep(0.5)
+                    self.background.pack_forget()
+                except:
+                    pass
+        else :
+            print(f"Failed to find : {render_path}")
+
+    def update_ai_image(self):
+        
+        if self.ai_image_enable :
+            try:
+
+                if os.path.exists(self.render_path):
+                    image = Image.open(self.render_path)
+                           
+                    image = image.resize((self.update_width, self.update_height))
+                
+                    self.background_image = ImageTk.PhotoImage(image)
+                
+                    self.background.configure(image=self.background_image)
+                    
+                    self.after(100, self.update_ai_image)
+                else :
+                    print(f"Failed to find : {self.render_path}")
+            except:
+                self.after(100, self.update_ai_image)
+    
+    def on_resize(self, event):
+    
+        self.update_width = event.width
+        self.update_height = event.height
+    
+        if  self.keep_aspect_ratio:
+                
+            new_width = event.width
+            new_height = int(new_width / self.aspect_ratio)
+            
+            if event.width != new_width or event.height != new_height:
+                self.geometry(f"{new_width}x{new_height}")       
+    
+    def set_aspect_ratio(self, width, height, enable):
+        
+        self.keep_aspect_ratio = enable
+        
+        if enable :
+            self.aspect_ratio = width/height
+        
+        self.aspect_ratio = width / height
+  
+
 class WebcamApp:
-    def __init__(self, output_folder, render_folder):
+    def __init__(self, output_folder, render_folder, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
         
         #Dpi scaling awarness setting
         ctypes.windll.shcore.SetProcessDpiAwareness(2)
@@ -375,7 +456,8 @@ class WebcamApp:
         self.target_window_capture_mode = False
         self.current_target_window_name = ""
         self.capture_list = [] #Saved Capture_window list
-        self.active_capture = CaptureWindow("capture", "Disable", 0, False, [], 0) #Active capture window & target & mode
+        #self.active_capture = CaptureWindow("capture", "Disable", 0, False, [], 0) #Active capture window & target & mode
+        self.active_capture = None
         self.keypress = False
         self.first_run = True
         self.target_window_full_name = "" #target window name for window capture
@@ -392,8 +474,8 @@ class WebcamApp:
         self.layer_save_mode = False
         self.current_layer_index = 0
         self.top_most_window = False
+        self.region_window_list = [] 
        
-        
         # Set UI scale
         self.ui_scale = 1.0
         
@@ -421,7 +503,7 @@ class WebcamApp:
         self.webcam_label.grid(row=0, column=0)
 
         self.webcam_combobox = ttk.Combobox(self.root, values=self.cam_list)  # Select video device
-        self.webcam_combobox.set(self.cam_list[0])
+        self.webcam_combobox.set(self.cam_list[-2])
         self.webcam_combobox.grid(row=0, column=1)
         
         # Create Direct capture window       
@@ -482,7 +564,7 @@ class WebcamApp:
         # Checkbox for keep aspect ratio
         self.use_aspect_var = tk.IntVar()
         self.use_aspect_var.set(0)  # Default checked
-        self.use_aspect_checkbox = tk.Checkbutton(self.root, text="Keep aspect ratio", variable=self.use_aspect_var)
+        self.use_aspect_checkbox = tk.Checkbutton(self.root, text="Keep aspect ratio", variable=self.use_aspect_var, command=self.toggle_keep_aspect)
         self.use_aspect_checkbox.grid(row=5, column=2)
         
         # Checkbox for face detection
@@ -561,16 +643,59 @@ class WebcamApp:
         
         self.topmost_button = tk.Button(self.root, text="Pin app", command=self.top_most_main)
         self.topmost_button.grid(row=13, column=2)
-
+        
+        # AI overlay alpha
+        self.overlay_label = tk.Label(self.root, text="Overlay alhpa:", font=self.uifont)
+        self.overlay_label.grid(row=13, column=0)
+        self.overlay_alpha_entry = tk.Entry(self.root)
+        self.overlay_alpha_entry.insert(0, "0.9")  # Default alpha value (adjust as needed)
+        self.overlay_alpha_entry.grid(row=13, column=1)
 
         self.is_capturing = False
 
         self.thread = None
-
         
         # Mapping keyboard
         
         keyboard.on_press(self.on_press_reaction)
+    
+    class CaptureRegion(tk.Toplevel):
+
+        def __init__(self, title, init_width, init_height, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.title(title)
+            self.geometry(f"{init_width}x{init_height}")
+            self.configure(background="green")
+            self.attributes('-transparentcolor', 'green', '-topmost', 1)
+            self.keep_aspect_ratio = True
+            self.aspect_ratio = init_width/init_height
+            self.bind("<Configure>", self.on_resize)
+        
+        def show_image(self, render_image):
+        
+            self.attributes("-alpha", 0.6)
+            self.image = Image.open(render_image)
+            self.img_copy = self.image.copy()
+            self.background_image = ImageTk.PhotoImage(self.image)
+            self.background = tk.Label(self, image=self.background_image)
+            self.background.pack(fill=tk.BOTH, expand=tk.YES)
+            self.background.bind('<Configure>', self._resize_image)
+            setClickthrough(self.background.winfo_id())
+
+        def on_resize(self, event):
+        
+            if self.use_aspect_var.get():
+                    
+                new_width = event.width
+                new_height = int(new_width / self.aspect_ratio)
+                
+                if event.width != new_width or event.height != new_height:
+                    self.geometry(f"{new_width}x{new_height}")       
+        
+        def set_aspect_ratio(self):
+        
+            self.aspect_ratio = self.winfo_width() / self.winfo_height()
+    
     
     def on_press_reaction(self, event):
         if not self.keypress:
@@ -579,19 +704,17 @@ class WebcamApp:
                 
                 for saved_list in self.capture_list:
                     if saved_list.capture_window_name == active_title:
-                        self.active_capture.capture_window_name = active_title
-                        self.active_capture.target_window_name = saved_list.target_window_name
-                        self.active_capture.layer_list = saved_list.layer_list
-                        self.active_capture.current_layer =  saved_list.current_layer
+                        
+                        self.active_capture = saved_list
                         
                         if not(self.active_capture.target_window_name == "Disable"):
-                            self.active_capture.target_window_handle = saved_list.target_window_handle
+                            
                             self.target_window_capture_mode = True
                             print(f"Capture : {active_title}")
                             self.keypress = False
                             break
+                            
                         else:
-                            self.active_capture.target_window_handle = 0
                             self.target_window_capture_mode = False
                             print(f"Capture : {active_title}")
                             self.keypress = False
@@ -611,6 +734,32 @@ class WebcamApp:
                         print(f"{self.active_capture.capture_window_name} / Capture Full window : {self.active_capture.target_crop_enable}")
                         self.keypress = False
 
+            if event.name == "p":
+                if not self.keypress and not(self.is_capturing) :
+                    active_title = get_active_window_title()
+             
+                    for saved_list in self.capture_list:
+                        if saved_list.capture_window_name == active_title:
+                            if not saved_list.target_window_name == "Disable" :
+                                if saved_list.ai_image_enable:
+                                    print("AI render overlay enabled")
+                                    saved_list.ai_image_enable = False
+                                    saved_list.overlay_alpha = self.overlay_alpha_entry.get()
+                                    render_path = os.path.join(self.render_folder)
+                                    time.sleep(0.5)
+                                    saved_list.show_ai_image(render_path)
+                                else:
+                                    print("AI render overlay disabled")
+                                    saved_list.ai_image_enable = True
+                                    render_path = os.path.join(self.render_folder)
+                                    saved_list.show_ai_image(render_path)
+                                    time.sleep(0.5)
+                                    saved_list.update_ai_image()
+                            else:
+                                print("Cannot be used without a target window.")
+                    self.keypress = False
+                else:
+                    print("It cannot be changed during capture")
         else:
             self.keypress = True
     
@@ -652,8 +801,7 @@ class WebcamApp:
     def update_w_alpha(self, value):
         
         self.cap_win_a = float(value)
-
-    #Create direct capture window
+    
     def direct_capture_window(self, name):
     
         self.remove_closed_window_list()
@@ -672,42 +820,36 @@ class WebcamApp:
         except:
             init_width = 512
 
-            init_height = 512
-        font = ("Courier New", 16)
-        transparent_color = 'red'
-        sg.theme("Black")
-        sg.set_options(font=font)
-        
+            init_height = 512  
+            
         window_name = ""
         
         if ((target_window == "Disable")==True):
             window_name = name
             layer_name = name.split(',')
+            
+            region_window = CaptureWindow(window_name, "Disable", 0, False, layer_name, 0, init_width, init_height)
+            
+            region_window.keep_aspect_ratio =  self.use_aspect_var.get()
  
-            self.capture_list.append(CaptureWindow(window_name, "Disable", 0, False, layer_name, 0))
+            self.capture_list.append(region_window)
             
             print(f"Layer list : {layer_name}")
 
         else:
- 
             window_name = name + "_" + target_window
             layer_name = name.split(',')
             
-            self.capture_list.append(CaptureWindow(window_name, target_window, win32gui.FindWindow(None, target_window), False, layer_name, 0))
+            region_window = CaptureWindow(window_name, target_window, win32gui.FindWindow(None, target_window), False, layer_name, 0, init_width, init_height)
+            
+            region_window.keep_aspect_ratio =  self.use_aspect_var.get()
+     
+            self.capture_list.append(region_window)
             
             print(f"Layer list : {layer_name}")
 
         self.created_window_name = window_name
-        print(f"{window_name} is created")
-
-        
-        layout = [[sg.Graph((0, 0), (0, 0), (0, 0), background_color='red', key='-GRAPH-')],]
-        window = sg.Window(title=window_name, layout=layout, grab_anywhere=True, finalize = True, no_titlebar=False, background_color='red', transparent_color=transparent_color, alpha_channel=self.cap_win_a, keep_on_top=True, size=(init_width, init_height), resizable=(True))
-
-        window.read(close=True)
-        window.close()
-      
-        return(window)
+        print(f"[{window_name}] is created")
     
     def remove_closed_window_list(self):
         #Remove closed window
@@ -755,7 +897,20 @@ class WebcamApp:
             return(new_width, new_height)
         except ZeroDivisionError:
             return()
-
+    
+    
+    def toggle_keep_aspect(self):
+    
+        if self.capture_list:
+            entered_width = int(self.width_entry.get())
+            entered_height = int(self.height_entry.get())
+            
+            for saved_list in self.capture_list:
+                try:
+                    saved_list.set_aspect_ratio(entered_width, entered_height, self.use_aspect_var.get())
+                except:
+                    pass
+        print(f"Keep aspect ratio : {self.use_aspect_var.get()}")
 
     #Start Capture
 
@@ -769,15 +924,18 @@ class WebcamApp:
         
         self.target_window_full_name = win32gui.FindWindow(None, self.window_combobox.get())
         
+        #Fist run 
+  
         if self.first_run:
-            if (self.window_combobox.get() == "Disable"):
-                self.active_capture = CaptureWindow(self.capture_name_entry.get(), self.window_combobox.get(), 0, False, self.capture_name_entry.get().split(','), 0)
-            else:
-                window_name = self.capture_name_entry.get() + "_" + self.window_combobox.get()
-                self.active_capture = CaptureWindow(window_name, self.window_combobox.get(), win32gui.FindWindow(None, self.window_combobox.get()), False, self.capture_name_entry.get().split(','), 0)
-        
-            self.capture_list.append(self.active_capture)
-        
+            if (self.capture_list):
+            
+                try:
+                    self.active_capture =  self.capture_list[-1]
+
+                except:
+                
+                    pass
+            
         self.target_window_name = self.window_combobox.get()
         
         if (self.target_window_name == "Disable"):
@@ -821,7 +979,6 @@ class WebcamApp:
             self.cam_index = self.cam_list.index(self.webcam_combobox.get())
             self.cap = cv2.VideoCapture(self.cam_index)
 
-        
         # If no output folder is provided, create a 'capture' folder in the current directory
         if not self.output_folder:
             self.output_folder = os.path.join(os.getcwd(), "capture")
@@ -846,7 +1003,6 @@ class WebcamApp:
         self.thread = Thread(target=self.capture_frames, daemon=True)
         self.thread.start()
         
-
     #Stop cpature
 
     def stop_capture(self):
@@ -932,7 +1088,6 @@ class WebcamApp:
             print("Render images deleted.")
 
 
-
     #Capture image
     def capture_frames(self):
         
@@ -954,7 +1109,7 @@ class WebcamApp:
                     
             elif ((self.Direct_capture_enable == True) and (self.window_capture_enable == False)):
 
-                if self.capture_list:
+                if self.capture_list and self.active_capture:
                 #Test image size valid
                     h,w,c = frame.shape
                     if h>0 and w>0:
@@ -1101,6 +1256,13 @@ class WebcamApp:
                 #Get aspect ratio
                 aspect_ratio = frame.shape[1] / frame.shape[0]
             
+            
+            
+            # try:
+                # if self.active_capture.ai_image_enable:
+                    # self.active_capture.update_ai_image(render_path)
+            # except:
+                # pass
 
             # Show or hide the preview based on the checkbox
             if self.show_preview_var.get():
@@ -1177,20 +1339,6 @@ class WebcamApp:
                 if (cv2.getWindowProperty("AI_Render_Preview", cv2.WND_PROP_VISIBLE) > 0):
                     cv2.destroyWindow("AI_Render_Preview")
 
-            
-            #Keep aspect ratio of capture window
-            if self.use_aspect_var.get():
-                
-                for saved_list in self.capture_list:
-                    try:
-                        entered_width = int(self.width_entry.get())
-                        entered_height = int(self.height_entry.get())
-                        
-                        if find_window(saved_list.capture_window_name): 
-                            if (saved_list.capture_window_name == get_active_window_title()):
-                                keep_aspect_ratio(entered_width, entered_height, saved_list.capture_window_name, self.margin)
-                    except:
-                        pass
                         
             #Copy preview image to clipboard
             
@@ -1229,15 +1377,13 @@ class WebcamApp:
                 
                 if self.Direct_capture_enable:
                     try:
-                        self.active_capture.capture_window_name = self.capture_list[self.current_active_index].capture_window_name
-                        self.active_capture.target_window_name = self.capture_list[self.current_active_index].target_window_name
-                        self.active_capture.target_window_handle = self.capture_list[self.current_active_index].target_window_handle
-                        self.active_capture.target_crop_enable = self.capture_list[self.current_active_index].target_crop_enable
-                        self.active_capture.layer_list = self.capture_list[self.current_active_index].layer_list
-                        self.current_active_index = (self.current_active_index+1) % (len(self.capture_list))
-                        
+                    
                         if (self.active_capture.capture_window_name == self.capture_list[self.current_active_index].capture_window_name):
                             self.current_active_index = (self.current_active_index+1) % (len(self.capture_list))
+                    
+                        self.active_capture = self.capture_list[self.current_active_index]
+                        
+                     
                     except:
                         pass
                     print(f"Capture : {self.active_capture.capture_window_name}")
@@ -1277,7 +1423,8 @@ class WebcamApp:
                 
                     self.pause_capture = True
                     print("Save pause")
-                    
+                  
+  
             elif key_pressed == ord('x'): #Change save layer
                 try:
                     self.active_capture.current_layer = (self.active_capture.current_layer+1) % (len(self.active_capture.layer_list))

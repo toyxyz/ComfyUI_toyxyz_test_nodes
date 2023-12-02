@@ -31,6 +31,8 @@ def save_image(img: torch.Tensor, path, image_format, jpg_quality, png_compress_
     elif ext == ".png":
         # Save as PNG with specified compression level
         img.save(path, format="PNG", compress_level=png_compress_level)
+    elif ext == ".bmp":
+        img.save(path, format="bmp")
     else:
         # Raise an error for unsupported file formats
         raise ValueError(f"Unsupported file format: {ext}")
@@ -162,7 +164,7 @@ class SaveImagetoPath:
             "path": ("STRING", {"default": "./ComfyUI/custom_nodes/ComfyUI_toyxyz_test_nodes/CaptureCam/rendered_frames/render.jpg"}),
             "image": ("IMAGE",),
             "save_sequence": (("false", "true"), {"default": "false"}),
-            "image_format": ((".jpg", ".png"), {"default": ".jpg"}),
+            "image_format": ((".jpg", ".png", ".bmp"), {"default": ".jpg"}),
             "jpg_quality": ("INT", {
                     "default": 70,
                     "min": 0,

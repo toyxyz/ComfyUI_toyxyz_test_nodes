@@ -370,6 +370,7 @@ class CaptureWindow(tk.Toplevel):
                     self.background_image = ImageTk.PhotoImage(self.image)
                     self.background = tk.Label(self, image=self.background_image)
                     self.background.pack(fill=tk.BOTH, expand=tk.YES)
+                    time.sleep(0.1)
                     setClickthrough(self.background.winfo_id())
                 except:
                     pass
@@ -602,7 +603,7 @@ class WebcamApp:
         self.format_label = tk.Label(self.root, text="Save format")
         self.format_label.grid(row=9, column=0)
 
-        self.format_combobox = ttk.Combobox(self.root, values=["png", "jpg"])
+        self.format_combobox = ttk.Combobox(self.root, values=["png", "jpg", "bmp"])
         self.format_combobox.set("jpg")
         self.format_combobox.grid(row=9, column=1)
         
@@ -723,16 +724,18 @@ class WebcamApp:
             if event.name == "f":
                 if not self.keypress:
                     active_title = get_active_window_title()
-                
-                    if (active_title == self.active_capture.capture_window_name):
-                        
-                        if self.active_capture.target_crop_enable:
-                            self.active_capture.target_crop_enable = False
-                        else:
-                            self.active_capture.target_crop_enable = True
+                    
+                    if self.active_capture:
+                    
+                        if (active_title == self.active_capture.capture_window_name):
                             
-                        print(f"{self.active_capture.capture_window_name} / Capture Full window : {self.active_capture.target_crop_enable}")
-                        self.keypress = False
+                            if self.active_capture.target_crop_enable:
+                                self.active_capture.target_crop_enable = False
+                            else:
+                                self.active_capture.target_crop_enable = True
+                                
+                            print(f"{self.active_capture.capture_window_name} / Capture Full window : {self.active_capture.target_crop_enable}")
+                            self.keypress = False
 
             if event.name == "p":
                 if not self.keypress and not(self.is_capturing) :
@@ -871,7 +874,7 @@ class WebcamApp:
         self.output_folder_entry.insert(0, self.output_folder)
         
     def browse_render_file(self):
-        self.render_folder = filedialog.askopenfilename(filetypes=[("Image Files", "*.png;*.jpg")])
+        self.render_folder = filedialog.askopenfilename(filetypes=[("Image Files", "*.png;*.jpg;*.bmp;")])
         self.render_folder_entry.delete(0, tk.END)
         self.render_folder_entry.insert(0, self.render_folder)
         
@@ -1000,6 +1003,9 @@ class WebcamApp:
         # Change UI color to yellow during capture
         self.root.configure(background='yellow')
 
+
+        #Thread start - Capture frames
+        
         self.thread = Thread(target=self.capture_frames, daemon=True)
         self.thread.start()
         
@@ -1273,7 +1279,8 @@ class WebcamApp:
                     cv2.setWindowProperty("Webcam_Capture", cv2.WND_PROP_TOPMOST, 1)
                     
                 if (self.Direct_capture_enable == True) and (self.window_capture_enable == True):
-                    text_overlay = self.active_capture.capture_window_name
+                    #text_overlay = self.active_capture.capture_window_name
+                    text_overlay = self.capture_image_name
                 else :
                     text_overlay = self.capture_image_name
                  
@@ -1317,7 +1324,8 @@ class WebcamApp:
             if self.show_render_var.get():
             
                 if (self.Direct_capture_enable == True) and (self.window_capture_enable == True):
-                    text_overlay = self.active_capture.capture_window_name
+                    #text_overlay = self.active_capture.capture_window_name
+                    text_overlay = self.capture_image_name
                 else :
                     text_overlay = self.capture_image_name
                 
@@ -1383,10 +1391,11 @@ class WebcamApp:
                     
                         self.active_capture = self.capture_list[self.current_active_index]
                         
-                     
+                        print(f"Capture : {self.active_capture.capture_window_name}")
+                        
                     except:
                         pass
-                    print(f"Capture : {self.active_capture.capture_window_name}")
+                    
             
 
             
@@ -1426,11 +1435,13 @@ class WebcamApp:
                   
   
             elif key_pressed == ord('x'): #Change save layer
-                try:
-                    self.active_capture.current_layer = (self.active_capture.current_layer+1) % (len(self.active_capture.layer_list))
-                    print(f"Layer : {self.active_capture.layer_list[self.active_capture.current_layer]}")
-                except:
-                    self.active_capture.current_layer = 0
+            
+                if self.active_capture:
+                    try:
+                        self.active_capture.current_layer = (self.active_capture.current_layer+1) % (len(self.active_capture.layer_list))
+                        print(f"Layer : {self.active_capture.layer_list[self.active_capture.current_layer]}")
+                    except:
+                        self.active_capture.current_layer = 0
              
             # Parse fps from the entry field
             try:

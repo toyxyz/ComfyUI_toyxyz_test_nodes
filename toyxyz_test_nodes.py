@@ -61,35 +61,46 @@ class CaptureWebcam:
     
     CATEGORY = "ToyxyzTestNodes"
 
-    def load_image(self, select_webcam):
-    
-        # Open the webcam (default camera)
-        cap = cv2.VideoCapture(select_webcam)
+    def __init__(self):
+        self.webcam_index = 0
+        self.capture = None
 
-        # Check if the webcam is opened successfully
-        if not cap.isOpened():
+    def select_webcam(self, webcam_index=0) -> cv2.VideoCapture:
+        if self.capture is None:
+            self.capture = cv2.VideoCapture(webcam_index)
+            return self.capture
+
+        if self.capture.isOpened() and self.webcam_index == webcam_index:
+            return self.capture
+
+        if not self.capture.isOpened() or self.webcam_index != webcam_index:
+            self.capture = cv2.VideoCapture(webcam_index)
+            return self.capture
+
+    def load_image(self, select_webcam):
+        self.select_webcam(select_webcam)
+
+        if not self.capture.isOpened():
             print("Error: Could not open webcam.")
-            
+
             return
         else:
             # Capture frame-by-frame
-            ret, frame = cap.read()
+            ret, frame = self.capture.read()
 
             # Check if the frame is captured successfully
             if not ret:
                 print("Error: Could not read frame.")
-                
-                return
-            
-            i = Image.fromarray(cv2.cvtColor(frame,cv2.COLOR_BGR2RGB))
 
-        image = i
+                return
+
+            image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
         image = image.convert('RGB')
         image = np.array(image).astype(np.float32) / 255.0
         image = torch.from_numpy(image)[None,]
-           
-        return (image, )
+
+        return (image,)
 
     @classmethod
     def IS_CHANGED(cls):

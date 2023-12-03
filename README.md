@@ -36,6 +36,11 @@ Render preview workflow
 ![workflow (38)](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/ef16937e-30a0-4af8-a1f9-0f0eb080b103)
 (Workflow embedded)
 
+Direcr Webcam capture workflow (without webcam app)
+![workflow (40)](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/cac4b89b-c2a1-4007-8906-fb8de9e26213)
+(Workflow embedded)
+
+
 ### Load Webcam Image
 
  Load an image from a path. 
@@ -50,11 +55,11 @@ Render preview workflow
 
 ### Capture Webcam
 
-Captures an image directly from the webcam selected with 'select_webcam'.
+Captures an image directly from the webcam selected with 'select_webcam'. (Usually 0)
 
-This is very slow compared to the Load Webcam Image node. 
+This is unstable compared to the Load Webcam Image node. 
 
-If you're using LCM, I recommend using the Load Webcam Image node.
+If you're using obs, I recommend using the Load Webcam Image node.
 
 ![image](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/108baad7-842b-44af-9ed2-f8f6c63ad899)
 

@@ -134,6 +134,15 @@ def capture_win_target(handle, window_capture_area_name: str, capture_full_windo
     img = np.ascontiguousarray(img)[..., :-1]  # make image C_CONTIGUOUS and drop alpha channel
     
     img = np.array(img, dtype=np.uint8)
+
+    #Delete hwnd
+    try:
+        win32gui.DeleteObject(bitmap.GetHandle())
+        save_dc.DeleteDC()
+        mfc_dc.DeleteDC()
+        win32gui.ReleaseDC(hwnd, hwnd_dc)
+    except:
+        pass
     
     #Image crop
     if capture_full_window == False:

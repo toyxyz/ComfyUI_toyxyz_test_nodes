@@ -72,6 +72,13 @@ If save_sequence is true, it saves the images in order without overwriting them.
 
 ![image](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/71c3cb06-1a7a-42ee-8ebf-59ea59b82562)
 
+### LatentDelay 
+
+This node saves the generated images to a defined path. 
+
+![image](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/a4f4f9c2-e8dc-4461-a526-ab08b936a32f)
+
+Set the delay between image generation. 
 
 ### Webcam app
 

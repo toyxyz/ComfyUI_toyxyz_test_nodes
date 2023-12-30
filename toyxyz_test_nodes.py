@@ -270,14 +270,32 @@ class SaveImagetoPath:
         return ()
         
 
+class LatentDelay:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": { "latent": ("LATENT",),
+                              "delaytime": ("FLOAT", {"default": 0.2, "min": 0.0, "max": 1.0, "step": 0.01}),
+                              }}
+    RETURN_TYPES = ("LATENT",)
+    FUNCTION = "LatentDelay"
+    
+    CATEGORY = "ToyxyzTestNodes"
+
+    def LatentDelay(self, latent, delaytime):
+        time.sleep(delaytime)
+        return (latent,)
+       
+
 NODE_CLASS_MAPPINGS = {
     "CaptureWebcam": CaptureWebcam,
     "LoadWebcamImage": LoadWebcamImage,
     "SaveImagetoPath": SaveImagetoPath,
+    "LatentDelay": LatentDelay,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "CaptureWebcam": "Capture Webcam",
     "LoadWebcamImage": "Load Webcam Image",
     "SaveImagetoPath": "Save Image to Path",
+    "LatentDelay": "LatentDelay",
 }

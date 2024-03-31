@@ -3,12 +3,19 @@ import comfy.utils
 import numpy as np
 import torch
 import torchvision.transforms.functional as tf
+import torchvision.transforms.v2 as T
 import os
 import time
 import cv2
 from pathlib import Path
+from nodes import MAX_RESOLUTION, SaveImage, common_ksampler
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+def p(image):
+    return image.permute([0,3,1,2])
+def pb(image):
+    return image.permute([0,2,3,1])
 
 def save_image(img: torch.Tensor, path, image_format, jpg_quality, png_compress_level):
     path = str(path)
@@ -284,6 +291,56 @@ class LatentDelay:
     def LatentDelay(self, latent, delaytime):
         time.sleep(delaytime)
         return (latent,)
+
+class ImageResize_Padding:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "width": ("INT", { "default": 512, "min": 0, "max": MAX_RESOLUTION, "step": 1, }),
+                "height": ("INT", { "default": 512, "min": 0, "max": MAX_RESOLUTION, "step": 1, }),
+                "interpolation": (["nearest", "bilinear", "bicubic", "area", "nearest-exact", "lanczos"],),
+                "padding": ("BOOLEAN", { "default": True }),
+                "Red":("FLOAT", { "default": 0, "min": 0, "max": 1, "step": 0.1, }),
+                "Green":("FLOAT", { "default": 0, "min": 0, "max": 1, "step": 0.1, }),
+                "Blue":("FLOAT", { "default": 0, "min": 0, "max": 1, "step": 0.1, }),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", "INT", "INT",)
+    RETURN_NAMES = ("IMAGE", "width", "height",)
+    FUNCTION = "execute"
+    CATEGORY = "ToyxyzTestNodes"
+
+    def execute(self, image, width, height, padding, Red, Green, Blue, interpolation="nearest"):
+        _, oh, ow, _ = image.shape
+        
+        if padding is True:
+            oAspectRatio = ow/oh
+            tAspectRatio = width/height
+            
+            if oAspectRatio > tAspectRatio:
+                pady = int(((ow/tAspectRatio)-oh)/2)
+                padx = 0
+            if oAspectRatio < tAspectRatio:
+                padx = int(((oh*tAspectRatio)-ow)/2)
+                pady = 0
+            if oAspectRatio == tAspectRatio:
+                padx = 0
+                pady = 0
+                
+            pad = (padx, pady, padx, pady)
+            image = pb(T.functional.pad(p(image), pad, fill=(Red, Green, Blue)))
+            
+
+        outputs = p(image)
+        
+        outputs = comfy.utils.lanczos(outputs, width, height)
+
+        outputs = pb(outputs)
+
+        return(outputs, outputs.shape[2], outputs.shape[1],)
        
 
 NODE_CLASS_MAPPINGS = {
@@ -291,6 +348,7 @@ NODE_CLASS_MAPPINGS = {
     "LoadWebcamImage": LoadWebcamImage,
     "SaveImagetoPath": SaveImagetoPath,
     "LatentDelay": LatentDelay,
+    "ImageResize_Padding": ImageResize_Padding,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -298,4 +356,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LoadWebcamImage": "Load Webcam Image",
     "SaveImagetoPath": "Save Image to Path",
     "LatentDelay": "LatentDelay",
+    "ImageResize_Padding": "ImageResize_Padding",
 }
+

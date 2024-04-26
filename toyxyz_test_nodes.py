@@ -88,22 +88,31 @@ class CaptureWebcam:
 
     def load_image(self, select_webcam):
         self.select_webcam(select_webcam)
+        timenow = time.time()
 
         if not self.capture.isOpened():
             print("Error: Could not open webcam.")
 
             return
         else:
-            # Capture frame-by-frame
-            ret, frame = self.capture.read()
+            success = False
+            while time.time() - timenow < 1 and not success:
+                # Capture frame-by-frame
+                ret, frame = self.capture.read()
 
-            # Check if the frame is captured successfully
-            if not ret:
-                print("Error: Could not read frame.")
+                # Check if the frame is captured successfully
+                if not ret:
+                    print("Error: Could not read frame.")
+                    continue
+                else:
+                    success = True
+                    image = Image.fromarray(
+                        cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
-                return
+        if (image is None) or (not success):
+            print("Error: Could not read frame.")
+            return
 
-            image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
         image = image.convert('RGB')
         image = np.array(image).astype(np.float32) / 255.0

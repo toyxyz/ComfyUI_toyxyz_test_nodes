@@ -72,68 +72,41 @@ class CaptureWebcam:
 
     def __init__(self):
         self.webcam_index = 0
-        self.capture = None
-
-    def select_webcam(self, webcam_index=0) -> cv2.VideoCapture:
-        if self.capture is None:
-            self.capture = cv2.VideoCapture(webcam_index)
-            return self.capture
-
-        if (self.webcam_index != webcam_index):
-            # make sure to release previous
-            self.capture.release()
-            
-        if self.capture.isOpened() and self.webcam_index == webcam_index:
-            return self.capture
-
-        if not self.capture.isOpened() or self.webcam_index != webcam_index:
-            self.capture = cv2.VideoCapture(webcam_index)
-            return self.capture
 
     def load_image(self, select_webcam):
-        self.select_webcam(select_webcam)
-        timenow = time.time()
+        capture = cv2.VideoCapture(select_webcam, cv2.CAP_DSHOW)
 
-        if not self.capture.isOpened():
-            print("Error: Could not open webcam.")
+        try:
+            # should be instantly opened
+            if not capture.isOpened():
+                print("Error: Could not open webcam.")
 
-            return
-        else:
-            success = False
-            while time.time() - timenow < 1 and not success:
+                return
+            else:
                 # Capture frame-by-frame
-                ret, frame = self.capture.read()
+                # fake read first because the first frame is warmup and sometimes contains artifacts
+                ret, frame = capture.read()
+                ret, frame = capture.read()
 
-                # Check if the frame is captured successfully
-                if not ret:
-                    print("Error: Could not read frame.")
-                    continue
-                else:
-                    success = True
-                    image = Image.fromarray(
-                        cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                image = Image.fromarray(
+                    cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
-        if (image is None) or (not success):
-            print("Error: Could not read frame.")
-            return
+            if (image is None):
+                print("Error: Could not read frame.")
+                return
 
+            image = image.convert('RGB')
+            image = np.array(image).astype(np.float32) / 255.0
+            image = torch.from_numpy(image)[None,]
 
-        image = image.convert('RGB')
-        image = np.array(image).astype(np.float32) / 255.0
-        image = torch.from_numpy(image)[None,]
-
-        return (image,)
+            return (image,)
+        finally:
+            capture.release()
 
     @classmethod
     def IS_CHANGED(cls):
 
         return
-
-
-    # Deleting (release camera on server shutdown)
-    def __del__(self):
-        if (self.capture != None):
-            self.capture.release()
         
 class LoadWebcamImage:
 

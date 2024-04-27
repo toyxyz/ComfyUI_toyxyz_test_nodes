@@ -124,6 +124,12 @@ class CaptureWebcam:
     def IS_CHANGED(cls):
 
         return
+
+
+    # Deleting (release camera on server shutdown)
+    def __del__(self):
+        if (self.capture != None):
+            self.capture.release()
         
 class LoadWebcamImage:
 

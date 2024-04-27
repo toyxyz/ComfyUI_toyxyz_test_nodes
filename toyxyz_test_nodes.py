@@ -79,6 +79,10 @@ class CaptureWebcam:
             self.capture = cv2.VideoCapture(webcam_index)
             return self.capture
 
+        if (self.webcam_index != webcam_index):
+            # make sure to release previous
+            self.capture.release()
+            
         if self.capture.isOpened() and self.webcam_index == webcam_index:
             return self.capture
 
@@ -124,6 +128,12 @@ class CaptureWebcam:
     def IS_CHANGED(cls):
 
         return
+
+
+    # Deleting (release camera on server shutdown)
+    def __del__(self):
+        if (self.capture != None):
+            self.capture.release()
         
 class LoadWebcamImage:
 

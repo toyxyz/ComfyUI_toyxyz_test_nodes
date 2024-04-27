@@ -79,6 +79,10 @@ class CaptureWebcam:
             self.capture = cv2.VideoCapture(webcam_index)
             return self.capture
 
+        if (self.webcam_index != webcam_index):
+            # make sure to release previous
+            self.capture.release()
+            
         if self.capture.isOpened() and self.webcam_index == webcam_index:
             return self.capture
 

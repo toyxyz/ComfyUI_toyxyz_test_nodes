@@ -9,6 +9,6 @@ dependencies = ["numpy", "torch", "opencv-python"]
 Repository = "https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes"
 
 [tool.comfy]
-PublisherId = ""
+PublisherId = "toyxyz"
 DisplayName = "ComfyUI_toyxyz_test_nodes"
 Icon = ""

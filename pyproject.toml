@@ -1,0 +1,14 @@
+[project]
+name = "comfyui_toyxyz_test_nodes"
+description = "This node was created to send a webcam to ComfyUI in real time. This node is recommended for use with LCM."
+version = "1.0.0"
+license = "LICENSE"
+dependencies = ["numpy", "torch", "opencv-python"]
+
+[project.urls]
+Repository = "https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes"
+
+[tool.comfy]
+PublisherId = ""
+DisplayName = "ComfyUI_toyxyz_test_nodes"
+Icon = ""

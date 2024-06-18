@@ -8,3 +8,4 @@ pysimplegui
 pygrabber
 keyboard
 pygetwindow
+numpy==1.23.5

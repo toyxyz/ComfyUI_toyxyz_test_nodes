@@ -11,3 +11,5 @@ call .\venv\Scripts\deactivate.bat
 call .\venv\Scripts\activate.bat
 
 pip install -r requirements.txt
+
+pause

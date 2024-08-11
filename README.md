@@ -10,7 +10,7 @@ https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8536e96a-514a
 
 Update 
 
-2024/08/11 - 
+2024/08/11 - Add Direct_screenCap node. 
 
 2023/11/24 - AddSave image to path node. Add Render preview, Add export video, Add face detection (After the update, you will need to run CaptrueCam/setup.bat one more time.)
 
@@ -52,7 +52,7 @@ Direct Webcam capture workflow (without webcam app)
   window : Captures the area of the window entered in target_window 
   window_crop : Same as window, but cuts off and captures the area relative to that window.
 
- target_window : Name of the window to capture 
+ target_window : Name of the window to capture. You can find its name in the list of windows in the Webcam app. 
 
 ![image](https://github.com/user-attachments/assets/3d8ffb75-70f2-45df-879d-188dfc7b7a81)
 

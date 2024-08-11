@@ -10,6 +10,15 @@ import cv2
 from pathlib import Path
 from nodes import MAX_RESOLUTION, SaveImage, common_ksampler
 
+import mss #Screen Capture
+import win32gui
+import win32ui
+import win32con
+import win32api
+from win32gui import FindWindow, GetWindowRect #Get window size and location
+import ctypes #for Find window
+from ctypes import windll, wintypes
+
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 def p(image):
@@ -47,6 +56,157 @@ def save_image(img: torch.Tensor, path, image_format, jpg_quality, png_compress_
     subfolder, filename = os.path.split(path)
 
     return {"filename": filename, "subfolder": subfolder, "type": "output"}
+
+def find_window(name):
+    
+    try:
+        hwnd = ctypes.windll.user32.FindWindowW(0, name)
+        
+        if hwnd:
+            return(True)
+        else:
+            return(False)
+    except:
+        return(False)
+
+#Get title bar thickness
+def get_title_bar_thickness(hwnd):
+    rect = ctypes.wintypes.RECT()
+    ctypes.windll.user32.GetWindowRect(hwnd, ctypes.pointer(rect))
+    client_rect = ctypes.wintypes.RECT()
+    ctypes.windll.user32.GetClientRect(hwnd, ctypes.pointer(client_rect))
+    title_bar_thickness = (rect.bottom - rect.top) - (client_rect.bottom - client_rect.top)
+    
+    return title_bar_thickness
+
+
+def capture_win_target(handle, window_capture_area_name: str, capture_full_window, window_margin):
+    # Adapted from https://stackoverflow.com/questions/19695214/screenshot-of-inactive-window-printwindow-win32gui
+    
+    #Find target windwow and capture window
+    
+    window_title = win32gui.GetWindowText(handle)
+
+    hwnd = win32gui.FindWindow(None, window_title)
+    
+    
+    if capture_full_window == False:
+
+        hwnd_a = win32gui.FindWindow(None, window_capture_area_name)
+    
+        bar_thickness = get_title_bar_thickness(hwnd_a)
+    
+    margin = window_margin
+    
+    #Get target window position and area
+    try:
+        left, top, right, bottom = win32gui.GetClientRect(hwnd)
+    except:
+        return np.zeros((512, 512, 3), dtype=np.uint8)
+        print("Wrong window handle!")
+
+    x, y, w, h = win32gui.GetWindowRect(hwnd)
+    
+    left_w, top_w, right_w, bottom_w = win32gui.GetWindowRect(hwnd)
+    
+    
+    if capture_full_window == False:
+    
+        left_a, top_a, right_a, bottom_a = win32gui.GetWindowRect(hwnd_a)
+        
+        top_a = top_a + bar_thickness - margin
+        
+        left_a = left_a + margin
+        
+        right_a = right_a - margin
+        
+        bottom_a = bottom_a - margin
+    
+    #Set crot area
+    if capture_full_window == False:
+        if left_a>left_w:
+            x_crop = left_a-left_w
+        else:
+            x_crop = 0
+        
+        if top_a>top_w:
+            y_crop = top_a-top_w
+        else:
+            y_crop = 0
+        
+        if right_a<right_w:
+            x2_crop = right_a-right_w
+        else:
+            x2_crop = right_w
+        
+        if bottom_a<bottom_w:
+            y2_crop = bottom_a-bottom_w
+        else:
+            y2_crop = bottom_w
+
+    w = right - left
+    h = bottom - top
+    
+    try:
+        #Create bitmap
+        hwnd_dc = win32gui.GetWindowDC(hwnd)
+        mfc_dc = win32ui.CreateDCFromHandle(hwnd_dc)
+        save_dc = mfc_dc.CreateCompatibleDC()
+        bitmap = win32ui.CreateBitmap()
+        bitmap.CreateCompatibleBitmap(mfc_dc, w, h)
+        save_dc.SelectObject(bitmap)
+
+        # If Special K is running, this number is 3. If not, 1
+        result = windll.user32.PrintWindow(hwnd, save_dc.GetSafeHdc(), 3)
+
+        bmpinfo = bitmap.GetInfo()
+        bmpstr = bitmap.GetBitmapBits(True)
+        
+    except:
+        pass
+
+    try:
+        img = np.frombuffer(bmpstr, dtype=np.uint8).reshape((bmpinfo["bmHeight"], bmpinfo["bmWidth"], 4))
+    except:
+        return np.zeros((512, 512, 3), dtype=np.uint8)
+    img = np.ascontiguousarray(img)[..., :-1]  # make image C_CONTIGUOUS and drop alpha channel
+    
+    img = np.array(img, dtype=np.uint8)
+
+    #Delete hwnd
+    try:
+        win32gui.DeleteObject(bitmap.GetHandle())
+        save_dc.DeleteDC()
+        mfc_dc.DeleteDC()
+        win32gui.ReleaseDC(hwnd, hwnd_dc)
+    except:
+        pass
+    
+    #Image crop
+    if capture_full_window == False:
+        crop_img = img[y_crop:y2_crop, x_crop:x2_crop]
+        
+        crop_h,crop_w,crop_c = crop_img.shape
+
+    if not result:  # result should be 1
+        win32gui.DeleteObject(bitmap.GetHandle())
+        save_dc.DeleteDC()
+        mfc_dc.DeleteDC()
+        win32gui.ReleaseDC(hwnd, hwnd_dc)
+        print(f"Unable to acquire capture! Result: {result}")
+        return np.zeros((512, 512, 3), dtype=np.uint8)
+    
+    if capture_full_window == False:
+        if((crop_h>0) and (crop_w>0)):
+            return crop_img
+        else:
+            return np.zeros((512, 512, 3), dtype=np.uint8)
+       
+    if capture_full_window == True:
+        return img
+
+
+
 
 class CaptureWebcam:
 
@@ -333,6 +493,101 @@ class ImageResize_Padding:
         outputs = pb(outputs)
 
         return(outputs, outputs.shape[2], outputs.shape[1],)
+
+
+class Direct_screenCap:
+
+    @classmethod
+    def IS_CHANGED(cls):
+
+        return
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    FUNCTION = "screencap"
+    CATEGORY = "ToyxyzTestNodes"
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                 "x": ("INT", {"default": 0,"min": 0, "max": 4096, "step": 1}),
+                 "y": ("INT", {"default": 0,"min": 0, "max": 4096, "step": 1}),
+                 "width": ("INT", {"default": 512,"min": 0, "max": 4096, "step": 1}),
+                 "height": ("INT", {"default": 512,"min": 0, "max": 4096, "step": 1}),
+                 "num_frames": ("INT", {"default": 1,"min": 1, "max": 255, "step": 1}),
+                 "delay": ("FLOAT", {"default": 0.1,"min": 0.0, "max": 10.0, "step": 0.01}),
+                 "target_window": ("STRING", {"default": "capture"}),
+                 "capture_mode": (["Default", "window", "window_crop"], ),
+        },
+    } 
+
+    def screencap(self, x, y, width, height, num_frames, delay, target_window, capture_mode):
+        from mss import mss
+        captures = []
+
+        
+        with mss() as sct:
+            
+            monitor_default = {
+                    "top": y,
+                    "left": x,
+                    "width": width,
+                    "height": height
+                }
+            
+            if capture_mode == "Default":
+                monitor = monitor_default
+                
+            elif (capture_mode == "window" or capture_mode == "window_crop"):
+            
+                if target_window:
+                    hwnd_a = ctypes.windll.user32.FindWindowW(0, target_window)
+                    
+                    margin = 11
+                    
+                    if hwnd_a:
+                        title_bar_thickness = get_title_bar_thickness(hwnd_a)
+                        
+                        rect = ctypes.wintypes.RECT()
+                        ctypes.windll.user32.GetWindowRect(hwnd_a, ctypes.pointer(rect))
+                        
+                        monitor_number = 1
+                        
+                        mon = sct.monitors[monitor_number]
+                        
+                        monitor = {
+                            "top": rect.top + title_bar_thickness - margin,
+                            "left": rect.left + margin,
+                            "width": rect.right - (rect.left + margin) - margin,
+                            "height": rect.bottom - rect.top - title_bar_thickness,
+                            "mon": monitor_number,
+                        }
+                    else:
+                        monitor = monitor_default
+                        
+                    if capture_mode == "window_crop":
+                        monitor["top"] = monitor["top"]+y
+                        monitor["left"] = monitor["left"]+x
+                        monitor["width"] = width
+                        monitor["height"] = height
+                
+                else:
+                    monitor = monitor_default
+                
+                if (monitor["width"] <= 0 or monitor["height"] <= 0) :
+                    monitor = monitor_default
+            
+            for _ in range(num_frames):
+                sct_img = sct.grab(monitor)
+                img_np = np.array(sct_img)
+                img_torch = torch.from_numpy(img_np[..., [2, 1, 0]]).float() / 255.0
+                captures.append(img_torch)
+                
+                if num_frames > 1:
+                    time.sleep(delay)
+        
+        return (torch.stack(captures, 0),)
        
 
 NODE_CLASS_MAPPINGS = {
@@ -341,6 +596,7 @@ NODE_CLASS_MAPPINGS = {
     "SaveImagetoPath": SaveImagetoPath,
     "LatentDelay": LatentDelay,
     "ImageResize_Padding": ImageResize_Padding,
+    "Direct Screen Capture": Direct_screenCap,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -349,5 +605,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "SaveImagetoPath": "Save Image to Path",
     "LatentDelay": "LatentDelay",
     "ImageResize_Padding": "ImageResize_Padding",
+    "Direct_screenCap": "Direct_screenCap",
 }
 

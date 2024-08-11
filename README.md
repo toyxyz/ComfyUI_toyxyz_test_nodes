@@ -10,6 +10,8 @@ https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8536e96a-514a
 
 Update 
 
+2024/08/11 - 
+
 2023/11/24 - AddSave image to path node. Add Render preview, Add export video, Add face detection (After the update, you will need to run CaptrueCam/setup.bat one more time.)
 
 2023/11/29 - Add Region Capture. Made the Webcam app UI smaller. 
@@ -39,6 +41,20 @@ Render preview workflow
 Direct Webcam capture workflow (without webcam app)
 ![workflow (40)](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/cac4b89b-c2a1-4007-8906-fb8de9e26213)
 (Workflow embedded)
+
+
+### Direct_screenCap
+
+ Captures an image from a specified window or screen.
+
+ capture_mode
+  Default : Capture a defined area of the monitor
+  window : Captures the area of the window entered in target_window 
+  window_crop : Same as window, but cuts off and captures the area relative to that window.
+
+ target_window : Name of the window to capture 
+
+![image](https://github.com/user-attachments/assets/3d8ffb75-70f2-45df-879d-188dfc7b7a81)
 
 
 ### Load Webcam Image

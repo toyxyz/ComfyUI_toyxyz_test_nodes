@@ -5,6 +5,7 @@ import torch
 import torchvision.transforms.functional as tf
 import torchvision.transforms.v2 as T
 import os
+os.environ["OPENCV_IO_ENABLE_OPENEXR"]="1"
 import time
 import cv2
 from pathlib import Path
@@ -25,6 +26,44 @@ def p(image):
     return image.permute([0,3,1,2])
 def pb(image):
     return image.permute([0,2,3,1])
+
+def get_surface_normal_by_depth(image: torch.Tensor, depth_m, K=None):
+    """
+    depth: (h, w) of float, the unit of depth is meter
+    K: (3, 3) of float, the depth camera's intrinsic
+    """
+    K = [[1, 0], [0, 1]] if K is None else K
+    fx, fy = K[0][0], K[1][1]
+
+    #depth = image[0, :, :, :].mean(dim=-1)
+
+    depth = image
+    #depth = depth.detach().clone().numpy()
+    #depth = depth_input.cpu().numpy()
+
+    depth = np.clip(depth * 255.0, 0, 255).astype(np.float32)
+    
+    if len(depth.shape) == 3:
+        depth = depth[:, :, 0]
+
+    depth_safe = np.where(depth <= depth_m, np.finfo(np.float32).eps, depth)
+
+    dz_dv, dz_du = np.gradient(depth_safe)
+    du_dx = fx / depth_safe
+    dv_dy = fy / depth_safe
+
+    dz_dx = dz_du * du_dx
+    dz_dy = dz_dv * dv_dy
+
+    #normal_cross = np.dstack((-dz_dx, -dz_dy, np.ones_like(depth)))
+    normal_cross = np.dstack((np.ones_like(depth), -dz_dy, -dz_dx))
+
+    norm = np.linalg.norm(normal_cross, axis=2, keepdims=True)
+    normal_unit = normal_cross / np.where(norm == 0, 1, norm)
+
+    normal_unit[~np.isfinite(normal_unit).all(2)] = [0, 0, 1]
+    
+    return normal_unit
 
 def save_image(img: torch.Tensor, path, image_format, jpg_quality, png_compress_level):
     path = str(path)
@@ -255,7 +294,6 @@ class CaptureWebcam:
                 print("Error: Could not read frame.")
                 return
 
-            image = image.convert('RGB')
             image = np.array(image).astype(np.float32) / 255.0
             image = torch.from_numpy(image)[None,]
 
@@ -590,6 +628,86 @@ class Direct_screenCap:
         return (torch.stack(captures, 0),)
        
 
+class Depth_to_normal:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "blur": ("INT", { "default": 0, "min": 0, "max": MAX_RESOLUTION, "step": 1, }),
+                "depht_min": ("FLOAT", { "default": 0, "min": -1, "max": 1, "step": 0.001, }),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("IMAGE",)
+    FUNCTION = "execute"
+    CATEGORY = "ToyxyzTestNodes"
+
+    # def execute(self, image, blur, depht_min):
+        # _, oh, ow, _ = image.shape
+        
+        # depth = image
+ 
+        # if len(depth.shape) == 3:
+            # depth = depth[:, :, 0]
+
+        # K = np.array([[500, 0, 320],
+                      # [0, 500, 240],
+                      # [0, 0, 1]])    
+                      
+        # vis_normal = lambda normal: np.uint8((normal + 1) / 2 * 255)[..., ::-1]
+        
+        # normal1 = get_surface_normal_by_depth(depth, depht_min, K)
+          
+        # blur_kernel_size = blur
+        
+        # if blur_kernel_size % 2 == 0:  
+            # blur_kernel_size += 1
+            
+        # normal1_blurred = cv2.GaussianBlur(vis_normal(normal1), (blur_kernel_size, blur_kernel_size), sigmaX=0, sigmaY=0)
+            
+        # outputs = np.array(normal1_blurred).astype(np.float32) / 255.0
+        # outputs = torch.from_numpy(outputs)[None,]
+
+        # return(outputs, )
+        
+    def execute(self, image: torch.Tensor, blur, depht_min):
+        _, oh, ow, _ = image.shape
+        
+        depth = image.detach().clone()
+        
+        if len(depth.shape) == 3:
+            depth = depth[:, :, 0]
+            
+        K = np.array([[500, 0, 320],
+                      [0, 500, 240],
+                      [0, 0, 1]])    
+                          
+        vis_normal = lambda normal: np.uint8((normal + 1) / 2 * 255)[..., ::-1]
+        
+        
+        blur_kernel_size = blur
+            
+        if blur_kernel_size % 2 == 0:  
+            blur_kernel_size += 1
+        
+        for i in range(depth.shape[0]):
+            slice = depth[i]
+            
+            image_np = slice.cpu().numpy()
+
+            normal1 = get_surface_normal_by_depth(image_np, depht_min, K)
+               
+            normal1_blurred = cv2.GaussianBlur(vis_normal(normal1), (blur_kernel_size, blur_kernel_size), sigmaX=0, sigmaY=0)
+                
+            outputs = np.array(normal1_blurred).astype(np.float32) / 255.0
+            #outputs = torch.from_numpy(outputs)[None,]
+            #slice.copy_(torch.from_numpy(outputs))
+            slice.copy_(torch.from_numpy(outputs))
+        #outputs_tensor = torch.stack(outputs)
+        return(depth, )
+
 NODE_CLASS_MAPPINGS = {
     "CaptureWebcam": CaptureWebcam,
     "LoadWebcamImage": LoadWebcamImage,
@@ -597,6 +715,7 @@ NODE_CLASS_MAPPINGS = {
     "LatentDelay": LatentDelay,
     "ImageResize_Padding": ImageResize_Padding,
     "Direct Screen Capture": Direct_screenCap,
+    "Depth to normal": Depth_to_normal,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -606,5 +725,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LatentDelay": "LatentDelay",
     "ImageResize_Padding": "ImageResize_Padding",
     "Direct_screenCap": "Direct_screenCap",
+    "Depth_to_normal": "Depth_to_normal",
 }
 

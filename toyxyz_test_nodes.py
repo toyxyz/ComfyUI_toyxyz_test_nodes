@@ -51,7 +51,7 @@ def get_surface_normal_by_depth(image: torch.Tensor, depth_m, K=None):
     dz_dv, dz_du = np.gradient(depth_safe)
     du_dx = fx / depth_safe
     dv_dy = fy / depth_safe
-
+b  
     dz_dx = dz_du * du_dx
     dz_dy = dz_dv * dv_dy
 
@@ -637,7 +637,7 @@ class Depth_to_normal:
                 "blur": ("INT", { "default": 5, "min": 0, "max": MAX_RESOLUTION, "step": 1, }),
                 "sigmaColor": ("INT", { "default": 75, "min": 0, "max": MAX_RESOLUTION, "step": 1, }),
                 "sigmaSpace": ("INT", { "default": 75, "min": 0, "max": MAX_RESOLUTION, "step": 1, }),
-                "depth_min": ("FLOAT", { "default": 0, "min": -100, "max": 100, "step": 0.001, }),
+                "depth_min": ("FLOAT", { "default": 0, "min": -255, "max": 255, "step": 0.001, }),
             }
         }
 

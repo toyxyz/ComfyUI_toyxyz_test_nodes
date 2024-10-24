@@ -634,8 +634,10 @@ class Depth_to_normal:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "blur": ("INT", { "default": 0, "min": 0, "max": MAX_RESOLUTION, "step": 1, }),
-                "depht_min": ("FLOAT", { "default": 0, "min": -1, "max": 1, "step": 0.001, }),
+                "blur": ("INT", { "default": 5, "min": 0, "max": MAX_RESOLUTION, "step": 1, }),
+                "sigmaColor": ("INT", { "default": 75, "min": 0, "max": MAX_RESOLUTION, "step": 1, }),
+                "sigmaSpace": ("INT", { "default": 75, "min": 0, "max": MAX_RESOLUTION, "step": 1, }),
+                "depth_min": ("FLOAT", { "default": 0, "min": -1, "max": 1, "step": 0.001, }),
             }
         }
 
@@ -672,7 +674,7 @@ class Depth_to_normal:
 
         # return(outputs, )
         
-    def execute(self, image: torch.Tensor, blur, depht_min):
+    def execute(self, image: torch.Tensor, blur, depth_min, sigmaColor, sigmaSpace):
         _, oh, ow, _ = image.shape
         
         depth = image.detach().clone()
@@ -699,7 +701,7 @@ class Depth_to_normal:
 
             normal1 = get_surface_normal_by_depth(image_np, depht_min, K)
                
-            normal1_blurred = cv2.GaussianBlur(vis_normal(normal1), (blur_kernel_size, blur_kernel_size), sigmaX=0, sigmaY=0)
+            normal1_blurred = cv2.bilateralFilter(vis_normal(normal1), blur_kernel_size, sigmaColor, sigmaSpace)
                 
             outputs = np.array(normal1_blurred).astype(np.float32) / 255.0
             #outputs = torch.from_numpy(outputs)[None,]

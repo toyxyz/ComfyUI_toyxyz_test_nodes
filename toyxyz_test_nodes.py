@@ -51,7 +51,7 @@ def get_surface_normal_by_depth(image: torch.Tensor, depth_m, K=None):
     dz_dv, dz_du = np.gradient(depth_safe)
     du_dx = fx / depth_safe
     dv_dy = fy / depth_safe
- 
+
     dz_dx = dz_du * du_dx
     dz_dy = dz_dv * dv_dy
 
@@ -638,6 +638,7 @@ class Depth_to_normal:
                 "sigmaColor": ("INT", { "default": 75, "min": 0, "max": MAX_RESOLUTION, "step": 1, }),
                 "sigmaSpace": ("INT", { "default": 75, "min": 0, "max": MAX_RESOLUTION, "step": 1, }),
                 "depth_min": ("FLOAT", { "default": 0, "min": -255, "max": 255, "step": 0.001, }),
+                "blue_depth": ("FLOAT", { "default": 0, "min": -255, "max": 1, "step": 0.1, }),
             }
         }
 
@@ -674,7 +675,7 @@ class Depth_to_normal:
 
         # return(outputs, )
         
-    def execute(self, image: torch.Tensor, blur, depth_min, sigmaColor, sigmaSpace):
+    def execute(self, image: torch.Tensor, blur, depth_min, sigmaColor, sigmaSpace, blue_depth):
         _, oh, ow, _ = image.shape
         
         depth = image.detach().clone()
@@ -704,10 +705,14 @@ class Depth_to_normal:
             normal1_blurred = cv2.bilateralFilter(vis_normal(normal1), blur_kernel_size, sigmaColor, sigmaSpace)
                 
             outputs = np.array(normal1_blurred).astype(np.float32) / 255.0
-            #outputs = torch.from_numpy(outputs)[None,]
-            #slice.copy_(torch.from_numpy(outputs))
+            outputs[..., 1] = 1.0 - outputs[..., 1] #Flip green channel
+            
+            blue_channel = outputs[..., 2]  
+            blue_channel = blue_depth + blue_channel * (1.0 - blue_depth) # Remap blue channel
+            outputs[..., 2] = blue_channel  
+            
             slice.copy_(torch.from_numpy(outputs))
-        #outputs_tensor = torch.stack(outputs)
+
         return(depth, )
 
 NODE_CLASS_MAPPINGS = {

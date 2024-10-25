@@ -51,7 +51,7 @@ def get_surface_normal_by_depth(image: torch.Tensor, depth_m, K=None):
     dz_dv, dz_du = np.gradient(depth_safe)
     du_dx = fx / depth_safe
     dv_dy = fy / depth_safe
-b  
+ 
     dz_dx = dz_du * du_dx
     dz_dy = dz_dv * dv_dy
 

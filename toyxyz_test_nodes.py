@@ -693,21 +693,22 @@ class Remove_noise:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "bilateral_loop": ("INT", {"default": 64, "min": 0, "max": MAX_RESOLUTION, "step": 1}),
-                "d": ("INT", {"default": 5, "min": 0, "max": MAX_RESOLUTION, "step": 1}),
+                "guided_first": ("BOOLEAN", { "default": True }),
+                "bilateral_loop": ("INT", {"default": 1, "min": 0, "max": MAX_RESOLUTION, "step": 1}),
+                "d": ("INT", {"default": 15, "min": 0, "max": MAX_RESOLUTION, "step": 1}),
                 "sigma_color": (
-                    "FLOAT",
-                    {"default": 8.0, "min": 0.0, "max": MAX_RESOLUTION, "step": 1.0},
+                    "INT",
+                    {"default":45 , "min": 0, "max": MAX_RESOLUTION, "step": 1},
                 ),
                 "sigma_space": (
-                    "FLOAT",
-                    {"default": 8.0, "min": 0.0, "max": MAX_RESOLUTION, "step": 1.0},
+                    "INT",
+                    {"default": 45, "min": 0, "max": MAX_RESOLUTION, "step": 1},
                 ),
                 "guided_loop": ("INT", {"default": 4, "min": 0, "max": MAX_RESOLUTION, "step": 1}),
                 "radius": ("INT", {"default": 4, "min": 0, "max": MAX_RESOLUTION, "step": 1}),
                 "eps": (
-                    "FLOAT",
-                    {"default": 16.0, "min": 0.0, "max": MAX_RESOLUTION, "step": 1.0},
+                    "INT",
+                    {"default": 16, "min": 0, "max": MAX_RESOLUTION, "step": 1},
                 ),
             },
         }
@@ -723,11 +724,12 @@ class Remove_noise:
         image: torch.Tensor,
         bilateral_loop: int,
         d: int,
-        sigma_color: float,
-        sigma_space: float,
+        sigma_color: int,
+        sigma_space: int,
         guided_loop: int,
         radius: int,
-        eps: float,
+        eps: int,
+        guided_first: bool,
     ):
         import numpy as np
         import cv2
@@ -744,12 +746,22 @@ class Remove_noise:
             )
             dst = guide.copy()
             
+            
+            if guided_first:
+            
+                if guided_loop > 0:
+                    for _ in range(guided_loop):
+                        dst = cv2.ximgproc.guidedFilter(guide, dst, radius, eps)
+                        
             if bilateral_loop > 0:
                 for _ in range(bilateral_loop):
                     dst = cv2.bilateralFilter(dst, diameter, sigma_color, sigma_space)
-            if guided_loop > 0:
-                for _ in range(guided_loop):
-                    dst = cv2.ximgproc.guidedFilter(guide, dst, radius, eps)
+                    
+            if guided_first == False: 
+            
+                if guided_loop > 0:
+                    for _ in range(guided_loop):
+                        dst = cv2.ximgproc.guidedFilter(guide, dst, radius, eps)
 
             return torch.from_numpy(dst.astype(np.float32) / 255.0).unsqueeze(0)
 

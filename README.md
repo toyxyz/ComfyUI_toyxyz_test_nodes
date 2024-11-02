@@ -10,7 +10,7 @@ https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8536e96a-514a
 
 Update 
 
-2024/11/02 - Add remove noise node for normal map.
+2024/11/02 - Add remove noise node for normal map. Added sobel ratio for more accurate Noraml.
 
 2024/10/25 - Add depth to normal node.
 
@@ -74,10 +74,14 @@ Direct Webcam capture workflow (without webcam app)
 
    blue_depth : Adjusts the intensity of the blue channel of the normal map to emphasize depth. The lower this number, the stronger the depth. 
 
-   ![image](https://github.com/user-attachments/assets/14243419-738e-4ccb-aa45-93672ab6f1a7)
+   sobel_ratio : Makes the Normal map more stereoscopically accurate. Values between 0.1 and 0.3 are recommended. 
 
+   ![image](https://github.com/user-attachments/assets/0cf453a7-4d3d-4484-b914-6b45ca66046d)
 
    ![image](https://github.com/user-attachments/assets/b3c55fab-1d81-4d9f-aafa-c1add3ccf7b4)
+
+   ![image](https://github.com/user-attachments/assets/6ef06f69-52b8-4c31-945d-ad0e11cf474b)
+
 
 
   

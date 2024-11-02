@@ -56,7 +56,7 @@ Direct Webcam capture workflow (without webcam app)
 
    guided_loop: The number of iterations of the guidedFilter. If 0, it is not used. 
 
-   radius/eps: guidedFilter parameters 
+   radius/eps: guidedFilter parameters. If you want a smoother surface, increase the eps value. 
 
    ![image](https://github.com/user-attachments/assets/814aa202-8150-4c67-bdab-bdc7d012fab5)
 

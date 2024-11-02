@@ -30,7 +30,7 @@ def p(image):
 def pb(image):
     return image.permute([0,2,3,1])
 
-def get_surface_normal_by_depth(image: torch.Tensor, depth_m, K=None):
+def get_surface_normal_by_depth(image: torch.Tensor, depth_m, mix_ratio, K=None):
     """
     depth: (h, w) of float, the unit of depth is meter
     K: (3, 3) of float, the depth camera's intrinsic
@@ -38,11 +38,7 @@ def get_surface_normal_by_depth(image: torch.Tensor, depth_m, K=None):
     K = [[1, 0], [0, 1]] if K is None else K
     fx, fy = K[0][0], K[1][1]
 
-    #depth = image[0, :, :, :].mean(dim=-1)
-
     depth = image
-    #depth = depth.detach().clone().numpy()
-    #depth = depth_input.cpu().numpy()
 
     depth = np.clip(depth * 255.0, 0, 255).astype(np.float32)
     
@@ -51,14 +47,25 @@ def get_surface_normal_by_depth(image: torch.Tensor, depth_m, K=None):
 
     depth_safe = np.where(depth <= depth_m, np.finfo(np.float32).eps, depth)
 
-    dz_dv, dz_du = np.gradient(depth_safe)
+    # dz_dv, dz_du = np.gradient(depth_safe)
+    
+    # np.gradient 계산
+    dz_dv_grad, dz_du_grad = np.gradient(depth_safe)
+    
+    # sobel 계산
+    dz_du_sobel = cv2.Sobel(depth_safe, cv2.CV_32F, 1, 0, ksize=3)
+    dz_dv_sobel = cv2.Sobel(depth_safe, cv2.CV_32F, 0, 1, ksize=3)
+    
+    # 그래디언트 혼합
+    dz_du = mix_ratio * dz_du_sobel + (1 - mix_ratio) * dz_du_grad
+    dz_dv = mix_ratio * dz_dv_sobel + (1 - mix_ratio) * dz_dv_grad
+    
     du_dx = fx / depth_safe
     dv_dy = fy / depth_safe
 
     dz_dx = dz_du * du_dx
     dz_dy = dz_dv * dv_dy
 
-    #normal_cross = np.dstack((-dz_dx, -dz_dy, np.ones_like(depth)))
     normal_cross = np.dstack((np.ones_like(depth), -dz_dy, -dz_dx))
 
     norm = np.linalg.norm(normal_cross, axis=2, keepdims=True)
@@ -639,6 +646,7 @@ class Depth_to_normal:
                 "image": ("IMAGE",),
                 "depth_min": ("FLOAT", { "default": 0, "min": -255, "max": 255, "step": 0.001, }),
                 "blue_depth": ("FLOAT", { "default": 0, "min": -255, "max": 1, "step": 0.1, }),
+                "sobel_ratio": ("FLOAT", { "default": 0, "min": 0, "max": 1, "step": 0.001, }),
             }
         }
 
@@ -647,7 +655,7 @@ class Depth_to_normal:
     FUNCTION = "execute"
     CATEGORY = "ToyxyzTestNodes"
         
-    def execute(self, image: torch.Tensor, depth_min, blue_depth):
+    def execute(self, image: torch.Tensor, depth_min, blue_depth, sobel_ratio):
         _, oh, ow, _ = image.shape
         
         depth = image.detach().clone()
@@ -667,7 +675,7 @@ class Depth_to_normal:
             
             image_np = slice.cpu().numpy()
 
-            normal1 = get_surface_normal_by_depth(image_np, depth_min, K)
+            normal1 = get_surface_normal_by_depth(image_np, depth_min, sobel_ratio, K)
   
             normal1_blurred = vis_normal(normal1)
                 

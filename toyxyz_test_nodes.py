@@ -10,6 +10,7 @@ import time
 import cv2
 from pathlib import Path
 from nodes import MAX_RESOLUTION, SaveImage, common_ksampler
+from cv2.ximgproc import guidedFilter
 
 import mss #Screen Capture
 import win32gui
@@ -21,6 +22,8 @@ import ctypes #for Find window
 from ctypes import windll, wintypes
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+
 
 def p(image):
     return image.permute([0,3,1,2])
@@ -634,9 +637,6 @@ class Depth_to_normal:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "blur": ("INT", { "default": 5, "min": 0, "max": MAX_RESOLUTION, "step": 1, }),
-                "sigmaColor": ("INT", { "default": 75, "min": 0, "max": MAX_RESOLUTION, "step": 1, }),
-                "sigmaSpace": ("INT", { "default": 75, "min": 0, "max": MAX_RESOLUTION, "step": 1, }),
                 "depth_min": ("FLOAT", { "default": 0, "min": -255, "max": 255, "step": 0.001, }),
                 "blue_depth": ("FLOAT", { "default": 0, "min": -255, "max": 1, "step": 0.1, }),
             }
@@ -646,36 +646,8 @@ class Depth_to_normal:
     RETURN_NAMES = ("IMAGE",)
     FUNCTION = "execute"
     CATEGORY = "ToyxyzTestNodes"
-
-    # def execute(self, image, blur, depht_min):
-        # _, oh, ow, _ = image.shape
         
-        # depth = image
- 
-        # if len(depth.shape) == 3:
-            # depth = depth[:, :, 0]
-
-        # K = np.array([[500, 0, 320],
-                      # [0, 500, 240],
-                      # [0, 0, 1]])    
-                      
-        # vis_normal = lambda normal: np.uint8((normal + 1) / 2 * 255)[..., ::-1]
-        
-        # normal1 = get_surface_normal_by_depth(depth, depht_min, K)
-          
-        # blur_kernel_size = blur
-        
-        # if blur_kernel_size % 2 == 0:  
-            # blur_kernel_size += 1
-            
-        # normal1_blurred = cv2.GaussianBlur(vis_normal(normal1), (blur_kernel_size, blur_kernel_size), sigmaX=0, sigmaY=0)
-            
-        # outputs = np.array(normal1_blurred).astype(np.float32) / 255.0
-        # outputs = torch.from_numpy(outputs)[None,]
-
-        # return(outputs, )
-        
-    def execute(self, image: torch.Tensor, blur, depth_min, sigmaColor, sigmaSpace, blue_depth):
+    def execute(self, image: torch.Tensor, depth_min, blue_depth):
         _, oh, ow, _ = image.shape
         
         depth = image.detach().clone()
@@ -688,12 +660,7 @@ class Depth_to_normal:
                       [0, 0, 1]])    
                           
         vis_normal = lambda normal: np.uint8((normal + 1) / 2 * 255)[..., ::-1]
-        
-        
-        blur_kernel_size = blur
-            
-        if blur_kernel_size % 2 == 0:  
-            blur_kernel_size += 1
+
         
         for i in range(depth.shape[0]):
             slice = depth[i]
@@ -701,8 +668,8 @@ class Depth_to_normal:
             image_np = slice.cpu().numpy()
 
             normal1 = get_surface_normal_by_depth(image_np, depth_min, K)
-               
-            normal1_blurred = cv2.bilateralFilter(vis_normal(normal1), blur_kernel_size, sigmaColor, sigmaSpace)
+  
+            normal1_blurred = vis_normal(normal1)
                 
             outputs = np.array(normal1_blurred).astype(np.float32) / 255.0
             outputs[..., 1] = 1.0 - outputs[..., 1] #Flip green channel
@@ -715,6 +682,90 @@ class Depth_to_normal:
 
         return(depth, )
 
+class Remove_noise:
+    import torch
+
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "bilateral_loop": ("INT", {"default": 64, "min": 0, "max": MAX_RESOLUTION, "step": 1}),
+                "d": ("INT", {"default": 5, "min": 0, "max": MAX_RESOLUTION, "step": 1}),
+                "sigma_color": (
+                    "FLOAT",
+                    {"default": 8.0, "min": 0.0, "max": MAX_RESOLUTION, "step": 1.0},
+                ),
+                "sigma_space": (
+                    "FLOAT",
+                    {"default": 8.0, "min": 0.0, "max": MAX_RESOLUTION, "step": 1.0},
+                ),
+                "guided_loop": ("INT", {"default": 4, "min": 0, "max": MAX_RESOLUTION, "step": 1}),
+                "radius": ("INT", {"default": 4, "min": 0, "max": MAX_RESOLUTION, "step": 1}),
+                "eps": (
+                    "FLOAT",
+                    {"default": 16.0, "min": 0.0, "max": MAX_RESOLUTION, "step": 1.0},
+                ),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+
+    FUNCTION = "execute"
+
+    CATEGORY = "ToyxyzTestNodes"
+
+    def execute(
+        self,
+        image: torch.Tensor,
+        bilateral_loop: int,
+        d: int,
+        sigma_color: float,
+        sigma_space: float,
+        guided_loop: int,
+        radius: int,
+        eps: float,
+    ):
+        import numpy as np
+        import cv2
+        import torch
+        
+        diameter = d
+        
+        if diameter % 2 == 0:  
+            diameter += 1
+
+        def sub(image: torch.Tensor):
+            guide = np.clip(255.0 * image.cpu().numpy().squeeze(), 0, 255).astype(
+                np.uint8
+            )
+            dst = guide.copy()
+            
+            if bilateral_loop > 0:
+                for _ in range(bilateral_loop):
+                    dst = cv2.bilateralFilter(dst, diameter, sigma_color, sigma_space)
+            if guided_loop > 0:
+                for _ in range(guided_loop):
+                    dst = cv2.ximgproc.guidedFilter(guide, dst, radius, eps)
+
+            return torch.from_numpy(dst.astype(np.float32) / 255.0).unsqueeze(0)
+
+        if len(image) > 1:
+            tensors = []
+
+            for child in image:
+                tensor = sub(child)
+                tensors.append(tensor)
+
+            return (torch.cat(tensors, dim=0),)
+
+        else:
+            tensor = sub(image)
+            return (tensor,)
+
 NODE_CLASS_MAPPINGS = {
     "CaptureWebcam": CaptureWebcam,
     "LoadWebcamImage": LoadWebcamImage,
@@ -723,6 +774,7 @@ NODE_CLASS_MAPPINGS = {
     "ImageResize_Padding": ImageResize_Padding,
     "Direct Screen Capture": Direct_screenCap,
     "Depth to normal": Depth_to_normal,
+    "Remove noise": Remove_noise,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -733,5 +785,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ImageResize_Padding": "ImageResize_Padding",
     "Direct_screenCap": "Direct_screenCap",
     "Depth_to_normal": "Depth_to_normal",
+    "Remove_noise": "Remove_noise"
 }
 

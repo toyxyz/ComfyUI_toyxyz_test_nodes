@@ -1,5 +1,5 @@
-opencv-python==4.8.1.78
-pywin32==306
+opencv-python
+pywin32
 pillow
 mttkinter
 mss
@@ -8,4 +8,4 @@ pysimplegui
 pygrabber
 keyboard
 pygetwindow
-numpy==1.23.5
+numpy

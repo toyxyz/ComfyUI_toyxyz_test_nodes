@@ -10,6 +10,8 @@ https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8536e96a-514a
 
 Update 
 
+2024/11/02 - Add remove noise node for normal map.
+
 2024/10/25 - Add depth to normal node.
 
 2024/08/11 - Add Direct_screenCap node. 
@@ -44,18 +46,31 @@ Direct Webcam capture workflow (without webcam app)
 ![workflow (40)](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/cac4b89b-c2a1-4007-8906-fb8de9e26213)
 (Workflow embedded)
 
+## Remove noise
+
+   Remove noise from an image. Can be used to clean a normal map. 
+
+   bilateral_loop: The number of times to apply the bilateralFilter. If 0, it is not used. 
+
+   d/sigma_color/sigma_space : bilateralFilter parameters 
+
+   guided_loop: The number of iterations of the guidedFilter. If 0, it is not used. 
+
+   radius/eps: guidedFilter parameters 
+
+   ![image](https://github.com/user-attachments/assets/814aa202-8150-4c67-bdab-bdc7d012fab5)
+   
 
 ## Depth to normal
 
    Converts a depth image to a normal map. It works very well with 2D images and DepthAnything v2. 
 
-   Blur/sigmaColor/Sigmaspace : Bilateral filter blur parameters
-
    depth_min : Depths lower than this value are replaced with 0. 
 
    blue_depth : Adjusts the intensity of the blue channel of the normal map to emphasize depth. The lower this number, the stronger the depth. 
 
-   ![image](https://github.com/user-attachments/assets/c95fab79-a169-4b4e-934c-066e371e7c67)
+   ![image](https://github.com/user-attachments/assets/14243419-738e-4ccb-aa45-93672ab6f1a7)
+
 
    ![image](https://github.com/user-attachments/assets/b3c55fab-1d81-4d9f-aafa-c1add3ccf7b4)
 

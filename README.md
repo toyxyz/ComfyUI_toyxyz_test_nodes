@@ -59,6 +59,9 @@ Direct Webcam capture workflow (without webcam app)
    radius/eps: guidedFilter parameters 
 
    ![image](https://github.com/user-attachments/assets/814aa202-8150-4c67-bdab-bdc7d012fab5)
+
+   ![image](https://github.com/user-attachments/assets/734448f1-9bf6-43e1-9d82-7e66ac032f94)
+
    
 
 ## Depth to normal

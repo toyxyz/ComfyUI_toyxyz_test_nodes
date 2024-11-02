@@ -48,6 +48,8 @@ Direct Webcam capture workflow (without webcam app)
 
 ## Remove noise
 
+   guided_first : Apply guided filter first.
+
    Remove noise from an image. Can be used to clean a normal map. 
 
    bilateral_loop: The number of times to apply the bilateralFilter. If 0, it is not used. 

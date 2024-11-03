@@ -10,6 +10,8 @@ https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8536e96a-514a
 
 Update 
 
+2024/11/04 - Add Export glb node.
+
 2024/11/02 - Add remove noise node for normal map. Added sobel ratio for more accurate Noraml.
 
 2024/10/25 - Add depth to normal node.
@@ -46,6 +48,16 @@ Direct Webcam capture workflow (without webcam app)
 ![workflow (40)](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/cac4b89b-c2a1-4007-8906-fb8de9e26213)
 (Workflow embedded)
 
+   
+## Export glb
+
+  Export a flat .glb file with a color image, normal map, and alpha mask. 
+
+  You can specify the roughness, metallic, and save path. 
+
+  ![image](https://github.com/user-attachments/assets/202744b2-3b91-4bc0-a4bd-ab8b1a1a8874)
+
+
 ## Remove noise
 
    guided_first : Apply guided filter first.
@@ -64,7 +76,7 @@ Direct Webcam capture workflow (without webcam app)
 
    ![image](https://github.com/user-attachments/assets/734448f1-9bf6-43e1-9d82-7e66ac032f94)
 
-   
+
 
 ## Depth to normal
 

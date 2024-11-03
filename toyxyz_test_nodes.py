@@ -21,6 +21,8 @@ from win32gui import FindWindow, GetWindowRect #Get window size and location
 import ctypes #for Find window
 from ctypes import windll, wintypes
 
+import trimesh
+
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
@@ -739,9 +741,6 @@ class Remove_noise:
         eps: int,
         guided_first: bool,
     ):
-        import numpy as np
-        import cv2
-        import torch
         
         diameter = d
         
@@ -785,6 +784,151 @@ class Remove_noise:
         else:
             tensor = sub(image)
             return (tensor,)
+            
+            
+class Export_glb:
+    import torch
+
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "normal": ("IMAGE",),
+                "alpha": ("MASK",),
+                "roughness": ("FLOAT",{"default": 1.0, "min": 0, "max": 1.0, "step": 0.01}),
+                "metallic": ("FLOAT",{"default": 0.0, "min": 0, "max": 1.0, "step": 0.01}),
+                "path": ("STRING", {"default": "./ComfyUI/output/save"}),
+            },
+        }
+
+    RETURN_TYPES = ()
+
+    FUNCTION = "execute"
+    
+    OUTPUT_NODE = True
+
+    CATEGORY = "ToyxyzTestNodes"
+
+    def execute(
+        self,
+        image: torch.Tensor,
+        normal: torch.Tensor,
+        alpha: torch.Tensor,
+        path,
+        roughness,
+        metallic,
+
+    ):
+        
+        
+        # Torch 텐서를 PIL 이미지로 변환하는 함수
+        def tensor_to_pil(img: torch.Tensor):
+            # 배치 차원 제거
+            numpy_image = np.clip(255.0 * img.cpu().numpy().squeeze(), 0, 255).astype(
+                np.uint8
+            )
+
+            return Image.fromarray(numpy_image)
+           
+        for i in range(image.shape[0]):
+            
+            color_img = tensor_to_pil(image[i])
+            normal_img = tensor_to_pil(normal[i])
+            
+            output_path = Path(path)
+            
+            # 알파 이미지가 제공된 경우 색상 이미지의 알파 채널로 교체
+            if alpha[i] is not None:
+                alpha_img = tensor_to_pil(alpha[i])
+                
+                # 알파 이미지를 컬러 이미지의 해상도로 리사이즈
+                alpha_img = alpha_img.resize(color_img.size, Image.LANCZOS)
+                
+                alpha_array = np.array(alpha_img)  # 알파 이미지를 배열로 변환
+
+                # 알파 채널이 2D인 경우 (높이 x 너비)
+                if alpha_array.ndim == 2:
+                    # 3D로 확장하여 (높이 x 너비 x 1)로 만듭니다.
+                    alpha_array = np.expand_dims(alpha_array, axis=-1)  # (H, W) -> (H, W, 1)
+                    
+                # 알파 채널 반전
+                alpha_array = 255 - alpha_array  # 255에서 알파 값을 빼서 반전
+
+                # 색상 이미지를 RGBA 형식으로 변환
+                color_img = color_img.convert("RGBA")
+                color_array = np.array(color_img)  # 색상 이미지를 배열로 변환
+
+                # 색상 이미지의 알파 채널을 알파 배열로 교체
+                color_array[:, :, 3] = alpha_array[:, :, 0]  # 알파는 2D 배열이므로 0번째 채널 사용
+
+                # 수정된 색상 이미지를 다시 PIL 이미지로 변환
+                color_img = Image.fromarray(color_array, mode='RGBA')
+            
+            counter = 0
+            extension = '.glb'  # 고정된 확장자
+            new_output_path = output_path.with_suffix(extension)
+            base_name = output_path.stem  # 확장자를 제거한 파일 이름
+            
+
+            while new_output_path.exists() or (new_output_path.with_suffix('')).exists():
+                new_file_name = f"{base_name}_{counter:03d}{extension}"
+                new_output_path = output_path.with_name(new_file_name)
+                counter += 1
+                    
+            
+            width, height = color_img.size
+        
+            width = width/1000
+            height = height/1000
+            
+            vertices = np.array([
+                [-width/2, -height/2, 0],  # 좌하단
+                [width/2, -height/2, 0],   # 우하단
+                [width/2, height/2, 0],    # 우상단
+                [-width/2, height/2, 0]    # 좌상단
+            ])
+            
+            faces = np.array([
+                [0, 1, 2],  # 첫 번째 삼각형
+                [0, 2, 3]   # 두 번째 삼각형
+            ])
+            
+            # UV 좌표 수정 - 상하 반전 수정
+            uv = np.array([
+                [0, 0],  # 좌하단
+                [1, 0],  # 우하단
+                [1, 1],  # 우상단
+                [0, 1]   # 좌상단
+            ])
+            
+            material = trimesh.visual.material.PBRMaterial(
+                baseColorTexture=color_img,
+                normalTexture = normal_img,
+                metallicFactor=0.0,
+                roughnessFactor=1.0,
+                alphaMode='BLEND'
+            )
+            
+            mesh = trimesh.Trimesh(
+                vertices=vertices,
+                faces=faces,
+                visual=trimesh.visual.texture.TextureVisuals(
+                    uv=uv,
+                    material=material
+                ),
+                process=False
+            )
+
+            
+            mesh.export(new_output_path)
+
+            print("Save glb to : ", new_output_path)
+        
+        return ()
 
 NODE_CLASS_MAPPINGS = {
     "CaptureWebcam": CaptureWebcam,
@@ -795,6 +939,7 @@ NODE_CLASS_MAPPINGS = {
     "Direct Screen Capture": Direct_screenCap,
     "Depth to normal": Depth_to_normal,
     "Remove noise": Remove_noise,
+    "Export glb": Export_glb,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -805,6 +950,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ImageResize_Padding": "ImageResize_Padding",
     "Direct_screenCap": "Direct_screenCap",
     "Depth_to_normal": "Depth_to_normal",
-    "Remove_noise": "Remove_noise"
+    "Remove_noise": "Remove_noise",
+    "Export_glb": "Export_glb"
 }
 

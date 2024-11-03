@@ -3,3 +3,4 @@ torch
 opencv-python
 mss
 pywin32
+trimesh

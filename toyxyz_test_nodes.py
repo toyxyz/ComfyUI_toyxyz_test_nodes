@@ -32,7 +32,7 @@ def p(image):
 def pb(image):
     return image.permute([0,2,3,1])
 
-def get_surface_normal_by_depth(image: torch.Tensor, depth_m, mix_ratio, K=None):
+def get_surface_normal_by_depth(image: torch.Tensor, depth_m, mix_ratio, s_ksize, K=None):
     """
     depth: (h, w) of float, the unit of depth is meter
     K: (3, 3) of float, the depth camera's intrinsic
@@ -55,8 +55,8 @@ def get_surface_normal_by_depth(image: torch.Tensor, depth_m, mix_ratio, K=None)
     dz_dv_grad, dz_du_grad = np.gradient(depth_safe)
     
     # sobel 계산
-    dz_du_sobel = cv2.Sobel(depth_safe, cv2.CV_32F, 1, 0, ksize=3)
-    dz_dv_sobel = cv2.Sobel(depth_safe, cv2.CV_32F, 0, 1, ksize=3)
+    dz_du_sobel = cv2.Sobel(depth_safe, cv2.CV_32F, 1, 0, ksize=s_ksize)
+    dz_dv_sobel = cv2.Sobel(depth_safe, cv2.CV_32F, 0, 1, ksize=s_ksize)
     
     # 그래디언트 혼합
     dz_du = mix_ratio * dz_du_sobel + (1 - mix_ratio) * dz_du_grad
@@ -649,6 +649,7 @@ class Depth_to_normal:
                 "depth_min": ("FLOAT", { "default": 0, "min": -255, "max": 255, "step": 0.001, }),
                 "blue_depth": ("FLOAT", { "default": 0, "min": -255, "max": 1, "step": 0.1, }),
                 "sobel_ratio": ("FLOAT", { "default": 0, "min": 0, "max": 1, "step": 0.001, }),
+                "sobel_ksize": ("INT", { "default": 1, "min": 1, "max": 9, "step": 2, }),
             }
         }
 
@@ -657,7 +658,7 @@ class Depth_to_normal:
     FUNCTION = "execute"
     CATEGORY = "ToyxyzTestNodes"
         
-    def execute(self, image: torch.Tensor, depth_min, blue_depth, sobel_ratio):
+    def execute(self, image: torch.Tensor, depth_min, blue_depth, sobel_ratio, sobel_ksize):
         _, oh, ow, _ = image.shape
         
         depth = image.detach().clone()
@@ -677,7 +678,7 @@ class Depth_to_normal:
             
             image_np = slice.cpu().numpy()
 
-            normal1 = get_surface_normal_by_depth(image_np, depth_min, sobel_ratio, K)
+            normal1 = get_surface_normal_by_depth(image_np, depth_min, sobel_ratio, sobel_ksize, K)
   
             normal1_blurred = vis_normal(normal1)
                 

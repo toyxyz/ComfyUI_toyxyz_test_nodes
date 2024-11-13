@@ -10,7 +10,7 @@ https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8536e96a-514a
 
 Update 
 
-2024/11/15 - Add Load Random Text From File node
+2024/11/14 - Add Load Random Text From File node
 
 2024/11/04 - Add Export glb node.
 

@@ -10,6 +10,8 @@ https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8536e96a-514a
 
 Update 
 
+2024/11/15 - Add Load Random Text From File node
+
 2024/11/04 - Add Export glb node.
 
 2024/11/02 - Add remove noise node for normal map. Added sobel ratio for more accurate Noraml.
@@ -47,6 +49,29 @@ Render preview workflow
 Direct Webcam capture workflow (without webcam app)
 ![workflow (40)](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/cac4b89b-c2a1-4007-8906-fb8de9e26213)
 (Workflow embedded)
+
+## Load Random Text From File
+
+  Retrieves the entire text or random lines from a txt file at the entered path.  
+
+  file_paht : The path to the text file or the path where the files are located 
+
+  seed : seed for random line
+
+  edit_text : Edit tag_(tag) to tag \(tag\)
+
+  get_random_line : Get random line from txt. False for get entire text
+
+  get_random_txt_from_path : Randomly use one of all text files located in the entered path instead of one text file. 
+
+  strength : Adjust the strength of the prompt. 
+
+  ban_tag : Prompts to exclude.
+
+  text : Multi-line text as an alternative to text files 
+
+  ![image](https://github.com/user-attachments/assets/45854e67-ec34-4a27-9934-f9d535660b83)
+
 
    
 ## Export glb

@@ -23,6 +23,10 @@ from ctypes import windll, wintypes
 
 import trimesh
 
+import random
+import re
+import io
+
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
@@ -930,6 +934,106 @@ class Export_glb:
             print("Save glb to : ", new_output_path)
         
         return ()
+        
+class Load_Random_Text_From_File:
+    
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "file_path": ("STRING", {"default": '', "multiline": False}),
+				"seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+                "edit_text": ("BOOLEAN", { "default": True }),
+                "get_random_line": ("BOOLEAN", { "default": True }),
+                "get_random_txt_from_path": ("BOOLEAN", { "default": False }),
+                "strength": ("FLOAT",{"default": 0.0, "min": -10.0, "max": 10.0, "step": 0.01}),
+                "ban_tag": ("STRING", {"default": '', "multiline": False}),
+            },
+            "optional": {
+                "text": ("STRING", {"forceInput": True}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING", )
+    FUNCTION = "execute"
+
+    CATEGORY = "ToyxyzTestNodes"
+
+    def execute(self, file_path='', seed=0, edit_text=True, get_random_line=True, get_random_txt_from_path=False, text=None, strength=0.0, ban_tag=''):
+        # strength가 빈 문자열이거나 유효하지 않으면 0으로 처리
+        if isinstance(strength, str):
+            try:
+                strength = float(strength) if strength else 0
+            except ValueError:
+                strength = 0
+
+        # 텍스트가 직접 주어진 경우와 파일에서 불러오는 경우 분리
+        if text is not None:
+            textlines = text
+        else:
+            # get_random_txt_from_path가 True일 경우 랜덤 파일을 불러옴
+            if get_random_txt_from_path:
+                if not os.path.isdir(file_path):
+                    cstr(f"The path `{file_path}` specified is not a directory.").error.print()
+                    return ('', {})
+
+                # 주어진 경로에서 모든 텍스트 파일들 찾아서 랜덤으로 선택
+                txt_files = [f for f in os.listdir(file_path) if f.endswith('.txt')]
+                if not txt_files:
+                    cstr(f"No text files found in `{file_path}`.").error.print()
+                    return ('', {})
+
+                random.seed(seed)
+                random_file = random.choice(txt_files)
+                file_path = os.path.join(file_path, random_file)
+
+            # 파일이 존재하는지 확인하고 파일 내용 읽기
+            if not os.path.exists(file_path):
+                cstr(f"The path `{file_path}` specified cannot be found.").error.print()
+                return ('', {filename: []})
+
+            filename = os.path.basename(file_path).split('.', 1)[0] if '.' in os.path.basename(file_path) else os.path.basename(file_path)
+            with open(file_path, 'r', encoding="utf-8", newline='\n') as file:
+                text = file.read()
+
+            lines = []
+            for line in io.StringIO(text):
+                if not line.strip().startswith('#'):
+                    lines.append(line.replace("\n", '').replace("\r", ''))
+            name = filename
+            textlines = "\n".join(lines)
+
+        # edit_text가 True일 경우, 여러 단어를 공백으로 연결하고 마지막 괄호 처리
+        if edit_text:
+            textlines = re.sub(r'(_)+', ' ', textlines)   # 언더스코어를 모두 공백으로 변환
+            textlines = re.sub(r' \((.*?)\)', r' \(\1\)', textlines)  # 괄호 안의 내용 유지
+
+        # get_random_line이 True인 경우 랜덤한 줄 선택
+        if get_random_line:
+            getlines = textlines.split("\n")
+            random.seed(seed)
+            output = random.choice(getlines)
+        else:
+            output = textlines
+            
+        # ban_tag 처리: 쉼표로 구분된 태그들 제거
+        if ban_tag:
+            tags_to_remove = [tag.strip() for tag in ban_tag.split(',')]  # 쉼표로 구분된 태그를 리스트로 변환
+            for tag in tags_to_remove:
+                # 태그와 관련된 쉼표 및 공백을 함께 제거
+                #output = re.sub(r'\s*,?\s*' + re.escape(tag) + r'\s*,?\s*', '', output)
+                output = re.sub(r'\s*,?\s*' + re.escape(tag) + r'\s*', '', output)  # 뒤에 공백도 처리
+
+        # get_random_line이 True인 경우 랜덤한 줄 선택
+
+        # strength가 0이 아닌 경우, output에 strength 값을 추가
+        if strength != 0:
+            output = f"({output}:{strength})"
+
+        return (output,)
 
 NODE_CLASS_MAPPINGS = {
     "CaptureWebcam": CaptureWebcam,
@@ -941,6 +1045,7 @@ NODE_CLASS_MAPPINGS = {
     "Depth to normal": Depth_to_normal,
     "Remove noise": Remove_noise,
     "Export glb": Export_glb,
+    "Load Random Text From File": Load_Random_Text_From_File,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -952,6 +1057,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "Direct_screenCap": "Direct_screenCap",
     "Depth_to_normal": "Depth_to_normal",
     "Remove_noise": "Remove_noise",
-    "Export_glb": "Export_glb"
+    "Export_glb": "Export_glb",
+    "Load_Random_Text_From_File": "Load_Random_Text_From_File"
 }
 

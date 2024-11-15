@@ -70,7 +70,12 @@ Direct Webcam capture workflow (without webcam app)
 
   text : Multi-line text as an alternative to text files 
 
-  ![image](https://github.com/user-attachments/assets/45854e67-ec34-4a27-9934-f9d535660b83)
+  use_index : Gets text from the line corresponding to index instead of a random line. 
+
+  index : The index of the line. 
+
+  ![image](https://github.com/user-attachments/assets/ec01dc6e-6535-47bb-8a2a-1af39eea9c21)
+
 
 
    

@@ -74,7 +74,8 @@ Direct Webcam capture workflow (without webcam app)
 
   index : The index of the line. 
 
-  ![image](https://github.com/user-attachments/assets/ec01dc6e-6535-47bb-8a2a-1af39eea9c21)
+  ![image](https://github.com/user-attachments/assets/77bac635-4b6d-4972-a502-02978414adbb)
+
 
 
 

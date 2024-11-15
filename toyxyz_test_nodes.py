@@ -951,6 +951,8 @@ class Load_Random_Text_From_File:
                 "get_random_txt_from_path": ("BOOLEAN", { "default": False }),
                 "strength": ("FLOAT",{"default": 0.0, "min": -10.0, "max": 10.0, "step": 0.01}),
                 "ban_tag": ("STRING", {"default": '', "multiline": False}),
+                "use_index": ("BOOLEAN", { "default": False }),
+                "index": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
             },
             "optional": {
                 "text": ("STRING", {"forceInput": True}),
@@ -962,7 +964,7 @@ class Load_Random_Text_From_File:
 
     CATEGORY = "ToyxyzTestNodes"
 
-    def execute(self, file_path='', seed=0, edit_text=True, get_random_line=True, get_random_txt_from_path=False, text=None, strength=0.0, ban_tag=''):
+    def execute(self, file_path='', seed=0, edit_text=True, get_random_line=True, get_random_txt_from_path=False, text=None, strength=0.0, ban_tag='', use_index=False, index=0):
         # strength가 빈 문자열이거나 유효하지 않으면 0으로 처리
         if isinstance(strength, str):
             try:
@@ -1011,13 +1013,22 @@ class Load_Random_Text_From_File:
             textlines = re.sub(r'(_)+', ' ', textlines)   # 언더스코어를 모두 공백으로 변환
             textlines = re.sub(r' \((.*?)\)', r' \(\1\)', textlines)  # 괄호 안의 내용 유지
 
-        # get_random_line이 True인 경우 랜덤한 줄 선택
-        if get_random_line:
+        # use_index가 True인 경우 index에 해당하는 줄을 선택
+        if use_index:
+            getlines = textlines.split("\n")
+            if 0 <= index < len(getlines):
+                output = getlines[index]
+            else:
+                # index가 범위를 넘어설 경우 마지막 라인을 사용
+                output = getlines[-1]
+        elif get_random_line:
+            # get_random_line이 True인 경우 랜덤한 줄 선택
             getlines = textlines.split("\n")
             random.seed(seed)
             output = random.choice(getlines)
-        else:
-            output = textlines
+        else :
+            getlines = textlines.split("\n")
+            output = getlines
             
         # ban_tag 처리: 쉼표로 구분된 태그들 제거
         if ban_tag:
@@ -1027,7 +1038,6 @@ class Load_Random_Text_From_File:
                 #output = re.sub(r'\s*,?\s*' + re.escape(tag) + r'\s*,?\s*', '', output)
                 output = re.sub(r'\s*,?\s*' + re.escape(tag) + r'\s*', '', output)  # 뒤에 공백도 처리
 
-        # get_random_line이 True인 경우 랜덤한 줄 선택
 
         # strength가 0이 아닌 경우, output에 strength 값을 추가
         if strength != 0:

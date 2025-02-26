@@ -4,7 +4,7 @@ pillow
 mttkinter
 mss
 pywin32
-pysimplegui
+FreeSimpleGUI
 pygrabber
 keyboard
 pygetwindow

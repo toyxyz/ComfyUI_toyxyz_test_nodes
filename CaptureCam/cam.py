@@ -21,7 +21,7 @@ import win32api
 from win32gui import FindWindow, GetWindowRect #Get window size and location
 import ctypes #for Find window
 from ctypes import windll, wintypes
-import PySimpleGUI as sg #Direct capture windwo
+import FreeSimpleGUI as sg #Direct capture windwo
 from pygrabber.dshow_graph import FilterGraph #Get camera list
 import keyboard
 import shutil

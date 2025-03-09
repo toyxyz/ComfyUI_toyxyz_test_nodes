@@ -10,6 +10,8 @@ https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8536e96a-514a
 
 Update 
 
+2025/03/10 - Add Visual area mask node
+
 2024/11/14 - Add Load Random Text From File node
 
 2024/11/04 - Add Export glb node.
@@ -24,7 +26,7 @@ Update
 
 2023/11/29 - Add Region Capture. Made the Webcam app UI smaller. 
 
-2023/12/1 - Add Ai render overlay 
+2023/12/01 - Add Ai render overlay 
          
 
 ## Installation
@@ -49,6 +51,35 @@ Render preview workflow
 Direct Webcam capture workflow (without webcam app)
 ![workflow (40)](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/cac4b89b-c2a1-4007-8906-fb8de9e26213)
 (Workflow embedded)
+
+
+## Visual area mask
+
+  Creates masks for the specified regions.
+
+  Image_width: Specify the width of the mask
+  
+  Image_height: Specify the height of the mask
+  
+  area_number: Specify the number of areas to create. Maximum 12. 
+
+  area_id : Area number to adjust. Starts from 0.
+
+  x : X position of the area selected in area_id.
+
+  y : Y position of the area selected in area_id.
+
+  width : Width of the area selected in area_id.
+
+  height: Height of the selected area at area_id.
+
+  strength: Strength of the selected area at area_id.
+
+  Update outputs: Update nodes according to the number in area_number.
+
+  
+![image](https://github.com/user-attachments/assets/2d9de398-7e76-41d7-84fe-ffa75f476e7d)
+
 
 ## Load Random Text From File
 

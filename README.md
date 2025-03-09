@@ -55,7 +55,7 @@ Direct Webcam capture workflow (without webcam app)
 
 ## Visual area mask
 
-  Creates masks for the specified regions.
+  Creates masks for the specified regions. Useful for regional prompting.
 
   Image_width: Specify the width of the mask
   

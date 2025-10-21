@@ -93,6 +93,12 @@ Direct Webcam capture workflow (without webcam app)
 
 <img width="2408" height="1558" alt="image" src="https://github.com/user-attachments/assets/c76ae523-d09b-4d2a-b21f-447c76fdf36e" />
 
+## ComfyCouple Region / ComfyCouple Mask 
+
+  Regional Prompting Node. Supported models are SD 1.5, SDXL, and Flux. To disable Auto_inject_flux, you must free the model cache.
+
+<img width="2376" height="1818" alt="image" src="https://github.com/user-attachments/assets/d78d5d1d-67e7-4a0c-bc1f-26569cc638b6" />
+
 
 
 ## Load Random Text From File

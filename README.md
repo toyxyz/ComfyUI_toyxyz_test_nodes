@@ -10,6 +10,8 @@ https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8536e96a-514a
 
 Update 
 
+2025/10/21 - Add Openpose Editor Node, Pose Interpolation, ComfyCouple Region, ComfyCouple Mask
+
 2025/03/10 - Add Visual area mask node
 
 2024/11/14 - Add Load Random Text From File node

@@ -14,7 +14,8 @@ function updateWidgetValues(node) {
   [..._AREA_DEFAULTS].forEach((value, i) => {
     const newValue = areaValues[i] || value;
     node.properties["area_values"][node.index][i] = newValue;
-    node.widgets[i + 4].value = newValue;
+    // mask_overlap_method가 추가되어 위젯 인덱스가 1 증가 (4 -> 5)
+    node.widgets[i + 5].value = newValue;
   });
 }
 
@@ -62,6 +63,9 @@ app.registerExtension({
           node.properties[name] = value;
         };
       });
+
+      // mask_overlap_method는 Python에서 required로 정의되어 자동 생성됨
+      // 따라서 여기서는 별도로 추가하지 않음
 
       addAreaGraphWidget(app, this, "area_conditioning_canvas");
       addNumberInput(this, "area_id", 0, (value, _, node) => {

@@ -164,10 +164,22 @@ export function addAreaGraphWidget(app, node, name) {
                     return; // Skip selected area to draw later
                 }
                 const [x, y, w, h] = getDrawArea(v);
+                if (w <= 0 || h <= 0) {
+                    return;
+                }
                 const areaColor = generateHslColor(k + 1, values.length, 0.1);
                 const brightColor = brightenHsl(areaColor, 0.7);
                 drawRect(widgetX + x, widgetYOffset + y, w, h, brightColor);
                 drawRect(widgetX + x + halfBorder, widgetYOffset + y + halfBorder, w - AREA_BORDER_SIZE, h - AREA_BORDER_SIZE, areaColor);
+                
+                // Draw area_id number in the center
+                if (w > 20 && h > 20) {
+                    ctx.fillStyle = '#FFFFFF';
+                    ctx.font = 'bold 16px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(k.toString(), widgetX + x + w / 2, widgetYOffset + y + h / 2);
+                }
             });
             // Draw selected area with white outline
             const [x, y, w, h] = getDrawArea(values[node.index]);
@@ -179,6 +191,16 @@ export function addAreaGraphWidget(app, node, name) {
             ctx.strokeStyle = '#FFFFFF';
             ctx.lineWidth = 1;
             ctx.strokeRect(widgetX + x, widgetYOffset + y, w, h);
+            
+            // Draw area_id number for selected area
+            if (w > 20 && h > 20) {
+                ctx.fillStyle = '#FFFFFF';
+                ctx.font = 'bold 16px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(node.index.toString(), widgetX + x + w / 2, widgetYOffset + y + h / 2);
+            }
+            
             if (node.is_selected) {
                 node.inputs.filter(input => input.name.includes(node.index)).forEach(input => {
                     const link = input.link;

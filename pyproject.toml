@@ -1,7 +1,7 @@
 [project]
 name = "comfyui_toyxyz_test_nodes"
 description = "This node was created to send a webcam to ComfyUI in real time. This node is recommended for use with LCM."
-version = "1.0.2"
+version = "1.0.3"
 license = { file = "LICENSE" }
 dependencies = ["numpy", "torch", "opencv-python"]
 

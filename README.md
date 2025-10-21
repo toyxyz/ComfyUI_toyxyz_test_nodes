@@ -81,6 +81,18 @@ Direct Webcam capture workflow (without webcam app)
 
 <img width="1576" height="1591" alt="image" src="https://github.com/user-attachments/assets/dcc54f06-7d5c-4a2c-844c-11f8ec8088ae" />
 
+## Openpose Editor Node
+
+  Modify each body part of OpenPose
+
+<img width="2140" height="1800" alt="image" src="https://github.com/user-attachments/assets/c54a6c62-a8aa-4418-a8b7-6bd65d5cce82" />
+
+## Pose Interpolation
+
+  Generate interpolated poses between two OpenPose poses.
+
+<img width="2408" height="1558" alt="image" src="https://github.com/user-attachments/assets/c76ae523-d09b-4d2a-b21f-447c76fdf36e" />
+
 
 
 ## Load Random Text From File

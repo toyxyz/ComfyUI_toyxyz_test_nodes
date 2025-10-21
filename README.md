@@ -75,10 +75,12 @@ Direct Webcam capture workflow (without webcam app)
 
   strength: Strength of the selected area at area_id.
 
+  mask_overlap_method: default, subtract - Subtracts the masks from other regions from a single mask.
+
   Update outputs: Update nodes according to the number in area_number.
 
-  
-![image](https://github.com/user-attachments/assets/2d9de398-7e76-41d7-84fe-ffa75f476e7d)
+<img width="1576" height="1591" alt="image" src="https://github.com/user-attachments/assets/dcc54f06-7d5c-4a2c-844c-11f8ec8088ae" />
+
 
 
 ## Load Random Text From File

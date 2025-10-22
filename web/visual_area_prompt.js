@@ -36,11 +36,30 @@ function updateOutputs(node) {
   if (!node.outputs) {
     node.outputs = [];
   }
-  while (node.outputs.length > targetNumber) {
+  
+  // canvas_image 출력이 첫 번째에 있어야 함
+  // 출력이 없거나 첫 번째 출력이 canvas_image가 아닌 경우
+  if (node.outputs.length === 0 || node.outputs[0].name !== "canvas_image") {
+    // 기존 출력 제거
+    while (node.outputs.length > 0) {
+      node.removeOutput(node.outputs.length - 1);
+    }
+    // canvas_image 출력 추가
+    node.addOutput("canvas_image", "IMAGE");
+  }
+  
+  // targetNumber + 1 (canvas_image 포함)만큼 출력이 있어야 함
+  const totalOutputs = targetNumber + 1;
+  
+  // 초과 출력 제거
+  while (node.outputs.length > totalOutputs) {
     node.removeOutput(node.outputs.length - 1);
   }
-  while (node.outputs.length < targetNumber) {
-    node.addOutput(`area_${node.outputs.length}`, node._type);
+  
+  // 부족한 출력 추가 (canvas_image 다음부터)
+  while (node.outputs.length < totalOutputs) {
+    const areaIndex = node.outputs.length - 1; // canvas_image를 제외한 인덱스
+    node.addOutput(`area_${areaIndex}`, "MASK");
   }
 }
 
@@ -78,8 +97,6 @@ app.registerExtension({
           node.properties["area_values"][node.index][i] = value;
         }, { min: 0, max: i === 4 ? 1 : 1, step: 0.1, precision: 2 });
       });
-
-      this._type = "MASK";
 
       this.addWidget("button", "Update outputs", null, () => {
         updateOutputs(this);

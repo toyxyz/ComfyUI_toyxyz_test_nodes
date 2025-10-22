@@ -101,6 +101,12 @@ Direct Webcam capture workflow (without webcam app)
 
 <img width="2376" height="1818" alt="image" src="https://github.com/user-attachments/assets/d78d5d1d-67e7-4a0c-bc1f-26569cc638b6" />
 
+## Comfy Couple Region Extractor
+
+  Cut out the masked region from the couple region. It can be used in the face detailing workflow.
+
+<img width="2505" height="1667" alt="image" src="https://github.com/user-attachments/assets/5b8871f0-24db-46e8-b69a-4c0e8aa844cf" />
+
 
 
 ## Load Random Text From File

@@ -1,4 +1,6 @@
 from .ComfyCouple.comfy_couple import ComfyCoupleMask, ComfyCoupleRegion
+from .ComfyCouple.Extractor import ComfyCoupleRegionExtractor
+from .ComfyCouple.Visualizer import ComfyCoupleRegionVisualizer
 from .nodes.toyxyz_test_nodes import CaptureWebcam, LoadWebcamImage, SaveImagetoPath, LatentDelay, ImageResize_Padding, Direct_screenCap, Depth_to_normal, Remove_noise, Export_glb, Load_Random_Text_From_File
 from .nodes.visual_area_mask import VisualAreaMask
 from .openposeeditor.openpose_editor_nodes import OpenposeEditorNode, PoseToMaskNode
@@ -23,7 +25,9 @@ NODE_CLASS_MAPPINGS = {
     "PoseToMaskNode": PoseToMaskNode,
     "Pose_Inter": Pose_Inter,
     "PoseKeypointToCoordStr": PoseKeypointToCoordStr,
-    "JoinPose": JoinPose
+    "JoinPose": JoinPose,
+    "ComfyCoupleRegionExtractor": ComfyCoupleRegionExtractor,
+    "ComfyCoupleRegionVisualizer": ComfyCoupleRegionVisualizer,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -44,7 +48,9 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "PoseToMaskNode": "Pose Keypoints to Mask",
     "Pose_Inter": "Pose Interpolation",
     "PoseKeypointToCoordStr": "POSE_KEYPOINT to Coord_str",
-    "JoinPose": "join_pose"
+    "JoinPose": "join_pose",
+    "ComfyCoupleRegionExtractor": "Comfy Couple Region Extractor",
+    "ComfyCoupleRegionVisualizer": "Region Visualizer (Comfy Couple)",
 }
 
 WEB_DIRECTORY = "./web"

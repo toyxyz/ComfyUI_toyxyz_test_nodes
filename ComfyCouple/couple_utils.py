@@ -269,9 +269,15 @@ class MaskProcessor:
     def resize_to_match(mask: torch.Tensor, target_shape: Tuple[int, ...]) -> torch.Tensor:
         """Resize mask to match target shape"""
         if mask.shape[-2:] == target_shape[-2:]: 
-            return mask
+            return mask.float()  # ✅ float32로 변환
         
-        m = mask.unsqueeze(0).unsqueeze(0) if mask.dim() == 2 else mask.unsqueeze(1)
+        # ✅ 수정: 입력을 float32로 변환
+        m = mask.float()
+        if m.dim() == 2:
+            m = m.unsqueeze(0).unsqueeze(0)
+        elif m.dim() == 3:
+            m = m.unsqueeze(1)
+        
         resized = F.interpolate(
             m, 
             size=target_shape[-2:], 

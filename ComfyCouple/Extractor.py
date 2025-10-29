@@ -1,5 +1,6 @@
 """
 Region Extractor Node - Extract specific region(s) from coupled attention patch
+✅ EXTENDED: Now supports conditioning extraction with LoRA hooks
 """
 
 import torch
@@ -19,6 +20,7 @@ from .couple_flux_patching import FluxAttentionPatcher, RegionalMask, RegionalCo
 class ComfyCoupleRegionExtractor:
     """
     Extract specific region(s) from an existing coupled model
+    ✅ NEW: Can also extract conditioning with LoRA hooks preserved
     """
     
     @classmethod
@@ -48,6 +50,9 @@ class ComfyCoupleRegionExtractor:
                 }),
             },
             "optional": {
+                "conditioning": ("CONDITIONING", {
+                    "tooltip": "✅ NEW: Optional conditioning to extract from (must be from ComfyCoupleMask with skip_positive=False). Extracts matching region's conditioning with LoRA hooks preserved."
+                }),
                 "extracted_strength": ("FLOAT", {
                     "default": 1.0,
                     "min": 0.0,
@@ -69,19 +74,21 @@ class ComfyCoupleRegionExtractor:
             }
         }
 
-    RETURN_TYPES = ("MODEL", "STRING", "STRING")
-    RETURN_NAMES = ("extracted_model", "matched_indices", "region_info")
+    RETURN_TYPES = ("MODEL", "CONDITIONING", "STRING", "STRING")
+    RETURN_NAMES = ("extracted_model", "extracted_conditioning", "matched_indices", "region_info")
     FUNCTION = "extract"
     CATEGORY = "ToyxyzTestNodes"
 
     def extract(self, coupled_model: Any, extraction_mask: torch.Tensor,
                 extraction_mode: str = "single_best",
                 threshold: float = 0.5, background_mode: str = "replicate",
+                conditioning: Optional[Any] = None,
                 extracted_strength: float = 1.0,
                 background_strength: float = 1.0,
-                model_type: str = "auto") -> Tuple[Any, str, str]:
+                model_type: str = "auto") -> Tuple[Any, Any, str, str]:
         """
         Extract specific region(s) from coupled model based on mask
+        ✅ NEW: Also extracts conditioning if provided
         """
         # Detect architecture
         arch_info = self._detect_architecture(coupled_model, model_type)
@@ -93,17 +100,39 @@ class ComfyCoupleRegionExtractor:
               f"Extracted strength: {extracted_strength:.2f}, "
               f"Background strength: {background_strength:.2f}")
         
+        if conditioning is not None:
+            print(f"[RegionExtractor] ✅ Conditioning extraction enabled")
+        
         # Extract region data from coupled model
         if is_flux:
-            return self._extract_flux(
+            extracted_model, indices, info = self._extract_flux(
                 coupled_model, extraction_mask, extraction_mode, threshold,
                 background_mode, extracted_strength, background_strength
             )
         else:
-            return self._extract_sd_sdxl(
+            extracted_model, indices, info = self._extract_sd_sdxl(
                 coupled_model, extraction_mask, extraction_mode, threshold,
                 background_mode, extracted_strength, background_strength
             )
+        
+        # ✅ NEW: Extract conditioning if provided
+        extracted_conditioning = None
+        if conditioning is not None:
+            try:
+                extracted_conditioning, cond_info = self._extract_conditioning(
+                    conditioning, extraction_mask, extraction_mode, threshold,
+                    background_mode, extracted_strength, background_strength
+                )
+                print(f"[RegionExtractor] {cond_info}")
+            except Exception as e:
+                log_warning(f"Conditioning extraction failed: {e}")
+                # Create dummy zero conditioning as fallback
+                extracted_conditioning = create_zero_conditioning(conditioning)
+        else:
+            # No conditioning provided - create dummy
+            extracted_conditioning = create_zero_conditioning([(torch.zeros(1, 77, 768), {})])
+        
+        return (extracted_model, extracted_conditioning, indices, info)
 
     def _detect_architecture(self, model: Any, model_type_str: str) -> ArchitectureInfo:
         """Detect or force model architecture"""
@@ -115,6 +144,189 @@ class ComfyCoupleRegionExtractor:
             return ArchitectureInfo(type=ModelType.SDXL, use_cfg=True, dim=2048, is_flux=False)
         else:  # sd15
             return ArchitectureInfo(type=ModelType.SD15, use_cfg=True, dim=768, is_flux=False)
+
+    def _extract_conditioning(self, conditioning: Any, extraction_mask: torch.Tensor,
+                            extraction_mode: str, threshold: float, background_mode: str,
+                            extracted_strength: float, background_strength: float) -> Tuple[Any, str]:
+        """
+        ✅ NEW: Extract conditioning based on mask matching
+        Preserves LoRA hooks and all metadata
+        """
+        extraction_mask = extraction_mask.float()
+        if extraction_mask.dim() == 3:
+            extraction_mask = extraction_mask[0]
+        
+        # Analyze conditioning list
+        matches = []
+        unmatched = []
+        
+        for idx, (cond_tensor, metadata) in enumerate(conditioning):
+            region_mask = metadata.get('mask', None)
+            
+            if region_mask is None:
+                # No mask = global conditioning, treat as always matching
+                log_debug(f"Conditioning {idx}: No mask (global), treating as background")
+                unmatched.append(idx)
+                continue
+            
+            # Calculate coverage
+            coverage = self._calculate_coverage(extraction_mask, region_mask)
+            
+            if coverage >= threshold:
+                matches.append({
+                    'index': idx,
+                    'coverage': coverage,
+                    'tensor': cond_tensor,
+                    'metadata': copy.deepcopy(metadata),
+                })
+                log_debug(f"Conditioning {idx}: Matched with {coverage:.1%} coverage ✓")
+            else:
+                unmatched.append(idx)
+                log_debug(f"Conditioning {idx}: Below threshold ({coverage:.1%} < {threshold:.1%})")
+        
+        if not matches:
+            log_warning(f"No conditioning matched extraction mask with threshold {threshold:.0%}")
+            # Return empty conditioning
+            return create_zero_conditioning(conditioning[:1]), "No matches found"
+        
+        # Sort by coverage (highest first)
+        matches.sort(key=lambda x: x['coverage'], reverse=True)
+        
+        # Apply extraction mode
+        if extraction_mode == "single_best":
+            selected_matches = [matches[0]]
+            print(f"[CondExtractor] Single best: Region {matches[0]['index']} ({matches[0]['coverage']:.1%})")
+        else:  # all_matching
+            selected_matches = matches
+            print(f"[CondExtractor] All matching: {len(matches)} regions")
+            for m in matches:
+                print(f"  Region {m['index']}: {m['coverage']:.1%} coverage")
+        
+        # Build output conditioning
+        output_conds = []
+        
+        # Add matched regions with extracted_strength
+        lora_count = 0
+        for match in selected_matches:
+            # Deep copy metadata to preserve LoRA hooks
+            new_metadata = match['metadata']
+            
+            # Update strength
+            new_metadata['mask_strength'] = extracted_strength
+            
+            # Track LoRA
+            if new_metadata.get('hooks') is not None:
+                lora_count += 1
+            
+            output_conds.append((match['tensor'], new_metadata))
+        
+        # Add background if needed
+        if background_mode != "remove":
+            background_mask = self._calculate_background_mask(
+                extraction_mask, 
+                [conditioning[m['index']][1].get('mask') for m in selected_matches]
+            )
+            
+            if background_mask.sum() > MASK_EPSILON:
+                if background_mode == "zero":
+                    bg_tensor = torch.zeros_like(selected_matches[0]['tensor'])
+                    # ✅ Copy metadata structure to preserve pooled_output and other required fields
+                    bg_metadata = copy.deepcopy(selected_matches[0]['metadata'])
+                    bg_metadata['mask'] = background_mask
+                    bg_metadata['mask_strength'] = background_strength
+                    # Remove hooks from zero background
+                    bg_metadata.pop('hooks', None)
+                
+                elif background_mode == "replicate":
+                    # Average matched tensors
+                    bg_tensor = torch.stack([m['tensor'] for m in selected_matches]).mean(dim=0)
+                    bg_metadata = copy.deepcopy(selected_matches[0]['metadata'])
+                    bg_metadata['mask'] = background_mask
+                    bg_metadata['mask_strength'] = background_strength
+                    # Keep LoRA hook from first region
+                
+                elif background_mode == "original":
+                    # Average unmatched regions
+                    if unmatched:
+                        unmatched_tensors = [conditioning[i][0] for i in unmatched]
+                        # Pad to same length
+                        max_len = max(t.shape[1] for t in unmatched_tensors)
+                        padded = []
+                        for t in unmatched_tensors:
+                            if t.shape[1] < max_len:
+                                pad = torch.zeros(t.shape[0], max_len - t.shape[1], t.shape[2],
+                                                device=t.device, dtype=t.dtype)
+                                t = torch.cat([t, pad], dim=1)
+                            padded.append(t)
+                        bg_tensor = torch.stack(padded).mean(dim=0)
+                        # ✅ Use first unmatched region's metadata to preserve pooled_output
+                        bg_metadata = copy.deepcopy(conditioning[unmatched[0]][1])
+                        bg_metadata['mask'] = background_mask
+                        bg_metadata['mask_strength'] = background_strength
+                        # No LoRA for background from unmatched regions
+                    else:
+                        bg_tensor = torch.zeros_like(selected_matches[0]['tensor'])
+                        # ✅ Copy metadata structure to preserve pooled_output
+                        bg_metadata = copy.deepcopy(selected_matches[0]['metadata'])
+                        bg_metadata['mask'] = background_mask
+                        bg_metadata['mask_strength'] = background_strength
+                        bg_metadata.pop('hooks', None)
+                
+                output_conds.append((bg_tensor, bg_metadata))
+        
+        # Build info string
+        matched_indices = [m['index'] for m in selected_matches]
+        indices_str = ",".join(str(i) for i in matched_indices)
+        info = (f"Extracted {len(selected_matches)} conditioning(s) [{indices_str}]/{len(conditioning)}, "
+                f"mode={extraction_mode}")
+        
+        if lora_count > 0:
+            info += f", {lora_count} with LoRA hooks ✓"
+        
+        if background_mode != "remove":
+            info += f", background={background_mode}"
+        
+        return (output_conds, info)
+
+    def _calculate_coverage(self, extraction_mask: torch.Tensor, 
+                          region_mask: torch.Tensor) -> float:
+        """Calculate overlap coverage between extraction and region mask"""
+        region_mask = region_mask.float()
+        
+        if region_mask.dim() == 3:
+            region_mask = region_mask[0]
+        
+        # Resize if needed
+        if region_mask.shape != extraction_mask.shape:
+            region_mask = MaskProcessor.resize_to_match(region_mask, extraction_mask.shape)
+            region_mask = region_mask.to(device=extraction_mask.device, dtype=extraction_mask.dtype)
+        
+        # Calculate coverage
+        intersection = (extraction_mask * region_mask).sum()
+        extraction_area = extraction_mask.sum()
+        
+        if extraction_area < MASK_EPSILON:
+            return 0.0
+        
+        coverage = (intersection / extraction_area).item()
+        return coverage
+
+    def _calculate_background_mask(self, extraction_mask: torch.Tensor,
+                                   matched_masks: List[torch.Tensor]) -> torch.Tensor:
+        """Calculate background mask (areas not covered by matched regions)"""
+        combined_mask = torch.zeros_like(extraction_mask)
+        
+        for mask in matched_masks:
+            if mask is not None:
+                if mask.dim() == 3:
+                    mask = mask[0]
+                if mask.shape != extraction_mask.shape:
+                    mask = MaskProcessor.resize_to_match(mask, extraction_mask.shape)
+                    mask = mask.to(device=extraction_mask.device, dtype=extraction_mask.dtype)
+                combined_mask = torch.maximum(combined_mask, mask)
+        
+        background_mask = (1.0 - combined_mask).clamp(min=0.0)
+        return background_mask
 
     def _extract_flux(self, coupled_model: Any, extraction_mask: torch.Tensor,
                      extraction_mode: str, threshold: float, background_mode: str,
@@ -188,31 +400,49 @@ class ComfyCoupleRegionExtractor:
                 for idx, score in zip(matched_indices, match_scores):
                     print(f"  Region {idx}: {score:.1%} coverage")
             
-            # ✅ 핵심 수정: 리전 순서 (background 먼저, matched regions 나중에)
-            extracted_regions = []
+            # Create new region list for FluxAttentionPatcher
+            new_regions = []
             
-            # 1. Add background region FIRST (if needed) - INDEX 0
-            if background_mode != "remove":
-                matched_masks = [region_masks[i].float() for i in matched_indices]
-                combined_matched = torch.stack(matched_masks).sum(dim=0).clamp(0, 1)
-                background_mask = (1.0 - combined_matched).clamp(min=0.0)
+            if background_mode == "remove":
+                # Only matched regions, no background
+                for idx in matched_indices:
+                    new_regions.append({
+                        'positive': [(region_conds[idx], {})],
+                        'mask': region_masks[idx],
+                        'strength': extracted_strength
+                    })
+            
+            else:
+                # Calculate background mask
+                unmatched_indices = [i for i in range(num_regions) if i not in matched_indices]
+                
+                # Create union of matched masks
+                background_mask = torch.ones_like(region_masks[0])
+                for idx in matched_indices:
+                    background_mask = background_mask - region_masks[idx]
+                background_mask = background_mask.clamp(min=0)
                 
                 if background_mask.sum() > MASK_EPSILON:
-                    unmatched_indices = [i for i in range(num_regions) if i not in matched_indices]
-                    
                     # Choose background conditioning
                     if background_mode == "zero":
                         background_cond = torch.zeros_like(region_conds[matched_indices[0]])
                         log_debug("Background: zero conditioning")
                     
                     elif background_mode == "replicate":
-                        background_cond = torch.cat([region_conds[i] for i in matched_indices], dim=1)
-                        log_debug(f"Background: replicated from {len(matched_indices)} extracted region(s)")
+                        # Average all extracted regions
+                        background_cond = region_conds[matched_indices[0]].clone()
+                        for idx in matched_indices[1:]:
+                            if region_conds[idx].shape[1] == background_cond.shape[1]:
+                                background_cond = (background_cond + region_conds[idx]) / 2
+                        log_debug(f"Background: replicated from {len(matched_indices)} region(s)")
                     
                     elif background_mode == "original":
+                        # Average unmatched regions
                         if unmatched_indices:
-                            other_conds = [region_conds[i] for i in unmatched_indices]
-                            background_cond = torch.cat(other_conds, dim=1)
+                            background_cond = region_conds[unmatched_indices[0]]
+                            for idx in unmatched_indices[1:]:
+                                if region_conds[idx].shape[1] == background_cond.shape[1]:
+                                    background_cond = (background_cond + region_conds[idx]) / 2
                             log_debug(f"Background: original ({len(unmatched_indices)} regions)")
                         else:
                             background_cond = torch.zeros_like(region_conds[matched_indices[0]])
@@ -220,80 +450,36 @@ class ComfyCoupleRegionExtractor:
                     else:
                         background_cond = torch.zeros_like(region_conds[matched_indices[0]])
                     
-                    # Add background as first region (index 0)
-                    extracted_regions.append({
-                        'mask': background_mask,
+                    # Add background region first
+                    new_regions.append({
                         'positive': [(background_cond, {})],
+                        'mask': background_mask,
                         'strength': background_strength
                     })
-                    log_debug(f"Background mask coverage: {background_mask.sum().item():.1f} pixels")
-            
-            # 2. Add matched regions AFTER background (index 1, 2, ...)
-            for idx in matched_indices:
-                extracted_regions.append({
-                    'mask': region_masks[idx].float(),
-                    'positive': [(region_conds[idx], {})],
-                    'strength': extracted_strength
-                })
-            
-            # Restore original attention override blocks
-            original_attn_override = {
-                'double': [],
-                'single': []
-            }
-            
-            for block_type in ["double", "single"]:
-                if block_type in patches_replace:
-                    for block_id in patches_replace[block_type].keys():
-                        # Extract numeric block ID
-                        if isinstance(block_id, tuple):
-                            numeric_id = block_id[1] if len(block_id) > 1 else block_id[0]
-                        else:
-                            numeric_id = block_id
-                        
-                        if isinstance(numeric_id, int):
-                            original_attn_override[block_type].append(numeric_id)
-            
-            log_debug(f"Restored attn_override: {original_attn_override}")
-            
-            # ✅ 핵심 수정: Clean base model and create new patches
-            base_model = coupled_model.clone()
-            
-            # Remove old regional_conditioning and patches_replace
-            if 'transformer_options' in base_model.model_options:
-                transformer_opts = base_model.model_options['transformer_options']
                 
-                # Remove regional_conditioning from patches
-                if 'patches' in transformer_opts:
-                    if 'regional_conditioning' in transformer_opts['patches']:
-                        log_debug("Removing old regional_conditioning from base model")
-                        del transformer_opts['patches']['regional_conditioning']
-                
-                # Remove patches_replace
-                if 'patches_replace' in transformer_opts:
-                    log_debug("Removing old patches_replace from base model")
-                    del transformer_opts['patches_replace']
+                # Add matched regions
+                for idx in matched_indices:
+                    new_regions.append({
+                        'positive': [(region_conds[idx], {})],
+                        'mask': region_masks[idx],
+                        'strength': extracted_strength
+                    })
             
-            # Create new FluxAttentionPatcher with extracted regions
-            flux_patcher = FluxAttentionPatcher(
-                model=base_model,
-                regions=extracted_regions,
+            # Create new Flux patched model
+            patcher = FluxAttentionPatcher(
+                coupled_model, 
+                new_regions,
                 start_percent=regional_mask_module.start_percent,
                 end_percent=regional_mask_module.end_percent,
-                attn_override=original_attn_override,
+                attn_override=None,  # Will use default
                 apply_t5_background=regional_mask_module.apply_t5_background
             )
             
-            new_model, _ = flux_patcher.patch()
+            new_model, _ = patcher.patch()
             
             # Build output strings
             indices_str = ",".join(str(i) for i in matched_indices)
-            
-            # ✅ 수정: 올바른 카운트
-            num_background = 1 if background_mode != "remove" else 0
-            num_extracted = len(matched_indices)
-            
-            region_info = (f"Flux: Extracted {num_extracted} region(s) "
+            region_info = (f"Flux: Extracted {len(matched_indices)} region(s) "
                           f"[{indices_str}]/{num_regions}, "
                           f"mode={extraction_mode}, "
                           f"extracted_strength={extracted_strength:.2f}")
@@ -302,14 +488,10 @@ class ComfyCoupleRegionExtractor:
                 region_info += f", background={background_mode} (strength={background_strength:.2f})"
             
             print(f"[RegionExtractor] {region_info}")
-            print(f"[RegionExtractor] Final regions: {len(extracted_regions)} "
-                  f"({num_background} background + {num_extracted} extracted)")
             
             return (new_model, indices_str, region_info)
         
         except Exception as e:
-            import traceback
-            traceback.print_exc()
             raise RuntimeError(f"Failed to extract Flux region: {e}")
 
     def _extract_sd_sdxl(self, coupled_model: Any, extraction_mask: torch.Tensor,
@@ -318,22 +500,19 @@ class ComfyCoupleRegionExtractor:
         """Extract region(s) from SD/SDXL model"""
         
         try:
+            # Extract region data from attention patches
             transformer_options = coupled_model.model_options.get("transformer_options", {})
             patches_replace = transformer_options.get("patches_replace", {})
-            attn2_patches = patches_replace.get("attn2", {})
             
-            if not attn2_patches:
-                raise ValueError("Model doesn't have regional attention patches applied")
+            if 'attn2' not in patches_replace:
+                raise ValueError("Model doesn't have SD/SDXL regional patching applied")
             
             # Get first patch to extract region data
-            first_patch_key = list(attn2_patches.keys())[0]
-            first_patch = attn2_patches[first_patch_key]
-            
-            # Extract region data
+            first_patch = next(iter(patches_replace['attn2'].values()))
             region_masks, region_conds, region_strengths = self._extract_regions_from_patch(first_patch)
             
             if not region_masks:
-                raise ValueError("Could not extract region data from attention patches")
+                raise ValueError("No region data found in coupled model")
             
             num_regions = len(region_masks)
             log_debug(f"Found {num_regions} regions in SD/SDXL model")
@@ -551,4 +730,3 @@ class ComfyCoupleRegionExtractor:
         patched_model, _, _ = patcher.patch()
         
         return patched_model
-

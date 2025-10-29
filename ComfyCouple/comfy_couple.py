@@ -1,7 +1,10 @@
 """
-Core logic for Comfy Couple custom nodes - OPTIMIZED + FLUX SUPPORT
-With built-in Flux injection capability
+Core logic for Comfy Couple custom nodes - OPTIMIZED + FLUX SUPPORT + LORA HOOK
+With built-in Flux injection capability and Regional LoRA Hook support
 ✅ Flux now uses dynamic calculation (no latent input needed)
+✅ Regional LoRA Hook support for SD 1.5 / SDXL
+✅ FIXED: Background now works with LoRA hooks
+✅ FIXED: skip_positive now works correctly with/without LoRA hooks
 """
 import torch
 import copy
@@ -45,6 +48,9 @@ class ComfyCoupleRegion:
                 }),
             },
             "optional": {
+                "lora_hook": ("HOOKS", {
+                    "tooltip": "LoRA hook from 'Create Hook LoRA' node (SD 1.5/SDXL only, ignored in Flux). Use 'Combine Hooks' node to merge multiple LoRAs before connecting."
+                }),
                 "region": ("region", {"tooltip": "Chain multiple regions"}),
             }
         }
@@ -54,6 +60,7 @@ class ComfyCoupleRegion:
     CATEGORY = "ToyxyzTestNodes"
 
     def process(self, positive: Any, mask: torch.Tensor, strength: float,
+                lora_hook: Optional[Any] = None,
                 region: Optional[List[Dict[str, Any]]] = None) -> Tuple[List[Dict[str, Any]]]:
         if not isinstance(mask, torch.Tensor):
             raise TypeError(f"Mask must be torch.Tensor, got {type(mask)}")
@@ -61,7 +68,8 @@ class ComfyCoupleRegion:
         current_region = {
             "positive": positive, 
             "mask": mask, 
-            "strength": strength
+            "strength": strength,
+            "lora_hook": lora_hook  # ✅ Store LoRA hook
         }
         
         region_list = region if region is not None else []
@@ -114,7 +122,7 @@ class ComfyCoupleMask:
                 }),
                 "skip_positive_conditioning": ("BOOLEAN", {
                     "default": True,
-                    "tooltip": "Skip positive output (Flux: always True, SD/SDXL: optional for faster processing)"
+                    "tooltip": "Skip positive conditioning output (use zero conditioning). True: Only attention patching is applied, no positive output. False: Output all regions with full conditioning. If you are using the Lora hook, set it to false.[SD/SDXL only, always True for Flux]"
                 }),
             },
             "optional": {
@@ -222,6 +230,12 @@ class ComfyCoupleMask:
 
     def _process_flux(self, model, region, negative, arch_info, **kwargs) -> Tuple[Any, Any, Any]:
         """Process Flux model using attention mask approach - WITH DYNAMIC CALCULATION"""
+        
+        # ✅ Check for LoRA hooks and warn
+        has_any_lora = any(r.get('lora_hook') is not None for r in region)
+        if has_any_lora:
+            print("[ComfyCouple] ⚠️ Warning: LoRA hooks are not supported in Flux mode and will be ignored")
+            log_warning("LoRA hooks detected but Flux mode does not support them")
         
         # Remove duplicates
         region = self._remove_duplicate_regions(region)
@@ -336,7 +350,7 @@ class ComfyCoupleMask:
         return (patched_model, final_positive, negative)
 
     def _process_sd_sdxl(self, model, region, negative, arch_info, **kwargs) -> Tuple[Any, Any, Any]:
-        """Process SD/SDXL model using original approach"""
+        """Process SD/SDXL model using original approach with LoRA Hook support"""
         
         # Remove duplicates
         region = self._remove_duplicate_regions(region)
@@ -359,28 +373,131 @@ class ComfyCoupleMask:
         if not active_regions:
             raise ValueError("All regions have zero strength")
 
-        # Process conditioning
-        processed_conds = self._process_all_conditionings(
-            active_regions, bg_positive, background_mask, bg_strength, kwargs
-        )
+        # ✅ Process conditioning with LoRA Hook support
+        all_processed_conds = []
+        
+        # Process active regions
+        for r in active_regions:
+            # Step 1: Copy conditioning
+            region_cond = copy.deepcopy(r['positive'])
+            
+            # Step 2: Apply background/base_prompt modifiers
+            region_cond = self._apply_conditioning_modifiers(
+                region_cond, kwargs, is_background=False
+            )
+            
+            # Step 3: Apply mask metadata FIRST
+            region_cond = ConditioningSetMask().append(
+                region_cond, r['mask'], "default", r['strength']
+            )[0]
+            
+            # Step 4: ✅ Attach LoRA hook AFTER ConditioningSetMask
+            # Follows ComfyUI's Cond Set Props behavior: preserve existing hooks
+            has_lora = False
+            if r.get('lora_hook') is not None:
+                for cond_item in region_cond:
+                    # Get existing hooks (if any)
+                    existing_hooks = cond_item[1].get('hooks', None)
+                    new_hook = r['lora_hook']
+                    
+                    if existing_hooks is None:
+                        # No existing hooks: just set the new one
+                        cond_item[1]['hooks'] = new_hook
+                    else:
+                        # Merge hooks using clone() method
+                        # HookGroup has a clone() method that creates a merged copy
+                        try:
+                            if hasattr(existing_hooks, 'clone'):
+                                # Clone existing and merge with new
+                                merged_hooks = existing_hooks.clone()
+                                if hasattr(merged_hooks, 'hooks') and hasattr(new_hook, 'hooks'):
+                                    # Both are HookGroups, merge their hooks lists
+                                    merged_hooks.hooks.extend(new_hook.hooks)
+                                    cond_item[1]['hooks'] = merged_hooks
+                                else:
+                                    # Can't merge properly, use new hook
+                                    log_warning("Cannot merge hooks properly, using new hook only")
+                                    cond_item[1]['hooks'] = new_hook
+                            else:
+                                # No clone method, overwrite with new hook
+                                log_warning("Existing hooks don't support clone(), using new hook only")
+                                cond_item[1]['hooks'] = new_hook
+                        except Exception as e:
+                            log_warning(f"Hook merge failed: {e}, using new hook only")
+                            cond_item[1]['hooks'] = new_hook
+                
+                has_lora = True
+                log_debug(f"Attached LoRA hook to region with mask shape {r['mask'].shape}")
+            
+            all_processed_conds.append({
+                'conditioning': region_cond,
+                'has_lora': has_lora,  # ✅ Track LoRA presence
+                'mask': r['mask'],
+                'strength': r['strength']
+            })
+        
+        # Process background
+        has_background = background_mask.sum() > MASK_EPSILON
+        if has_background:
+            final_bg = self._apply_conditioning_modifiers(bg_positive, kwargs, is_background=True)
+            final_bg = ConditioningSetMask().append(
+                final_bg, background_mask, "default", bg_strength
+            )[0]
+            
+            all_processed_conds.append({
+                'conditioning': final_bg,
+                'has_lora': False,  # ✅ Background doesn't have LoRA hook
+                'mask': background_mask,
+                'strength': bg_strength
+            })
+            log_debug(f"Background included (mask coverage: {background_mask.sum().item():.1f})")
 
-        # Convert for patcher
-        cond_for_patcher = self._convert_to_patcher_format(processed_conds)
-
-        # Patch model
+        # ✅ AttentionPatcher always uses ALL regions (for spatial control)
+        # Convert to patcher format: [[tensor, {mask, mask_strength}], ...]
+        patcher_conds = []
+        for c in all_processed_conds:
+            # Extract tensor from conditioning
+            cond_tensor = c['conditioning'][0][0]
+            patcher_conds.append([
+                cond_tensor,
+                {
+                    "mask": c['mask'],
+                    "mask_strength": c['strength']
+                }
+            ])
+        
         patcher = AttentionPatcher(
-            model=model, positive=cond_for_patcher, negative=negative,
+            model=model,
+            positive=patcher_conds,
+            negative=negative,
             cross_region_attention=kwargs.get("cross_region_attention", 0.0),
             cross_region_mode=kwargs.get("cross_region_mode", "self_exclusion"),
             model_type=arch_info.type.value
         )
         patched_model, _, _ = patcher.patch()
 
-        # Output conditioning
-        if kwargs.get("skip_positive_conditioning", False):
+        # ✅ FIXED: Simplified skip logic
+        skip_positive = kwargs.get("skip_positive_conditioning", True)
+
+        if skip_positive:
+            # ✅ 항상 zero conditioning 사용 (LoRA hook 유무와 무관)
             final_positive_output = create_zero_conditioning(negative)
+            print(f"[ComfyCouple] Skip=True: Using zero conditioning (attention patching only)")
+            log_debug("Skip=True: Zero conditioning output, all regions applied via attention patching")
         else:
-            final_positive_output = self._convert_to_output_format(processed_conds)
+            # ✅ 모든 리전 출력 (LoRA hook 있는 것과 없는 것 모두 포함)
+            final_positive_output = self._convert_to_output_format_lora(all_processed_conds)
+            
+            # LoRA 카운트 (디버그용)
+            lora_count = sum(1 for c in all_processed_conds if c['has_lora'])
+            non_lora_count = len(all_processed_conds) - lora_count
+            
+            if lora_count > 0:
+                print(f"[ComfyCouple] Skip=False: Output {lora_count} LoRA regions + {non_lora_count} non-LoRA regions (total: {len(all_processed_conds)})")
+                log_debug(f"Skip=False: {lora_count} LoRA + {non_lora_count} non-LoRA regions")
+            else:
+                print(f"[ComfyCouple] Skip=False: Output all {len(all_processed_conds)} regions")
+                log_debug(f"Skip=False: Output all {len(all_processed_conds)} regions")
 
         return (patched_model, final_positive_output, negative)
 
@@ -438,7 +555,8 @@ class ComfyCoupleMask:
             new_region = {
                 "positive": r["positive"],
                 "mask": r["mask"].clone(),
-                "strength": validate_strength(r["strength"], f"Region {i}", is_flux=is_flux)
+                "strength": validate_strength(r["strength"], f"Region {i}", is_flux=is_flux),
+                "lora_hook": r.get("lora_hook")  # ✅ Preserve LoRA hook
             }
             if feather_pixels > 0:
                 try:
@@ -486,47 +604,8 @@ class ComfyCoupleMask:
 
         return modified_cond
 
-    def _process_all_conditionings(self, active_regions: List[Dict], bg_positive: Any,
-                                   background_mask: torch.Tensor, bg_strength: float,
-                                   kwargs: Dict) -> List[Dict[str, Any]]:
-        """Process all conditionings in a single pass"""
-        processed = []
-        
-        for r in active_regions:
-            final_cond = self._apply_conditioning_modifiers(r['positive'], kwargs)
-            processed.append({
-                'conditioning': final_cond,
-                'mask': r['mask'],
-                'strength': r['strength']
-            })
-        
-        has_background = background_mask.sum() > MASK_EPSILON
-        if has_background:
-            final_bg = self._apply_conditioning_modifiers(bg_positive, kwargs, is_background=True)
-            processed.append({
-                'conditioning': final_bg,
-                'mask': background_mask,
-                'strength': bg_strength
-            })
-            log_debug(f"Background included (mask coverage: {background_mask.sum().item():.1f})")
-        
-        return processed
-
-    def _convert_to_patcher_format(self, processed_conds: List[Dict[str, Any]]) -> List[Any]:
-        """Convert to AttentionPatcher format"""
-        cond_list = []
-        for item in processed_conds:
-            cond_list.append([
-                item['conditioning'][0][0],
-                {
-                    "mask": item['mask'],
-                    "mask_strength": item['strength']
-                }
-            ])
-        return cond_list
-
     def _convert_to_output_format(self, processed_conds: List[Dict[str, Any]]) -> Any:
-        """Convert to ComfyUI output format"""
+        """Convert to ComfyUI output format (original method for Flux)"""
         if not processed_conds:
             raise ValueError("No processed conditionings available")
         
@@ -550,3 +629,26 @@ class ComfyCoupleMask:
         
         return combined_positive
 
+    def _convert_to_output_format_lora(self, processed_conds: List[Dict[str, Any]]) -> Any:
+        """
+        ✅ Convert to ComfyUI output format (for LoRA Hook support)
+        Note: conditioning already has mask metadata from ConditioningSetMask
+        """
+        if not processed_conds:
+            raise ValueError("No processed conditionings available")
+        
+        combined_positive = None
+        
+        for item in processed_conds:
+            # ✅ Use conditioning directly (already has mask + LoRA hook)
+            region_cond = item['conditioning']
+            
+            if combined_positive is None:
+                combined_positive = region_cond
+            else:
+                combined_positive = ConditioningCombine().combine(
+                    combined_positive,
+                    region_cond
+                )[0]
+        
+        return combined_positive

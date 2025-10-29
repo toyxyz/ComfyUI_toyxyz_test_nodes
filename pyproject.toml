@@ -1,7 +1,7 @@
 [project]
 name = "comfyui_toyxyz_test_nodes"
 description = "This is a custom node that collects the tools I use frequently."
-version = "1.0.5"
+version = "1.0.6"
 license = { file = "LICENSE" }
 dependencies = ["numpy", "torch", "opencv-python"]
 

@@ -37,28 +37,32 @@ function updateOutputs(node) {
     node.outputs = [];
   }
   
-  // canvas_image 출력이 첫 번째에 있어야 함
-  // 출력이 없거나 첫 번째 출력이 canvas_image가 아닌 경우
-  if (node.outputs.length === 0 || node.outputs[0].name !== "canvas_image") {
+  // canvas_image와 combined_mask 출력이 첫 번째, 두 번째에 있어야 함
+  if (node.outputs.length === 0 ||
+      node.outputs[0].name !== "canvas_image" ||
+      node.outputs.length < 2 ||
+      node.outputs[1].name !== "combined_mask") {
     // 기존 출력 제거
     while (node.outputs.length > 0) {
       node.removeOutput(node.outputs.length - 1);
     }
     // canvas_image 출력 추가
     node.addOutput("canvas_image", "IMAGE");
+    // combined_mask 출력 추가
+    node.addOutput("combined_mask", "MASK");
   }
-  
-  // targetNumber + 1 (canvas_image 포함)만큼 출력이 있어야 함
-  const totalOutputs = targetNumber + 1;
-  
+
+  // targetNumber + 2 (canvas_image + combined_mask 포함)만큼 출력이 있어야 함
+  const totalOutputs = targetNumber + 2;
+
   // 초과 출력 제거
   while (node.outputs.length > totalOutputs) {
     node.removeOutput(node.outputs.length - 1);
   }
-  
-  // 부족한 출력 추가 (canvas_image 다음부터)
+
+  // 부족한 출력 추가 (canvas_image, combined_mask 다음부터)
   while (node.outputs.length < totalOutputs) {
-    const areaIndex = node.outputs.length - 1; // canvas_image를 제외한 인덱스
+    const areaIndex = node.outputs.length - 2; // canvas_image, combined_mask를 제외한 인덱스
     node.addOutput(`area_${areaIndex}`, "MASK");
   }
 }
@@ -69,7 +73,7 @@ app.registerExtension({
     if (nodeData.name !== _ID) {
       return;
     }
-    
+
     const onNodeCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = async function() {
       const me = onNodeCreated?.apply(this);

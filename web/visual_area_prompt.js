@@ -11,11 +11,17 @@ function updateWidgetValues(node) {
     node.properties["area_values"][node.index] = [];
   }
   const areaValues = node.properties["area_values"][node.index];
-  [..._AREA_DEFAULTS].forEach((value, i) => {
-    const newValue = areaValues[i] || value;
+
+  // 위젯 이름으로 찾아서 업데이트 (인덱스 대신 이름 사용으로 안정성 향상)
+  const widgetNames = ["x", "y", "width", "height", "strength"];
+  widgetNames.forEach((name, i) => {
+    const newValue = areaValues[i] || _AREA_DEFAULTS[i];
     node.properties["area_values"][node.index][i] = newValue;
-    // mask_overlap_method가 추가되어 위젯 인덱스가 1 증가 (4 -> 5)
-    node.widgets[i + 5].value = newValue;
+
+    const widget = node.widgets.find(w => w.name === name);
+    if (widget) {
+      widget.value = newValue;
+    }
   });
 }
 
@@ -36,7 +42,7 @@ function updateOutputs(node) {
   if (!node.outputs) {
     node.outputs = [];
   }
-  
+
   // canvas_image와 combined_mask 출력이 첫 번째, 두 번째에 있어야 함
   if (node.outputs.length === 0 ||
       node.outputs[0].name !== "canvas_image" ||
@@ -65,6 +71,40 @@ function updateOutputs(node) {
     const areaIndex = node.outputs.length - 2; // canvas_image, combined_mask를 제외한 인덱스
     node.addOutput(`area_${areaIndex}`, "MASK");
   }
+}
+
+function updateInputs(node) {
+  const targetNumber = node.widgets.find(w => w.name === "area_number").value;
+  if (!node.inputs) {
+    node.inputs = [];
+  }
+
+  // 현재 area_text 인풋 개수 계산
+  let currentTextInputs = 0;
+  for (let i = 0; i < node.inputs.length; i++) {
+    if (node.inputs[i].name.startsWith("area_") && node.inputs[i].name.endsWith("_text")) {
+      currentTextInputs++;
+    }
+  }
+
+  // 초과 인풋 제거
+  while (currentTextInputs > targetNumber) {
+    currentTextInputs--;
+    const inputName = `area_${currentTextInputs}_text`;
+    for (let i = node.inputs.length - 1; i >= 0; i--) {
+      if (node.inputs[i].name === inputName) {
+        node.removeInput(i);
+        break;
+      }
+    }
+  }
+
+  // 부족한 인풋 추가
+  for (let i = currentTextInputs; i < targetNumber; i++) {
+    node.addInput(`area_${i}_text`, "STRING");
+  }
+
+  node.graph?.setDirtyCanvas(true);
 }
 
 app.registerExtension({
@@ -104,11 +144,13 @@ app.registerExtension({
 
       this.addWidget("button", "Update outputs", null, () => {
         updateOutputs(this);
+        updateInputs(this);
         updateAreaIdAndInputs(this);
       });
 
       updateAreaIdAndInputs(this);
       updateOutputs(this);
+      updateInputs(this);
       return me;
     };
     return nodeType;

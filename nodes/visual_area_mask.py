@@ -49,6 +49,54 @@ class VisualAreaMask:
         r, g, b = VisualAreaMask.hsl_to_rgb(hue, 100, 50)
         return (r, g, b, alpha)
 
+    @staticmethod
+    def wrap_text(text, font, max_width, draw):
+        """텍스트를 여러 줄로 나누기 (문자 단위 줄바꿈 - 단어가 잘릴 수 있음)"""
+        lines = []
+
+        if not text:
+            return [text]
+
+        current_line = ""
+
+        for char in text:
+            # 현재 줄에 문자를 추가했을 때의 너비 계산
+            test_line = current_line + char
+            bbox = draw.textbbox((0, 0), test_line, font=font)
+            test_width = bbox[2] - bbox[0]
+
+            if test_width <= max_width:
+                # 너비가 허용 범위 내면 추가
+                current_line = test_line
+            else:
+                # 너비 초과하면 현재 줄 저장하고 새 줄 시작
+                if current_line:  # 현재 줄이 비어있지 않으면 저장
+                    lines.append(current_line)
+                current_line = char
+
+        # 마지막 줄 추가
+        if current_line:
+            lines.append(current_line)
+
+        return lines if lines else [text]
+
+    @staticmethod
+    def wrap_text_with_fixed_font(text, font_size, max_width, max_height, draw):
+        """고정된 폰트 크기로 텍스트를 여러 줄로 나누기"""
+        # 폰트 로드
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
+        except:
+            try:
+                font = ImageFont.truetype("arial.ttf", font_size)
+            except:
+                font = ImageFont.load_default()
+
+        # 줄바꿈 적용
+        lines = VisualAreaMask.wrap_text(text, font, max_width, draw)
+
+        return font, lines
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -88,6 +136,16 @@ class VisualAreaMask:
                         "tooltip": "How to handle overlapping masks. 'default': output masks as-is, 'subtract': subtract all other masks from each mask."
                     }
                 ),
+                "font_size": (
+                    "INT",
+                    {
+                        "default": 40,
+                        "min": 10,
+                        "max": 200,
+                        "step": 1,
+                        "tooltip": "Font size for area labels."
+                    }
+                ),
             },
             "hidden": {
                 "extra_pnginfo": "EXTRA_PNGINFO",
@@ -101,22 +159,16 @@ class VisualAreaMask:
     OUTPUT_NODE = False
     CATEGORY = "ToyxyzTestNodes"
 
-    def create_canvas_image(self, image_width, image_height, conditioning_areas, area_number):
+    def create_canvas_image(self, image_width, image_height, conditioning_areas, area_number, font_size,
+                            area_texts=None):
         """캔버스 이미지를 생성하는 함수"""
         # 흰색 배경 이미지 생성
         img = Image.new('RGB', (image_width, image_height), color='white')
         draw = ImageDraw.Draw(img, 'RGBA')
 
-        # 폰트 설정 (이미지 크기에 비례하여 크게)
-        font_size = max(80, min(image_width, image_height) // 10)
-        try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
-        except:
-            try:
-                # Windows 폰트
-                font = ImageFont.truetype("arial.ttf", font_size)
-            except:
-                font = ImageFont.load_default()
+        # area_texts가 None이면 빈 딕셔너리로 초기화
+        if area_texts is None:
+            area_texts = {}
 
         # 각 영역 그리기
         for i in range(area_number):
@@ -143,24 +195,71 @@ class VisualAreaMask:
             border_color = (color[0], color[1], color[2], 255)
             draw.rectangle([x, y, x_end, y_end], outline=border_color, width=3)
 
-            # 영역 번호 표시 (area_id와 일치하도록 0부터 시작)
-            text = str(i)
-            # 텍스트 중앙 배치
-            bbox = draw.textbbox((0, 0), text, font=font)
-            text_width = bbox[2] - bbox[0]
-            text_height = bbox[3] - bbox[1]
-            text_x = x + (x_end - x - text_width) // 2
-            text_y = y + (y_end - y - text_height) // 2
+            # 텍스트 결정 (area_text가 있으면 사용, 없으면 숫자)
+            display_text = area_texts.get(i, str(i))
+            if not display_text or display_text.strip() == "":
+                display_text = str(i)
 
-            # 텍스트 그리기 (가독성을 위해 흰색 테두리 효과)
-            # 테두리 효과
-            for offset_x in [-2, -1, 0, 1, 2]:
-                for offset_y in [-2, -1, 0, 1, 2]:
-                    if offset_x != 0 or offset_y != 0:
-                        draw.text((text_x + offset_x, text_y + offset_y), text, fill=(255, 255, 255, 255), font=font)
+            # 텍스트 크기에 따라 폰트 크기 조정
+            box_width = x_end - x
+            box_height = y_end - y
 
-            # 실제 텍스트
-            draw.text((text_x, text_y), text, fill=(0, 0, 0, 255), font=font)
+            # 박스가 너무 작으면 스킵
+            if box_width < 10 or box_height < 10:
+                continue
+
+            # 고정된 폰트 크기로 줄바꿈된 텍스트 가져오기
+            max_text_width = box_width * 0.9
+            max_text_height = box_height * 0.9
+
+            font, lines = self.wrap_text_with_fixed_font(
+                display_text,
+                font_size,
+                max_text_width,
+                max_text_height,
+                draw
+            )
+
+            # 각 줄의 높이 계산
+            line_heights = []
+            line_widths = []
+            for line in lines:
+                bbox = draw.textbbox((0, 0), line, font=font)
+                line_heights.append(bbox[3] - bbox[1])
+                line_widths.append(bbox[2] - bbox[0])
+
+            # 평균 줄 높이
+            avg_line_height = sum(line_heights) // max(len(line_heights), 1)
+            line_spacing = int(avg_line_height * 0.2)  # 줄 간격 20%
+
+            # 전체 텍스트 블록 높이
+            total_text_height = sum(line_heights) + line_spacing * (len(lines) - 1)
+
+            # 텍스트 블록 시작 위치 (중앙 정렬)
+            start_y = y + (box_height - total_text_height) // 2
+
+            # 테두리 효과 두께
+            outline_width = max(1, font_size // 20)
+
+            # 각 줄 그리기
+            current_y = start_y
+            for idx, (line, line_width, line_height) in enumerate(zip(lines, line_widths, line_heights)):
+                # 줄 중앙 정렬
+                text_x = x + (box_width - line_width) // 2
+                text_y = current_y
+
+                # 텍스트 테두리 효과 (가독성 향상)
+                for offset_x in range(-outline_width, outline_width + 1):
+                    for offset_y in range(-outline_width, outline_width + 1):
+                        if offset_x != 0 or offset_y != 0:
+                            draw.text((text_x + offset_x, text_y + offset_y), line, fill=(255, 255, 255, 255),
+                                      font=font)
+
+                # 실제 텍스트
+                draw.text((text_x, text_y), line, fill=(0, 0, 0, 255), font=font)
+
+                # 다음 줄 위치
+                current_y += line_height + line_spacing
 
         # PIL Image를 ComfyUI IMAGE 형식으로 변환 (torch tensor)
         img_array = np.array(img).astype(np.float32) / 255.0
@@ -168,7 +267,8 @@ class VisualAreaMask:
 
         return img_tensor
 
-    def run_node(self, extra_pnginfo, unique_id, image_width, image_height, area_number, mask_overlap_method, **kwargs):
+    def run_node(self, extra_pnginfo, unique_id, image_width, image_height, area_number, mask_overlap_method, font_size,
+                 **kwargs):
         # extra_pnginfo에서 현재 노드의 conditioning 영역값 추출
         conditioning_areas: list[list[float]] = []
         for node in extra_pnginfo["workflow"]["nodes"]:
@@ -181,8 +281,16 @@ class VisualAreaMask:
             raise ValueError(
                 f"conditioning_areas의 영역 수({len(conditioning_areas)})가 요청된 area_number({area_number})보다 적습니다.")
 
-        # 캔버스 이미지 생성
-        canvas_image = self.create_canvas_image(image_width, image_height, conditioning_areas, area_number)
+        # kwargs에서 area_text 인풋 추출
+        area_texts = {}
+        for i in range(area_number):
+            text_key = f"area_{i}_text"
+            if text_key in kwargs and kwargs[text_key] is not None:
+                area_texts[i] = kwargs[text_key]
+
+        # 캔버스 이미지 생성 (font_size와 area_texts 전달)
+        canvas_image = self.create_canvas_image(image_width, image_height, conditioning_areas, area_number, font_size,
+                                                area_texts)
 
         masks = []
 

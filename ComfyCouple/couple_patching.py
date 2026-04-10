@@ -152,9 +152,11 @@ class AttentionPatcher:
         batch_size, seq_len, _ = q_batches[0].shape
         orig_shape = extra_options["original_shape"]
         
-        # Calculate masks for current resolution (no caching for immediate strength updates)
-        masks_uncond = MaskProcessor.from_query(neg_masks, q_batches[0], orig_shape)
-        masks_cond = MaskProcessor.from_query(pos_masks, q_batches[0], orig_shape)
+        # Calculate masks for current resolution.
+        # Pass extra_options so from_query() can use activations_shape for exact H×W.
+        # This fixes tiling/misalignment at high resolutions (e.g. 2592×1728 SDXL).
+        masks_uncond = MaskProcessor.from_query(neg_masks, q_batches[0], orig_shape, extra_options)
+        masks_cond = MaskProcessor.from_query(pos_masks, q_batches[0], orig_shape, extra_options)
         
         k_uncond, v_uncond = self._compute_kv(padded_neg_conds, module, q)
         k_cond, v_cond = self._compute_kv(padded_pos_conds, module, q)

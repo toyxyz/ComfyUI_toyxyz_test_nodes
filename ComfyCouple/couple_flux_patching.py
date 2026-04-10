@@ -131,11 +131,10 @@ class RegionalMask(torch.nn.Module):
             if mask.dim() == 2:
                 mask = mask.unsqueeze(0)
             
-            # Original logic: resize to (h, w) which is attention resolution
             mask_resized = torch.nn.functional.interpolate(
                 mask.unsqueeze(0).to(dtype=dtype, device=device),
                 size=(h, w),
-                mode='nearest-exact'
+                mode='area'
             )
             region_masks_spatial.append(mask_resized[0, 0])  # [h, w]
         

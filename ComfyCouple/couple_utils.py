@@ -195,13 +195,14 @@ class MaskProcessor:
     @staticmethod
     def resize_to_sequence(mask: torch.Tensor, seq_len: int, aspect_ratio: float, 
                           dtype: torch.dtype, device: torch.device) -> torch.Tensor:
+        """Fallback: estimate H×W via find_best_divisors. Used when activations_shape is unavailable."""
         m = mask.unsqueeze(0).unsqueeze(0) if mask.dim() == 2 else mask.unsqueeze(1)
         th, tw = find_best_divisors(seq_len, aspect_ratio)
         
         resized = F.interpolate(
             m.to(dtype=dtype, device=device), 
             size=(th, tw), 
-            mode="nearest"
+            mode="area"
         )
         flat = resized.view(1, -1, 1)
         
@@ -210,16 +211,49 @@ class MaskProcessor:
         return flat
 
     @staticmethod
-    def from_query(masks: List[Any], q: torch.Tensor, original_shape: Tuple[int, ...]) -> torch.Tensor:
-        """Convert masks to attention-compatible sequence format"""
-        b, seq_len, dim = q.shape
-        h, w = (original_shape[2], original_shape[3]) if len(original_shape) > 2 else (64, 64)
-        aspect = w / h if h > 0 else 1.0
+    def resize_to_hw_exact(mask: torch.Tensor, h: int, w: int,
+                           dtype: torch.dtype, device: torch.device) -> torch.Tensor:
+        """
+        Resize mask to exact (h, w) from activations_shape.
+        h * w == seq_len is mathematically guaranteed, so no padding/clipping needed.
+        """
+        m = mask.unsqueeze(0).unsqueeze(0) if mask.dim() == 2 else mask.unsqueeze(1)
+        resized = F.interpolate(
+            m.to(dtype=dtype, device=device),
+            size=(h, w),
+            mode="area"
+        )
+        return resized.view(1, -1, 1)  # [1, h*w, 1]
+
+    @staticmethod
+    def from_query(masks: List[Any], q: torch.Tensor, original_shape: Tuple[int, ...],
+                   extra_options: Optional[Dict] = None) -> torch.Tensor:
+        """Convert masks to attention-compatible sequence format.
         
+        Uses activations_shape from extra_options for exact H×W when available.
+        Falls back to find_best_divisors estimation for backward compatibility.
+        """
+        b, seq_len, dim = q.shape
+
+        # --- Primary path: use exact activations_shape from ComfyUI transformer_options ---
+        act_shape = None
+        if extra_options is not None and "activations_shape" in extra_options:
+            act_shape = extra_options["activations_shape"]  # [B, C, H, W]
+
         processed = []
         for m in masks:
             if isinstance(m, torch.Tensor):
-                resized = MaskProcessor.resize_to_sequence(m, seq_len, aspect, q.dtype, q.device)
+                if act_shape is not None:
+                    # Exact path: activations_shape gives the real feature map H×W
+                    feat_h, feat_w = act_shape[2], act_shape[3]
+                    resized = MaskProcessor.resize_to_hw_exact(m, feat_h, feat_w, q.dtype, q.device)
+                    log_debug(f"[MaskProcessor] exact HW={feat_h}×{feat_w}, seq_len={seq_len}")
+                else:
+                    # Fallback path: estimate H×W from aspect ratio (may be inaccurate at extreme resolutions)
+                    h, w = (original_shape[2], original_shape[3]) if len(original_shape) > 2 else (64, 64)
+                    aspect = w / h if h > 0 else 1.0
+                    resized = MaskProcessor.resize_to_sequence(m, seq_len, aspect, q.dtype, q.device)
+                    log_debug(f"[MaskProcessor] fallback aspect={aspect:.4f}, seq_len={seq_len}")
                 processed.append(resized.expand(b, -1, dim))
             else:
                 processed.append(torch.ones((b, seq_len, dim), device=q.device, dtype=q.dtype))
@@ -281,7 +315,7 @@ class MaskProcessor:
         resized = F.interpolate(
             m, 
             size=target_shape[-2:], 
-            mode="nearest"
+            mode="area"
         )
         
         return resized.squeeze(0).squeeze(0) if mask.dim() == 2 else resized.squeeze(1)
@@ -305,7 +339,7 @@ class MaskProcessor:
         resized = F.interpolate(
             m.to(dtype=dtype), 
             size=(target_h, target_w), 
-            mode="nearest-exact"
+            mode="area"
         )
         
         return resized.squeeze(0).squeeze(0) if mask.dim() == 2 else resized.squeeze(1)

@@ -10,7 +10,6 @@ import time
 import cv2
 from pathlib import Path
 from nodes import MAX_RESOLUTION, SaveImage, common_ksampler
-from cv2.ximgproc import guidedFilter
 
 import mss #Screen Capture
 import win32gui
@@ -752,6 +751,39 @@ class Remove_noise:
         if diameter % 2 == 0:  
             diameter += 1
 
+        def custom_guided_filter(guide_img, src_img, r, eps_val):
+            out = np.zeros_like(src_img)
+            ksize = (2 * r + 1, 2 * r + 1)
+            # 만약 이미지가 단일 채널(흑백 등)이라면 처리 방식을 조정
+            if len(src_img.shape) == 2:
+                src_img_c = src_img[..., np.newaxis]
+                guide_img_c = guide_img[..., np.newaxis]
+                out_c = np.zeros_like(src_img_c)
+            else:
+                src_img_c = src_img
+                guide_img_c = guide_img
+                out_c = out
+                
+            for c in range(src_img_c.shape[-1]):
+                I = guide_img_c[..., c].astype(np.float32)
+                p = src_img_c[..., c].astype(np.float32)
+                mean_I = cv2.boxFilter(I, cv2.CV_32F, ksize)
+                mean_p = cv2.boxFilter(p, cv2.CV_32F, ksize)
+                mean_II = cv2.boxFilter(I * I, cv2.CV_32F, ksize)
+                mean_Ip = cv2.boxFilter(I * p, cv2.CV_32F, ksize)
+                var_I = mean_II - mean_I * mean_I
+                cov_Ip = mean_Ip - mean_I * mean_p
+                a = cov_Ip / (var_I + eps_val)
+                b = mean_p - a * mean_I
+                mean_a = cv2.boxFilter(a, cv2.CV_32F, ksize)
+                mean_b = cv2.boxFilter(b, cv2.CV_32F, ksize)
+                q = mean_a * I + mean_b
+                out_c[..., c] = np.clip(q, 0, 255).astype(np.uint8)
+                
+            if len(src_img.shape) == 2:
+                return out_c.squeeze(-1)
+            return out_c
+
         def sub(image: torch.Tensor):
             guide = np.clip(255.0 * image.cpu().numpy().squeeze(), 0, 255).astype(
                 np.uint8
@@ -763,7 +795,7 @@ class Remove_noise:
             
                 if guided_loop > 0:
                     for _ in range(guided_loop):
-                        dst = cv2.ximgproc.guidedFilter(guide, dst, radius, eps)
+                        dst = custom_guided_filter(guide, dst, radius, eps)
                         
             if bilateral_loop > 0:
                 for _ in range(bilateral_loop):
@@ -773,7 +805,7 @@ class Remove_noise:
             
                 if guided_loop > 0:
                     for _ in range(guided_loop):
-                        dst = cv2.ximgproc.guidedFilter(guide, dst, radius, eps)
+                        dst = custom_guided_filter(guide, dst, radius, eps)
 
             return torch.from_numpy(dst.astype(np.float32) / 255.0).unsqueeze(0)
 

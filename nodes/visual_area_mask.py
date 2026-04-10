@@ -271,15 +271,15 @@ class VisualAreaMask:
                  **kwargs):
         # extra_pnginfo에서 현재 노드의 conditioning 영역값 추출
         conditioning_areas: list[list[float]] = []
-        for node in extra_pnginfo["workflow"]["nodes"]:
-            if node["id"] == int(unique_id):
-                conditioning_areas = node["properties"]["area_values"]
-                break
+        if extra_pnginfo is not None and "workflow" in extra_pnginfo and "nodes" in extra_pnginfo["workflow"]:
+            for node in extra_pnginfo["workflow"]["nodes"]:
+                if str(node.get("id", "")) == str(unique_id):
+                    conditioning_areas = node.get("properties", {}).get("area_values", [])
+                    break
 
-        # conditioning_areas의 길이가 area_number와 일치하는지 확인
-        if len(conditioning_areas) < area_number:
-            raise ValueError(
-                f"conditioning_areas의 영역 수({len(conditioning_areas)})가 요청된 area_number({area_number})보다 적습니다.")
+        # conditioning_areas의 길이가 area_number보다 적을 경우 기본값(빈 영역)으로 채워 에러(Crash) 방지
+        while len(conditioning_areas) < area_number:
+            conditioning_areas.append([0.0, 0.0, 1.0, 1.0, 0.0]) # [x_min, y_min, x_max, y_max, strength] 기본값
 
         # kwargs에서 area_text 인풋 추출
         area_texts = {}
@@ -339,9 +339,11 @@ class VisualAreaMask:
             # 각 마스크를 더하되, 최대값은 1.0을 넘지 않도록 클램핑
             combined_mask = torch.clamp(combined_mask + mask, min=0.0, max=1.0)
 
-        # 최대 출력 개수만큼 튜플 생성, area_number 미만은 실제 마스크, 나머지는 None 할당
+        # 출력 개수 확보 (None 대신 에러 방지를 위해 빈 마스크 할당)
+        blank_mask = torch.zeros((1, image_height, image_width), dtype=torch.float32, device="cpu")
         outputs = tuple(
-            [canvas_image, combined_mask] + [masks[i] if i < len(masks) else None for i in range(self.MAX_OUTPUTS)])
+            [canvas_image, combined_mask] + [masks[i] if i < len(masks) else blank_mask for i in range(self.MAX_OUTPUTS)]
+        )
 
         return {
             "result": outputs

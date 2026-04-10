@@ -29,11 +29,26 @@ function updateAreaIdAndInputs(node) {
   const countDynamicInputs = node.widgets.find(w => w.name === "area_number").value;
   const newMaxIdx = Math.max(countDynamicInputs - 1, 0);
   const areaIdWidget = node.widgets.find(w => w.name === "area_id");
-  areaIdWidget.options.max = newMaxIdx;
-  areaIdWidget.value = newMaxIdx;
-  node.index = newMaxIdx;
-  updateWidgetValues(node);
+  if(areaIdWidget) {
+      areaIdWidget.options.max = newMaxIdx;
+      
+      if (areaIdWidget.value > newMaxIdx) {
+        areaIdWidget.value = newMaxIdx;
+        node.index = newMaxIdx;
+      }
+  }
+  
+  if (!node.properties["area_values"]) {
+    node.properties["area_values"] = [];
+  }
+  
+  while (node.properties["area_values"].length < countDynamicInputs) {
+    node.properties["area_values"].push([..._AREA_DEFAULTS]);
+  }
+  
   node.properties["area_values"] = node.properties["area_values"].slice(0, countDynamicInputs);
+  
+  updateWidgetValues(node);
   node?.graph?.setDirtyCanvas(true);
 }
 
@@ -114,6 +129,30 @@ app.registerExtension({
       return;
     }
 
+    const onConfigure = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function(info) {
+      if (onConfigure) {
+        onConfigure.apply(this, arguments);
+      }
+      
+      const self = this;
+      requestAnimationFrame(() => {
+        if (info && info.properties && info.properties.area_values) {
+            self.setProperty("area_values", info.properties.area_values);
+        }
+
+        const areaWidget = self.widgets.find(w => w.name === "area_number");
+        if(areaWidget) {
+            const countDynamicInputs = areaWidget.value;
+            const newMaxIdx = Math.max(countDynamicInputs - 1, 0);
+            const areaIdWidget = self.widgets.find(w => w.name === "area_id");
+            if(areaIdWidget) {
+                areaIdWidget.options.max = newMaxIdx;
+            }
+        }
+      });
+    };
+
     const onNodeCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = async function() {
       const me = onNodeCreated?.apply(this);
@@ -141,6 +180,18 @@ app.registerExtension({
           node.properties["area_values"][node.index][i] = value;
         }, { min: 0, max: i === 4 ? 1 : 1, step: 0.1, precision: 2 });
       });
+
+      const areaNumberWidget = this.widgets.find(w => w.name === "area_number");
+      if (areaNumberWidget) {
+        const origCallback = areaNumberWidget.callback;
+        areaNumberWidget.callback = (value, canvas, _node, pos, event) => {
+          const targetNode = _node || this;
+          if (origCallback) origCallback.call(areaNumberWidget, value, canvas, targetNode, pos, event);
+          updateOutputs(targetNode);
+          updateInputs(targetNode);
+          updateAreaIdAndInputs(targetNode);
+        };
+      }
 
       this.addWidget("button", "Update outputs", null, () => {
         updateOutputs(this);

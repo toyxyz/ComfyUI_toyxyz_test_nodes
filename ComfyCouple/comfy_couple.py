@@ -509,31 +509,27 @@ class ComfyCoupleMask:
             log_warning("Region masks have different sizes - may cause unexpected results")
 
     def _remove_duplicate_regions(self, region_list: List[Dict]) -> List[Dict]:
-        """Remove duplicate regions based on mask fingerprint"""
+        """Remove only truly identical regions to avoid dropping distinct masks."""
         unique_regions = []
-        seen_masks = {}
-        
-        for r in region_list:
-            mask = r["mask"]
-            mask_flat = mask.flatten()
-            mask_key = (
-                tuple(mask.shape),
-                float(mask.sum().item()),
-                float(mask.var().item()),
-                float(mask_flat[0].item()) if mask.numel() > 0 else 0.0,
-                float(mask_flat[-1].item()) if mask.numel() > 0 else 0.0,
-            )
-            
-            if mask_key in seen_masks:
-                idx = seen_masks[mask_key]
-                unique_regions[idx] = r
+
+        for region in region_list:
+            mask = region["mask"]
+            duplicate_idx = None
+
+            for idx, existing in enumerate(unique_regions):
+                existing_mask = existing["mask"]
+                if mask.shape == existing_mask.shape and torch.equal(mask, existing_mask):
+                    duplicate_idx = idx
+                    break
+
+            if duplicate_idx is not None:
+                unique_regions[duplicate_idx] = region
             else:
-                seen_masks[mask_key] = len(unique_regions)
-                unique_regions.append(r)
-        
+                unique_regions.append(region)
+
         if len(unique_regions) != len(region_list):
             log_warning(f"Removed {len(region_list) - len(unique_regions)} duplicate regions")
-        
+
         return unique_regions
 
     def _prepare_regions(self, region_list: List[Dict], kwargs: Dict, is_flux: bool = False) -> List[Dict[str, Any]]:

@@ -348,6 +348,11 @@ class MaskProcessor:
 
                     cropped = working_mask[..., y1:y2, x1:x2]
 
+                    # Extremely small masks can collapse to an empty crop after
+                    # coordinate scaling. Treat that tile as fully outside region.
+                    if cropped.numel() == 0:
+                        cropped = working_mask.new_zeros((1, 1))
+
                     # Resize cropped mask to tile's attention resolution
                     if act_shape is not None:
                         feat_h, feat_w = act_shape[2], act_shape[3]

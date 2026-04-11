@@ -171,12 +171,11 @@ class AttentionPatcher:
         is_tiled = td_bboxes is not None and N > 1
         
         if is_tiled:
-            # TiledDiffusion layout: [c_t0, u_t0, c_t1, u_t1, ...]
-            # Use stride to separate: q[0::N] = all cond, q[1::N] = all uncond
-            q_batches = [q[i::N] for i in range(N)]
+            q_batches, tile_batch_size = self._split_tiled_q_batches(q, len(td_bboxes), N)
         else:
             # Standard layout: [cond_batch, uncond_batch]
             q_batches = q.chunk(N, dim=0)
+            tile_batch_size = None
         
         batch_size, seq_len, _ = q_batches[0].shape
         
@@ -220,12 +219,47 @@ class AttentionPatcher:
         
         if is_tiled:
             # Re-interleave: [cond_tiles, uncond_tiles] → [c_t0, u_t0, c_t1, u_t1, ...]
-            dim_out = outputs[0].shape[-1]
-            result = torch.stack(outputs, dim=1).reshape(-1, seq_len, dim_out)
+            result = self._merge_tiled_outputs(outputs, len(td_bboxes), tile_batch_size)
         else:
             result = torch.cat(outputs, dim=0)
         
         return result
+
+    def _split_tiled_q_batches(self, q: torch.Tensor, num_tiles: int, num_cond_types: int) -> Tuple[List[torch.Tensor], int]:
+        """Split tiled batches without mixing latent samples across cond/uncond groups."""
+        total_batch = q.shape[0]
+        expected_groups = num_tiles * num_cond_types
+
+        if num_tiles <= 0 or total_batch % expected_groups != 0:
+            log_debug(
+                f"Unexpected tiled batch layout: total_batch={total_batch}, "
+                f"num_tiles={num_tiles}, num_cond_types={num_cond_types}. Falling back to legacy stride split."
+            )
+            fallback_tile_batch = max(1, total_batch // max(1, expected_groups))
+            return [q[i::num_cond_types] for i in range(num_cond_types)], fallback_tile_batch
+
+        tile_batch_size = total_batch // expected_groups
+        q_batches = []
+
+        for cond_idx in range(num_cond_types):
+            cond_chunks = []
+            for tile_idx in range(num_tiles):
+                start = (tile_idx * num_cond_types + cond_idx) * tile_batch_size
+                end = start + tile_batch_size
+                cond_chunks.append(q[start:end])
+            q_batches.append(torch.cat(cond_chunks, dim=0))
+
+        return q_batches, tile_batch_size
+
+    def _merge_tiled_outputs(self, outputs: List[torch.Tensor], num_tiles: int, tile_batch_size: int) -> torch.Tensor:
+        """Restore tiled output ordering to tile-major layout expected by TiledDiffusion."""
+        merged = []
+        for tile_idx in range(num_tiles):
+            start = tile_idx * tile_batch_size
+            end = start + tile_batch_size
+            for output in outputs:
+                merged.append(output[start:end])
+        return torch.cat(merged, dim=0)
         
     def _compute_kv(self, cond_tensors: List[torch.Tensor], module: Any, q: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute key and value tensors from conditioning"""

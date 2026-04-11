@@ -87,6 +87,18 @@ class Flux(OriginalFlux):
         img_ids = repeat(img_ids, "h w c -> b (h w) c", b=bs)
         return img_ids
 
+    def _match_batch_size(self, tensor: Tensor, batch_size: int) -> Tensor:
+        """Expand or trim conditioning tensors to match the current Flux batch."""
+        if tensor.shape[0] == batch_size:
+            return tensor
+        if tensor.shape[0] == 1:
+            return tensor.expand(batch_size, -1, -1)
+        if tensor.shape[0] > batch_size:
+            return tensor[:batch_size]
+
+        repeats = (batch_size + tensor.shape[0] - 1) // tensor.shape[0]
+        return tensor.repeat(repeats, 1, 1)[:batch_size]
+
     def forward(self, x, timestep, context, y, guidance, control=None, transformer_options={}, **kwargs):
         """
         Modified forward that supports regional conditioning
@@ -111,8 +123,9 @@ class Flux(OriginalFlux):
         if regional_conditioning is not None:
             region_cond = regional_conditioning[0](transformer_options)
             if region_cond is not None:
-                # Concatenate regional conditioning to context
-                context = torch.cat([context, region_cond.to(context.dtype)], dim=1)
+                # Match tiled / CFG batch layouts before concatenation.
+                region_cond = self._match_batch_size(region_cond.to(device=context.device, dtype=context.dtype), bs)
+                context = torch.cat([context, region_cond], dim=1)
 
         txt_ids = torch.zeros((bs, context.shape[1], 3), device=x.device, dtype=x.dtype)
         img_ids_orig = self._get_img_ids(x, bs, h_len, w_len, 0, h_len, 0, w_len)

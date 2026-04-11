@@ -57,6 +57,15 @@ class AttentionPatcher:
         device = comfy.model_management.get_torch_device()
         
         self._prepare_conditioning(dtype, device)
+        
+        # Save explicitly to model_options for robust extraction by Extractor/Visualizer
+        transformer_options = new_model.model_options.setdefault("transformer_options", {})
+        transformer_options["comfycouple_regions"] = {
+            "pos_masks": self.pos_masks,
+            "padded_pos_conds": self.padded_pos_conds,
+            "pos_strengths": self.pos_strengths,
+        }
+        
         self._patch_model_blocks(new_model)
         
         return new_model, self.positive_conds, self.negative_conds
@@ -147,10 +156,29 @@ class AttentionPatcher:
                           padded_pos_conds: List, padded_neg_conds: List,
                           pos_strengths: List[float], neg_strengths: List[float],
                           cross_region_attention: float, cross_region_mode: str) -> torch.Tensor:
-        """Process attention with CFG support"""
-        q_batches = q.chunk(len(extra_options["cond_or_uncond"]), dim=0)
-        batch_size, seq_len, _ = q_batches[0].shape
+        """Process attention with CFG support.
+        
+        Handles two batch layouts:
+        - Normal:       [cond_0, uncond_0]  → split by chunk
+        - TiledDiffusion: [c_t0, u_t0, c_t1, u_t1, ...]  → split by stride
+        """
+        cond_or_uncond = extra_options["cond_or_uncond"]
+        N = len(cond_or_uncond)
         orig_shape = extra_options["original_shape"]
+        
+        # Detect TiledDiffusion interleaved batch layout
+        td_bboxes = extra_options.get("tiled_diffusion_bboxes")
+        is_tiled = td_bboxes is not None and N > 1
+        
+        if is_tiled:
+            # TiledDiffusion layout: [c_t0, u_t0, c_t1, u_t1, ...]
+            # Use stride to separate: q[0::N] = all cond, q[1::N] = all uncond
+            q_batches = [q[i::N] for i in range(N)]
+        else:
+            # Standard layout: [cond_batch, uncond_batch]
+            q_batches = q.chunk(N, dim=0)
+        
+        batch_size, seq_len, _ = q_batches[0].shape
         
         # Calculate masks for current resolution.
         # Pass extra_options so from_query() can use activations_shape for exact H×W.
@@ -162,7 +190,7 @@ class AttentionPatcher:
         k_cond, v_cond = self._compute_kv(padded_pos_conds, module, q)
         
         outputs = []
-        for i, cond_type in enumerate(extra_options["cond_or_uncond"]):
+        for i, cond_type in enumerate(cond_or_uncond):
             masks, k_t, v_t, strengths = (
                 (masks_uncond, k_uncond, v_uncond, neg_strengths) if cond_type == 1 
                 else (masks_cond, k_cond, v_cond, pos_strengths)
@@ -190,7 +218,14 @@ class AttentionPatcher:
             
             outputs.append(attn_output.sum(dim=0))
         
-        return torch.cat(outputs, dim=0)
+        if is_tiled:
+            # Re-interleave: [cond_tiles, uncond_tiles] → [c_t0, u_t0, c_t1, u_t1, ...]
+            dim_out = outputs[0].shape[-1]
+            result = torch.stack(outputs, dim=1).reshape(-1, seq_len, dim_out)
+        else:
+            result = torch.cat(outputs, dim=0)
+        
+        return result
         
     def _compute_kv(self, cond_tensors: List[torch.Tensor], module: Any, q: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute key and value tensors from conditioning"""

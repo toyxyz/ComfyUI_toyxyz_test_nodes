@@ -190,6 +190,17 @@ def detect_model_architecture(model: Any) -> ArchitectureInfo:
         log_warning(f"Model detection failed, assuming SD1.5: {e}")
         return ArchitectureInfo(type=ModelType.SD15, use_cfg=True, dim=768, is_flux=False)
 
+def detect_or_force_architecture(model: Any, model_type_str: str) -> ArchitectureInfo:
+    """Detect model architecture automatically or force a specific one."""
+    if model_type_str == "auto":
+        return detect_model_architecture(model)
+    elif model_type_str == "flux":
+        return ArchitectureInfo(type=ModelType.FLUX, use_cfg=True, dim=4096, is_flux=True)
+    elif model_type_str == "sdxl":
+        return ArchitectureInfo(type=ModelType.SDXL, use_cfg=True, dim=2048, is_flux=False)
+    else:  # sd15
+        return ArchitectureInfo(type=ModelType.SD15, use_cfg=True, dim=768, is_flux=False)
+
 # Mask processing
 class MaskProcessor:
     @staticmethod
@@ -232,8 +243,18 @@ class MaskProcessor:
         
         Uses activations_shape from extra_options for exact H×W when available.
         Falls back to find_best_divisors estimation for backward compatibility.
+        When TiledDiffusion is active, delegates to _from_query_tiled for per-tile mask cropping.
         """
         b, seq_len, dim = q.shape
+
+        # --- TiledDiffusion compatibility: per-tile mask cropping ---
+        if extra_options is not None:
+            td_bboxes = extra_options.get("tiled_diffusion_bboxes")
+            td_full_shape = extra_options.get("tiled_diffusion_full_shape")
+            if td_bboxes is not None and td_full_shape is not None:
+                return MaskProcessor._from_query_tiled(
+                    masks, q, td_bboxes, td_full_shape, extra_options
+                )
 
         # --- Primary path: use exact activations_shape from ComfyUI transformer_options ---
         act_shape = None
@@ -259,6 +280,101 @@ class MaskProcessor:
                 processed.append(torch.ones((b, seq_len, dim), device=q.device, dtype=q.dtype))
         
         return torch.cat(processed, dim=0)
+
+    @staticmethod
+    def _from_query_tiled(masks: List[Any], q: torch.Tensor,
+                          bboxes: List, full_shape: Tuple[int, int],
+                          extra_options: Optional[Dict] = None) -> torch.Tensor:
+        """Generate per-tile cropped masks for TiledDiffusion + ComfyCouple compatibility.
+        
+        Each tile in the batch gets its own cropped portion of the full-image mask,
+        ensuring regional prompting works correctly across tile boundaries.
+        
+        Args:
+            masks: List of mask tensors (or False) from ComfyCouple regions
+            q: Query tensor [batch_size, seq_len, dim] (batch includes all tiles)
+            bboxes: List of BBox objects for current tile batch (latent coordinates)
+            full_shape: (H, W) of full latent (not pixel)
+            extra_options: transformer_options dict with activations_shape, shift info, etc.
+        """
+        b, seq_len, dim = q.shape
+        num_tiles = len(bboxes)
+        N = max(1, b // num_tiles)  # batch size per tile (usually 1)
+        full_h, full_w = full_shape
+
+        # SpotDiffusion shift handling
+        shift = extra_options.get('tiled_diffusion_shift', (0, 0)) if extra_options else (0, 0)
+        shift_condition = extra_options.get('tiled_diffusion_shift_condition', True) if extra_options else True
+
+        # Get tile feature map size from activations_shape
+        act_shape = None
+        if extra_options is not None and "activations_shape" in extra_options:
+            act_shape = extra_options["activations_shape"]
+
+        processed_per_region = []
+        for m in masks:
+            if isinstance(m, torch.Tensor):
+                working_mask = m
+
+                # Apply SpotDiffusion shift to mask (circular roll)
+                if shift != (0, 0):
+                    sh_h, sh_w = shift
+                    mask_h, mask_w = working_mask.shape[-2], working_mask.shape[-1]
+                    sh_h_mask = round(sh_h * mask_h / full_h)
+                    sh_w_mask = round(sh_w * mask_w / full_w)
+                    if sh_h_mask == 0 or sh_w_mask == 0:
+                        working_mask = working_mask.roll(shifts=(sh_h_mask, sh_w_mask), dims=(-2, -1))
+                    else:
+                        if shift_condition:
+                            working_mask = working_mask.roll(shifts=sh_h_mask, dims=-2)
+                        else:
+                            working_mask = working_mask.roll(shifts=sh_w_mask, dims=-1)
+
+                mask_h, mask_w = working_mask.shape[-2], working_mask.shape[-1]
+                scale_h = mask_h / full_h
+                scale_w = mask_w / full_w
+
+                tile_masks = []
+                for bbox in bboxes:
+                    # Map bbox (latent coords) to mask coordinates
+                    y1 = int(bbox.y * scale_h)
+                    x1 = int(bbox.x * scale_w)
+                    y2 = int((bbox.y + bbox.h) * scale_h)
+                    x2 = int((bbox.x + bbox.w) * scale_w)
+
+                    # Clamp to mask bounds
+                    y2 = min(y2, mask_h)
+                    x2 = min(x2, mask_w)
+
+                    cropped = working_mask[..., y1:y2, x1:x2]
+
+                    # Resize cropped mask to tile's attention resolution
+                    if act_shape is not None:
+                        feat_h, feat_w = act_shape[2], act_shape[3]
+                        resized = MaskProcessor.resize_to_hw_exact(
+                            cropped, feat_h, feat_w, q.dtype, q.device
+                        )
+                    else:
+                        aspect = bbox.w / bbox.h if bbox.h > 0 else 1.0
+                        resized = MaskProcessor.resize_to_sequence(
+                            cropped, seq_len, aspect, q.dtype, q.device
+                        )
+
+                    # [1, seq_len, 1] → [N, seq_len, dim]
+                    tile_masks.append(resized.expand(N, -1, dim))
+
+                # Concat all tiles: [num_tiles * N, seq_len, dim] = [b, seq_len, dim]
+                region_mask = torch.cat(tile_masks, dim=0)
+                processed_per_region.append(region_mask)
+            else:
+                # No mask (False) → all ones
+                processed_per_region.append(
+                    torch.ones((b, seq_len, dim), device=q.device, dtype=q.dtype)
+                )
+
+        # [num_regions * b, seq_len, dim]
+        return torch.cat(processed_per_region, dim=0)
+
     
     @staticmethod
     def apply_feather(mask: torch.Tensor, feather_pixels: int) -> torch.Tensor:
@@ -320,26 +436,4 @@ class MaskProcessor:
         
         return resized.squeeze(0).squeeze(0) if mask.dim() == 2 else resized.squeeze(1)
     
-    @staticmethod
-    def resize_for_flux_latent(mask: torch.Tensor, latent_h: int, latent_w: int, 
-                               dtype: torch.dtype = torch.float16) -> torch.Tensor:
-        """
-        [DEPRECATED] No longer used in dynamic calculation mode
-        
-        Resize mask for Flux latent space
-        Flux uses h//2, w//2 for attention resolution
-        
-        This method is kept for backward compatibility only.
-        New code should rely on dynamic calculation in RegionalMask.__call__()
-        """
-        target_h = latent_h // 2
-        target_w = latent_w // 2
-        
-        m = mask.unsqueeze(0).unsqueeze(0) if mask.dim() == 2 else mask.unsqueeze(1)
-        resized = F.interpolate(
-            m.to(dtype=dtype), 
-            size=(target_h, target_w), 
-            mode="area"
-        )
-        
-        return resized.squeeze(0).squeeze(0) if mask.dim() == 2 else resized.squeeze(1)
+

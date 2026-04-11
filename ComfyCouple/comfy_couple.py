@@ -14,7 +14,7 @@ from nodes import ConditioningCombine, ConditioningConcat, ConditioningSetMask, 
 from .couple_utils import (
     log_debug, log_warning, validate_strength, create_zero_conditioning,
     MaskProcessor, MASK_EPSILON, detect_model_architecture, ModelType,
-    FLUX_BLOCK_PRESETS, get_flux_preset
+    FLUX_BLOCK_PRESETS, get_flux_preset, detect_or_force_architecture
 )
 from .couple_patching import AttentionPatcher
 from .couple_flux_patching import FluxAttentionPatcher
@@ -216,17 +216,7 @@ class ComfyCoupleMask:
 
     def _detect_architecture(self, model: Any, model_type_str: str) -> Any:
         """Detect or force model architecture"""
-        if model_type_str == "auto":
-            return detect_model_architecture(model)
-        elif model_type_str == "flux":
-            from .couple_utils import ArchitectureInfo
-            return ArchitectureInfo(type=ModelType.FLUX, use_cfg=True, dim=4096, is_flux=True)
-        elif model_type_str == "sdxl":
-            from .couple_utils import ArchitectureInfo
-            return ArchitectureInfo(type=ModelType.SDXL, use_cfg=True, dim=2048, is_flux=False)
-        else:  # sd15
-            from .couple_utils import ArchitectureInfo
-            return ArchitectureInfo(type=ModelType.SD15, use_cfg=True, dim=768, is_flux=False)
+        return detect_or_force_architecture(model, model_type_str)
 
     def _process_flux(self, model, region, negative, arch_info, **kwargs) -> Tuple[Any, Any, Any]:
         """Process Flux model using attention mask approach - WITH DYNAMIC CALCULATION"""

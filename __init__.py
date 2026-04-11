@@ -5,6 +5,7 @@ from .nodes.toyxyz_test_nodes import CaptureWebcam, LoadWebcamImage, SaveImageto
 from .nodes.visual_area_mask import VisualAreaMask
 from .openposeeditor.openpose_editor_nodes import OpenposeEditorNode, PoseToMaskNode
 from .openposeeditor.poseinter import Pose_Inter, PoseKeypointToCoordStr, JoinPose
+from .TiledDiffusion import NODE_CLASS_MAPPINGS as TD_NCM, NODE_DISPLAY_NAME_MAPPINGS as TD_NDNM
 
 
 NODE_CLASS_MAPPINGS = {
@@ -28,6 +29,7 @@ NODE_CLASS_MAPPINGS = {
     "JoinPose": JoinPose,
     "ComfyCoupleRegionExtractor": ComfyCoupleRegionExtractor,
     "ComfyCoupleRegionVisualizer": ComfyCoupleRegionVisualizer,
+    **TD_NCM,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -51,6 +53,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "JoinPose": "join_pose",
     "ComfyCoupleRegionExtractor": "Comfy Couple Region Extractor",
     "ComfyCoupleRegionVisualizer": "Region Visualizer (Comfy Couple)",
+    **TD_NDNM,
 }
 
 WEB_DIRECTORY = "./web"

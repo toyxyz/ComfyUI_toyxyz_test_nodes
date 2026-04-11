@@ -10,11 +10,11 @@ from typing import Any, Tuple, List, Dict, Optional
 from .couple_utils import (
     log_debug, log_warning, MaskProcessor, MASK_EPSILON,
     detect_model_architecture, ArchitectureInfo, ModelType,
-    create_zero_conditioning, get_flux_preset
+    create_zero_conditioning, detect_or_force_architecture
 )
 
-from .couple_patching import AttentionPatcher, set_model_patch
-from .couple_flux_patching import FluxAttentionPatcher, RegionalMask, RegionalConditioning
+from .couple_patching import AttentionPatcher
+from .couple_flux_patching import FluxAttentionPatcher, RegionalMask
 
 
 class ComfyCoupleRegionExtractor:
@@ -129,21 +129,14 @@ class ComfyCoupleRegionExtractor:
                 # Create dummy zero conditioning as fallback
                 extracted_conditioning = create_zero_conditioning(conditioning)
         else:
-            # No conditioning provided - create dummy
-            extracted_conditioning = create_zero_conditioning([(torch.zeros(1, 77, 768), {})])
+            # No conditioning provided - create dummy with correct dimension
+            extracted_conditioning = create_zero_conditioning([(torch.zeros(1, 77, arch_info.dim), {})])
         
         return (extracted_model, extracted_conditioning, indices, info)
 
     def _detect_architecture(self, model: Any, model_type_str: str) -> ArchitectureInfo:
         """Detect or force model architecture"""
-        if model_type_str == "auto":
-            return detect_model_architecture(model)
-        elif model_type_str == "flux":
-            return ArchitectureInfo(type=ModelType.FLUX, use_cfg=True, dim=4096, is_flux=True)
-        elif model_type_str == "sdxl":
-            return ArchitectureInfo(type=ModelType.SDXL, use_cfg=True, dim=2048, is_flux=False)
-        else:  # sd15
-            return ArchitectureInfo(type=ModelType.SD15, use_cfg=True, dim=768, is_flux=False)
+        return detect_or_force_architecture(model, model_type_str)
 
     def _extract_conditioning(self, conditioning: Any, extraction_mask: torch.Tensor,
                             extraction_mode: str, threshold: float, background_mode: str,
@@ -429,21 +422,19 @@ class ComfyCoupleRegionExtractor:
                         log_debug("Background: zero conditioning")
                     
                     elif background_mode == "replicate":
-                        # Average all extracted regions
-                        background_cond = region_conds[matched_indices[0]].clone()
-                        for idx in matched_indices[1:]:
-                            if region_conds[idx].shape[1] == background_cond.shape[1]:
-                                background_cond = (background_cond + region_conds[idx]) / 2
-                        log_debug(f"Background: replicated from {len(matched_indices)} region(s)")
+                        # Average all extracted regions (equal weight)
+                        ref_shape = region_conds[matched_indices[0]].shape[1]
+                        compatible = [region_conds[i] for i in matched_indices if region_conds[i].shape[1] == ref_shape]
+                        background_cond = torch.stack(compatible).mean(dim=0)
+                        log_debug(f"Background: replicated from {len(compatible)} region(s)")
                     
                     elif background_mode == "original":
-                        # Average unmatched regions
+                        # Average unmatched regions (equal weight)
                         if unmatched_indices:
-                            background_cond = region_conds[unmatched_indices[0]]
-                            for idx in unmatched_indices[1:]:
-                                if region_conds[idx].shape[1] == background_cond.shape[1]:
-                                    background_cond = (background_cond + region_conds[idx]) / 2
-                            log_debug(f"Background: original ({len(unmatched_indices)} regions)")
+                            ref_shape = region_conds[unmatched_indices[0]].shape[1]
+                            compatible = [region_conds[i] for i in unmatched_indices if region_conds[i].shape[1] == ref_shape]
+                            background_cond = torch.stack(compatible).mean(dim=0)
+                            log_debug(f"Background: original ({len(compatible)} regions)")
                         else:
                             background_cond = torch.zeros_like(region_conds[matched_indices[0]])
                     
@@ -507,9 +498,9 @@ class ComfyCoupleRegionExtractor:
             if 'attn2' not in patches_replace:
                 raise ValueError("Model doesn't have SD/SDXL regional patching applied")
             
-            # Get first patch to extract region data
+            # Extract region data safely
             first_patch = next(iter(patches_replace['attn2'].values()))
-            region_masks, region_conds, region_strengths = self._extract_regions_from_patch(first_patch)
+            region_masks, region_conds, region_strengths = self._extract_regions_from_patch(coupled_model, first_patch)
             
             if not region_masks:
                 raise ValueError("No region data found in coupled model")
@@ -539,44 +530,44 @@ class ComfyCoupleRegionExtractor:
             extracted_conds = []
             
             if background_mode != "remove":
-                # Calculate background mask (unmatched regions)
+                # Calculate background mask (areas not covered by matched regions)
                 unmatched_indices = [i for i in range(num_regions) if i not in matched_indices]
                 
-                if unmatched_indices:
-                    background_mask = torch.ones_like(region_masks[0])
-                    for idx in matched_indices:
-                        background_mask = background_mask - region_masks[idx]
-                    background_mask = background_mask.clamp(min=0)
+                background_mask = torch.ones_like(region_masks[0])
+                for idx in matched_indices:
+                    background_mask = background_mask - region_masks[idx]
+                background_mask = background_mask.clamp(min=0)
+                
+                if background_mask.sum() > MASK_EPSILON:
+                    # Choose background conditioning
+                    if background_mode == "zero":
+                        background_cond = torch.zeros_like(region_conds[matched_indices[0]])
+                        log_debug("Background: zero conditioning")
                     
-                    if background_mask.sum() > MASK_EPSILON:
-                        # Choose background conditioning
-                        if background_mode == "zero":
-                            background_cond = torch.zeros_like(region_conds[matched_indices[0]])
-                            log_debug("Background: zero conditioning")
-                        
-                        elif background_mode == "replicate":
-                            # Average all extracted regions
-                            background_cond = region_conds[matched_indices[0]].clone()
-                            for idx in matched_indices[1:]:
-                                if region_conds[idx].shape[1] == background_cond.shape[1]:
-                                    background_cond = (background_cond + region_conds[idx]) / 2
-                            log_debug(f"Background: replicated from {len(matched_indices)} region(s)")
-                        
-                        elif background_mode == "original":
-                            # Average unmatched regions
-                            background_cond = region_conds[unmatched_indices[0]]
-                            for idx in unmatched_indices[1:]:
-                                if region_conds[idx].shape[1] == background_cond.shape[1]:
-                                    background_cond = (background_cond + region_conds[idx]) / 2
-                            log_debug(f"Background: original ({len(unmatched_indices)} regions)")
-                        
+                    elif background_mode == "replicate":
+                        # Average all extracted regions (equal weight)
+                        ref_shape = region_conds[matched_indices[0]].shape[1]
+                        compatible = [region_conds[i] for i in matched_indices if region_conds[i].shape[1] == ref_shape]
+                        background_cond = torch.stack(compatible).mean(dim=0)
+                        log_debug(f"Background: replicated from {len(compatible)} region(s)")
+                    
+                    elif background_mode == "original":
+                        # Average unmatched regions (equal weight)
+                        if unmatched_indices:
+                            ref_shape = region_conds[unmatched_indices[0]].shape[1]
+                            compatible = [region_conds[i] for i in unmatched_indices if region_conds[i].shape[1] == ref_shape]
+                            background_cond = torch.stack(compatible).mean(dim=0)
+                            log_debug(f"Background: original ({len(compatible)} regions)")
                         else:
                             background_cond = torch.zeros_like(region_conds[matched_indices[0]])
-                        
-                        extracted_conds.append([
-                            background_cond,
-                            {"mask": background_mask, "mask_strength": background_strength}
-                        ])
+                    
+                    else:
+                        background_cond = torch.zeros_like(region_conds[matched_indices[0]])
+                    
+                    extracted_conds.append([
+                        background_cond,
+                        {"mask": background_mask, "mask_strength": background_strength}
+                    ])
             
             # Add all matched regions with custom strength
             for idx in matched_indices:
@@ -667,24 +658,38 @@ class ComfyCoupleRegionExtractor:
         
         return matched_indices, match_scores
 
-    def _extract_regions_from_patch(self, patch_function) -> Tuple[List[torch.Tensor], List[torch.Tensor], List[float]]:
-        """Extract region data from attention patch closure"""
+    def _extract_regions_from_patch(self, model: Any, patch_function: Any) -> Tuple[List[torch.Tensor], List[torch.Tensor], List[float]]:
+        """Extract region data using robust transformer_options or fallback to closure"""
         try:
-            closure = patch_function.__closure__
-            if closure is None:
-                return [], [], []
+            pos_masks = []
+            padded_pos_conds = []
+            pos_strengths = []
             
-            closure_vars = {}
-            for i, cell in enumerate(closure):
-                try:
-                    closure_vars[patch_function.__code__.co_freevars[i]] = cell.cell_contents
-                except:
-                    pass
+            # Robust extraction method (ComfyCouple standard)
+            transformer_options = model.model_options.get("transformer_options", {})
+            regions_data = transformer_options.get("comfycouple_regions")
             
-            pos_masks = closure_vars.get('pos_masks', [])
-            padded_pos_conds = closure_vars.get('padded_pos_conds', [])
-            pos_strengths = closure_vars.get('pos_strengths', [])
-            
+            if regions_data is not None:
+                pos_masks = regions_data.get("pos_masks", [])
+                padded_pos_conds = regions_data.get("padded_pos_conds", [])
+                pos_strengths = regions_data.get("pos_strengths", [])
+                log_debug("Extracted region data from transformer_options successfully")
+            else:
+                # Fallback to fragile closure extraction (for backward compatibility)
+                log_warning("comfycouple_regions not found in transformer_options, falling back to closure.")
+                closure = patch_function.__closure__
+                if closure is not None:
+                    closure_vars = {}
+                    for i, cell in enumerate(closure):
+                        try:
+                            closure_vars[patch_function.__code__.co_freevars[i]] = cell.cell_contents
+                        except Exception as e:
+                            pass
+                    
+                    pos_masks = closure_vars.get('pos_masks', [])
+                    padded_pos_conds = closure_vars.get('padded_pos_conds', [])
+                    pos_strengths = closure_vars.get('pos_strengths', [])
+
             if not pos_masks or not padded_pos_conds:
                 return [], [], []
             

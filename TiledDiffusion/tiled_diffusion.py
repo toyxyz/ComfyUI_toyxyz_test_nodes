@@ -37,6 +37,22 @@ opt_f = 8
 MAX_RESOLUTION = 8192
 
 
+def get_model_spatial_compression(model: ModelPatcher) -> int:
+    """Infer the latent spatial downscale ratio from the loaded model when possible."""
+    base_model = getattr(model, "model", None)
+    latent_format = getattr(base_model, "latent_format", None)
+
+    ratio = getattr(latent_format, "spacial_downscale_ratio", None)
+    if isinstance(ratio, int) and ratio > 0:
+        return ratio
+
+    # Backward-compatible fallback for older/non-standard model wrappers.
+    if "CASCADE" in str(getattr(base_model, "model_type", "")):
+        return 4
+
+    return 8
+
+
 def ceildiv(big, small):
     """Ceiling division without floating-point errors."""
     return -(big // -small)
@@ -752,7 +768,7 @@ class TiledDiffusion:
         else:
             self.impl = SpotDiffusion()
 
-        compression = 4 if "CASCADE" in str(model.model.model_type) else 8
+        compression = get_model_spatial_compression(model)
         self.impl.tile_width = tile_width // compression
         self.impl.tile_height = tile_height // compression
         self.impl.tile_overlap = tile_overlap // compression

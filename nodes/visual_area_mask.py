@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import warnings
 from PIL import Image, ImageDraw, ImageFont
 
 
@@ -159,6 +160,39 @@ class VisualAreaMask:
     OUTPUT_NODE = False
     CATEGORY = "ToyxyzTestNodes"
 
+    @staticmethod
+    def create_blank_canvas_image(image_width, image_height):
+        img = Image.new('RGB', (image_width, image_height), color='white')
+        img_array = np.array(img).astype(np.float32) / 255.0
+        return torch.from_numpy(img_array)[None,]
+
+    @staticmethod
+    def create_blank_mask(image_width, image_height):
+        return torch.zeros((1, image_height, image_width), dtype=torch.float32, device="cpu")
+
+    @classmethod
+    def create_blank_outputs(cls, image_width, image_height):
+        blank_mask = cls.create_blank_mask(image_width, image_height)
+        return tuple(
+            [cls.create_blank_canvas_image(image_width, image_height), blank_mask.clone()]
+            + [blank_mask.clone() for _ in range(cls.MAX_OUTPUTS)]
+        )
+
+    @staticmethod
+    def validate_conditioning_areas(conditioning_areas, area_number):
+        for i in range(area_number):
+            area_values = conditioning_areas[i]
+            if not isinstance(area_values, (list, tuple)):
+                raise ValueError(
+                    f"conditioning_areas[{i}] must be a list of 5 values "
+                    f"[x_min, y_min, width, height, strength], got {type(area_values).__name__}."
+                )
+            if len(area_values) != 5:
+                raise ValueError(
+                    f"conditioning_areas[{i}] must contain 5 values "
+                    f"[x_min, y_min, width, height, strength], got {len(area_values)}."
+                )
+
     def create_canvas_image(self, image_width, image_height, conditioning_areas, area_number, font_size,
                             area_texts=None):
         """캔버스 이미지를 생성하는 함수"""
@@ -271,17 +305,37 @@ class VisualAreaMask:
                  **kwargs):
         # extra_pnginfo에서 현재 노드의 conditioning 영역값 추출
         conditioning_areas: list[list[float]] = []
-        if extra_pnginfo is not None and "workflow" in extra_pnginfo and "nodes" in extra_pnginfo["workflow"]:
+        has_workflow_metadata = (
+            extra_pnginfo is not None
+            and "workflow" in extra_pnginfo
+            and "nodes" in extra_pnginfo["workflow"]
+        )
+        if has_workflow_metadata:
             for node in extra_pnginfo["workflow"]["nodes"]:
                 if str(node.get("id", "")) == str(unique_id):
                     conditioning_areas = node.get("properties", {}).get("area_values", [])
                     break
+        else:
+            warnings.warn(
+                f"VisualAreaMask node {unique_id} could not find workflow metadata; returning blank masks.",
+                stacklevel=2,
+            )
+            return {"result": self.create_blank_outputs(image_width, image_height)}
+
+        if conditioning_areas == []:
+            warnings.warn(
+                f"VisualAreaMask node {unique_id} could not find area_values in workflow metadata; returning blank masks.",
+                stacklevel=2,
+            )
+            return {"result": self.create_blank_outputs(image_width, image_height)}
 
         # conditioning_areas의 길이가 area_number보다 적을 경우 기본값(빈 영역)으로 채워 에러(Crash) 방지
         while len(conditioning_areas) < area_number:
             conditioning_areas.append([0.0, 0.0, 1.0, 1.0, 0.0]) # [x_min, y_min, x_max, y_max, strength] 기본값
 
         # kwargs에서 area_text 인풋 추출
+        self.validate_conditioning_areas(conditioning_areas, area_number)
+
         area_texts = {}
         for i in range(area_number):
             text_key = f"area_{i}_text"
@@ -340,7 +394,7 @@ class VisualAreaMask:
             combined_mask = torch.clamp(combined_mask + mask, min=0.0, max=1.0)
 
         # 출력 개수 확보 (None 대신 에러 방지를 위해 빈 마스크 할당)
-        blank_mask = torch.zeros((1, image_height, image_width), dtype=torch.float32, device="cpu")
+        blank_mask = self.create_blank_mask(image_width, image_height)
         outputs = tuple(
             [canvas_image, combined_mask] + [masks[i] if i < len(masks) else blank_mask for i in range(self.MAX_OUTPUTS)]
         )

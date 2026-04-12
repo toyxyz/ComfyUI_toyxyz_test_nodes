@@ -1,21 +1,47 @@
 import { app } from "../../scripts/app.js";
-import { addAreaGraphWidget } from "./widgets/graph_widget.js";
+import { addAreaGraphWidget, refreshAreaGraphWidget } from "./widgets/graph_widget.js";
 import { addNumberInput } from "./util/util.js";
 
 const _ID = "VisualAreaMask";
 const _AREA_DEFAULTS = [0.0, 0.0, 1.0, 1.0, 1.0];
+const _PREVIEW_PROPERTY_NAMES = ["image_width", "image_height", "area_number", "mask_overlap_method", "font_size"];
+
+
+function normalizeAreaValue(areaValue) {
+  if (!Array.isArray(areaValue)) {
+    return [..._AREA_DEFAULTS];
+  }
+
+  return _AREA_DEFAULTS.map((defaultValue, i) => areaValue[i] ?? defaultValue);
+}
+
+function syncPreviewProperties(node) {
+  if (!node.properties) {
+    node.properties = {};
+  }
+
+  _PREVIEW_PROPERTY_NAMES.forEach((name) => {
+    const widget = node.widgets?.find((entry) => entry.name === name);
+    if (widget?.value !== undefined) {
+      node.properties[name] = widget.value;
+    }
+  });
+}
 
 
 function updateWidgetValues(node) {
-  if (!node.properties["area_values"][node.index]) {
-    node.properties["area_values"][node.index] = [];
+  syncPreviewProperties(node);
+
+  if (!Array.isArray(node.properties["area_values"])) {
+    node.properties["area_values"] = [];
   }
+  node.properties["area_values"][node.index] = normalizeAreaValue(node.properties["area_values"][node.index]);
   const areaValues = node.properties["area_values"][node.index];
 
   // 위젯 이름으로 찾아서 업데이트 (인덱스 대신 이름 사용으로 안정성 향상)
   const widgetNames = ["x", "y", "width", "height", "strength"];
   widgetNames.forEach((name, i) => {
-    const newValue = areaValues[i] || _AREA_DEFAULTS[i];
+    const newValue = areaValues[i] ?? _AREA_DEFAULTS[i];
     node.properties["area_values"][node.index][i] = newValue;
 
     const widget = node.widgets.find(w => w.name === name);
@@ -23,9 +49,13 @@ function updateWidgetValues(node) {
       widget.value = newValue;
     }
   });
+
+  refreshAreaGraphWidget(node);
 }
 
 function updateAreaIdAndInputs(node) {
+  syncPreviewProperties(node);
+
   const countDynamicInputs = node.widgets.find(w => w.name === "area_number").value;
   const newMaxIdx = Math.max(countDynamicInputs - 1, 0);
   const areaIdWidget = node.widgets.find(w => w.name === "area_id");
@@ -41,18 +71,19 @@ function updateAreaIdAndInputs(node) {
   if (!node.properties["area_values"]) {
     node.properties["area_values"] = [];
   }
-  
-  while (node.properties["area_values"].length < countDynamicInputs) {
-    node.properties["area_values"].push([..._AREA_DEFAULTS]);
-  }
-  
-  node.properties["area_values"] = node.properties["area_values"].slice(0, countDynamicInputs);
+
+  node.properties["area_values"] = Array.from({ length: countDynamicInputs }, (_, index) =>
+    normalizeAreaValue(node.properties["area_values"][index])
+  );
   
   updateWidgetValues(node);
   node?.graph?.setDirtyCanvas(true);
+  refreshAreaGraphWidget(node);
 }
 
 function updateOutputs(node) {
+  syncPreviewProperties(node);
+
   const targetNumber = node.widgets.find(w => w.name === "area_number").value;
   if (!node.outputs) {
     node.outputs = [];
@@ -89,6 +120,8 @@ function updateOutputs(node) {
 }
 
 function updateInputs(node) {
+  syncPreviewProperties(node);
+
   const targetNumber = node.widgets.find(w => w.name === "area_number").value;
   if (!node.inputs) {
     node.inputs = [];
@@ -120,6 +153,7 @@ function updateInputs(node) {
   }
 
   node.graph?.setDirtyCanvas(true);
+  refreshAreaGraphWidget(node);
 }
 
 app.registerExtension({
@@ -141,6 +175,8 @@ app.registerExtension({
             self.setProperty("area_values", info.properties.area_values);
         }
 
+        syncPreviewProperties(self);
+
         const areaWidget = self.widgets.find(w => w.name === "area_number");
         if(areaWidget) {
             const countDynamicInputs = areaWidget.value;
@@ -150,6 +186,11 @@ app.registerExtension({
                 areaIdWidget.options.max = newMaxIdx;
             }
         }
+
+        updateOutputs(self);
+        updateInputs(self);
+        updateAreaIdAndInputs(self);
+        refreshAreaGraphWidget(self);
       });
     };
 
@@ -157,19 +198,24 @@ app.registerExtension({
     nodeType.prototype.onNodeCreated = async function() {
       const me = onNodeCreated?.apply(this);
       this.index = 0;
-      this.setProperty("area_values", [..._AREA_DEFAULTS]);
+      this.setProperty("area_values", [[..._AREA_DEFAULTS]]);
+      syncPreviewProperties(this);
 
       ["image_width", "image_height"].forEach(name => {
         const widget = this.widgets.find(elt => elt.name == name);
-        widget.callback = (value, _, node) => {
-          node.properties[name] = value;
+        const origCallback = widget?.callback;
+        widget.callback = (value, canvas, node, pos, event) => {
+          const targetNode = node || this;
+          origCallback?.call(widget, value, canvas, targetNode, pos, event);
+          syncPreviewProperties(targetNode);
+          targetNode.properties[name] = value;
+          refreshAreaGraphWidget(targetNode);
         };
       });
 
       // mask_overlap_method는 Python에서 required로 정의되어 자동 생성됨
       // 따라서 여기서는 별도로 추가하지 않음
 
-      addAreaGraphWidget(app, this, "area_conditioning_canvas");
       addNumberInput(this, "area_id", 0, (value, _, node) => {
         node.index = value;
         updateWidgetValues(node);
@@ -178,6 +224,7 @@ app.registerExtension({
       ["x", "y", "width", "height", "strength"].forEach((name, i) => {
         addNumberInput(this, name, [..._AREA_DEFAULTS][i], (value, _, node) => {
           node.properties["area_values"][node.index][i] = value;
+          refreshAreaGraphWidget(node);
         }, { min: 0, max: i === 4 ? 1 : 1, step: 0.1, precision: 2 });
       });
 
@@ -187,9 +234,11 @@ app.registerExtension({
         areaNumberWidget.callback = (value, canvas, _node, pos, event) => {
           const targetNode = _node || this;
           if (origCallback) origCallback.call(areaNumberWidget, value, canvas, targetNode, pos, event);
+          syncPreviewProperties(targetNode);
           updateOutputs(targetNode);
           updateInputs(targetNode);
           updateAreaIdAndInputs(targetNode);
+          refreshAreaGraphWidget(targetNode);
         };
       }
 
@@ -199,9 +248,12 @@ app.registerExtension({
         updateAreaIdAndInputs(this);
       });
 
+      addAreaGraphWidget(app, this, "area_conditioning_canvas");
+
       updateAreaIdAndInputs(this);
       updateOutputs(this);
       updateInputs(this);
+      refreshAreaGraphWidget(this);
       return me;
     };
     return nodeType;

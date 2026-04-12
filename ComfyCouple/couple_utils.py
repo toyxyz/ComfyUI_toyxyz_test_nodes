@@ -7,7 +7,7 @@ import torch.nn.functional as F
 import math
 import copy
 from typing import Dict, List, Tuple, Any, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 # Constants
@@ -16,6 +16,8 @@ MASK_EPSILON = 1e-6
 OVERLAP_THRESHOLD = 1.0
 MIN_STRENGTH = 0.0
 MAX_STRENGTH = 10.0
+COMFYCOUPLE_REGIONS_LEGACY_KEY = "comfycouple_regions"
+COMFYCOUPLE_REGIONS_V2_KEY = "comfycouple_regions_v2"
 
 # Flux Block Presets
 FLUX_BLOCK_PRESETS = {
@@ -88,6 +90,160 @@ class ArchitectureInfo:
     use_cfg: bool
     dim: int = 768
     is_flux: bool = False
+    profile_key: str = ""
+    strategy_key: str = ""
+    display_name: str = ""
+    capabilities: Dict[str, bool] = field(default_factory=dict)
+
+    def supports(self, capability_name: str) -> bool:
+        return bool(self.capabilities.get(capability_name, False))
+
+
+@dataclass(frozen=True)
+class ModelSupportProfile:
+    key: str
+    model_type: ModelType
+    display_name: str
+    strategy_key: str
+    dim: int
+    use_cfg: bool = True
+    is_flux: bool = False
+    capabilities: Dict[str, bool] = field(default_factory=dict)
+
+
+DEFAULT_CAPABILITIES = {
+    "supports_tiled_diffusion": True,
+    "supports_visualizer": True,
+    "supports_extractor": True,
+    "supports_lora_hooks": True,
+    "supports_cross_region_attention": True,
+    "requires_injection": False,
+}
+
+
+MODEL_SUPPORT_REGISTRY: Dict[str, ModelSupportProfile] = {
+    "sd15": ModelSupportProfile(
+        key="sd15",
+        model_type=ModelType.SD15,
+        display_name="SD 1.5",
+        strategy_key="unet_attn2",
+        dim=768,
+        capabilities={**DEFAULT_CAPABILITIES},
+    ),
+    "sdxl": ModelSupportProfile(
+        key="sdxl",
+        model_type=ModelType.SDXL,
+        display_name="SDXL",
+        strategy_key="unet_attn2",
+        dim=2048,
+        capabilities={**DEFAULT_CAPABILITIES},
+    ),
+    "flux": ModelSupportProfile(
+        key="flux",
+        model_type=ModelType.FLUX,
+        display_name="Flux",
+        strategy_key="flux_mask",
+        dim=4096,
+        is_flux=True,
+        capabilities={
+            **DEFAULT_CAPABILITIES,
+            "supports_lora_hooks": False,
+            "supports_cross_region_attention": False,
+            "requires_injection": True,
+        },
+    ),
+}
+
+
+def get_model_support_profile(profile_key: str) -> ModelSupportProfile:
+    return MODEL_SUPPORT_REGISTRY[profile_key]
+
+
+def get_model_type_input_options(include_auto: bool = True) -> List[str]:
+    options = list(MODEL_SUPPORT_REGISTRY.keys())
+    if include_auto:
+        return ["auto"] + options
+    return options
+
+
+def architecture_info_from_profile(profile: ModelSupportProfile) -> ArchitectureInfo:
+    return ArchitectureInfo(
+        type=profile.model_type,
+        use_cfg=profile.use_cfg,
+        dim=profile.dim,
+        is_flux=profile.is_flux,
+        profile_key=profile.key,
+        strategy_key=profile.strategy_key,
+        display_name=profile.display_name,
+        capabilities=dict(profile.capabilities),
+    )
+
+
+def build_region_metadata(
+    profile_key: str,
+    region_masks: Optional[List[Any]] = None,
+    region_strengths: Optional[List[float]] = None,
+    region_conditioning: Optional[List[Any]] = None,
+    background_present: Optional[bool] = None,
+    debug_handles: Optional[Dict[str, Any]] = None,
+    **extra: Any,
+) -> Dict[str, Any]:
+    profile = get_model_support_profile(profile_key)
+
+    masks = [mask for mask in (region_masks or []) if isinstance(mask, torch.Tensor)]
+    conds = [cond for cond in (region_conditioning or []) if isinstance(cond, torch.Tensor)]
+    strengths = list(region_strengths or [])
+
+    metadata = {
+        "version": 2,
+        "profile_key": profile.key,
+        "model_type": profile.model_type.value,
+        "display_name": profile.display_name,
+        "strategy_key": profile.strategy_key,
+        "region_masks": masks,
+        "region_strengths": strengths,
+        "region_conditioning": conds,
+        "region_count": len(masks),
+        "background_present": bool(background_present) if background_present is not None else False,
+        "supports": dict(profile.capabilities),
+        "debug_handles": debug_handles or {},
+    }
+    metadata.update(extra)
+    return metadata
+
+
+def save_region_metadata(transformer_options: Dict[str, Any], metadata: Dict[str, Any]) -> Dict[str, Any]:
+    transformer_options[COMFYCOUPLE_REGIONS_V2_KEY] = metadata
+    return metadata
+
+
+def get_region_metadata(transformer_options: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    metadata = transformer_options.get(COMFYCOUPLE_REGIONS_V2_KEY)
+    if metadata is not None:
+        return metadata
+
+    legacy = transformer_options.get(COMFYCOUPLE_REGIONS_LEGACY_KEY)
+    if legacy is None:
+        return None
+
+    return {
+        "version": 1,
+        "profile_key": None,
+        "model_type": None,
+        "display_name": "Unknown",
+        "strategy_key": None,
+        "region_masks": [mask for mask in legacy.get("pos_masks", []) if isinstance(mask, torch.Tensor)],
+        "region_strengths": list(legacy.get("pos_strengths", [])),
+        "region_conditioning": [
+            cond for cond in legacy.get("padded_pos_conds", []) if isinstance(cond, torch.Tensor)
+        ],
+        "region_count": len([mask for mask in legacy.get("pos_masks", []) if isinstance(mask, torch.Tensor)]),
+        "background_present": False,
+        "supports": {},
+        "debug_handles": {
+            "legacy_key": COMFYCOUPLE_REGIONS_LEGACY_KEY,
+        },
+    }
 
 # Logging
 def log_debug(message: str) -> None:
@@ -177,29 +333,29 @@ def detect_model_architecture(model: Any) -> ArchitectureInfo:
         # Check for Flux (DiT architecture with double/single blocks)
         if hasattr(diff_model, 'double_blocks') and hasattr(diff_model, 'single_blocks'):
             log_debug("Detected Flux DiT architecture")
-            return ArchitectureInfo(type=ModelType.FLUX, use_cfg=True, dim=4096, is_flux=True)
+            return architecture_info_from_profile(get_model_support_profile("flux"))
         
         # Check for SDXL
         if hasattr(diff_model, 'label_emb'):
-            return ArchitectureInfo(type=ModelType.SDXL, use_cfg=True, dim=2048, is_flux=False)
+            return architecture_info_from_profile(get_model_support_profile("sdxl"))
         
         # Default to SD1.5
-        return ArchitectureInfo(type=ModelType.SD15, use_cfg=True, dim=768, is_flux=False)
+        return architecture_info_from_profile(get_model_support_profile("sd15"))
         
     except Exception as e:
         log_warning(f"Model detection failed, assuming SD1.5: {e}")
-        return ArchitectureInfo(type=ModelType.SD15, use_cfg=True, dim=768, is_flux=False)
+        return architecture_info_from_profile(get_model_support_profile("sd15"))
 
 def detect_or_force_architecture(model: Any, model_type_str: str) -> ArchitectureInfo:
     """Detect model architecture automatically or force a specific one."""
     if model_type_str == "auto":
         return detect_model_architecture(model)
-    elif model_type_str == "flux":
-        return ArchitectureInfo(type=ModelType.FLUX, use_cfg=True, dim=4096, is_flux=True)
-    elif model_type_str == "sdxl":
-        return ArchitectureInfo(type=ModelType.SDXL, use_cfg=True, dim=2048, is_flux=False)
-    else:  # sd15
-        return ArchitectureInfo(type=ModelType.SD15, use_cfg=True, dim=768, is_flux=False)
+
+    if model_type_str in MODEL_SUPPORT_REGISTRY:
+        return architecture_info_from_profile(get_model_support_profile(model_type_str))
+
+    log_warning(f"Unknown model_type '{model_type_str}', falling back to auto-detect")
+    return detect_model_architecture(model)
 
 # Mask processing
 class MaskProcessor:

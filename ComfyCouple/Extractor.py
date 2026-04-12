@@ -9,12 +9,14 @@ from typing import Any, Tuple, List, Dict, Optional
 
 from .couple_utils import (
     log_debug, log_warning, MaskProcessor, MASK_EPSILON,
-    detect_model_architecture, ArchitectureInfo, ModelType,
-    create_zero_conditioning, detect_or_force_architecture
+    ArchitectureInfo,
+    create_zero_conditioning, detect_or_force_architecture,
+    get_model_type_input_options,
+    get_region_metadata,
 )
 
-from .couple_patching import AttentionPatcher
-from .couple_flux_patching import FluxAttentionPatcher, RegionalMask
+from .couple_patching import AttentionPatcher, find_attn2_patch
+from .couple_flux_patching import FluxAttentionPatcher, find_regional_mask_module
 
 
 class ComfyCoupleRegionExtractor:
@@ -67,7 +69,7 @@ class ComfyCoupleRegionExtractor:
                     "step": 0.01,
                     "tooltip": "Prompt strength for background area (only used if background_mode ≠ remove)"
                 }),
-                "model_type": (["auto", "sd15", "sdxl", "flux"], {
+                "model_type": (get_model_type_input_options(), {
                     "default": "auto",
                     "tooltip": "auto: Detect automatically | sd15/sdxl/flux: Force specific architecture"
                 }),
@@ -94,12 +96,16 @@ class ComfyCoupleRegionExtractor:
         arch_info = self._detect_architecture(coupled_model, model_type)
         is_flux = arch_info.is_flux
         
-        print(f"[RegionExtractor] Architecture: {arch_info.type.value.upper()}")
+        display_name = arch_info.display_name or arch_info.type.value.upper()
+        print(f"[RegionExtractor] Architecture: {display_name}")
         print(f"[RegionExtractor] Extraction mode: {extraction_mode}")
         print(f"[RegionExtractor] Background: {background_mode}, "
               f"Extracted strength: {extracted_strength:.2f}, "
               f"Background strength: {background_strength:.2f}")
-        
+
+        if not arch_info.supports("supports_extractor"):
+            raise ValueError(f"{display_name} does not support Region Extractor")
+
         if conditioning is not None:
             print(f"[RegionExtractor] ✅ Conditioning extraction enabled")
         
@@ -327,53 +333,39 @@ class ComfyCoupleRegionExtractor:
         """Extract region(s) from Flux model - FULLY FIXED VERSION"""
         
         try:
-            # Find regional mask in patches
             transformer_options = coupled_model.model_options.get("transformer_options", {})
-            patches_replace = transformer_options.get("patches_replace", {})
-            
-            regional_mask_module = None
-            found_block_type = None
-            found_block_id = None
-            
-            for block_type in ["double", "single"]:
-                if block_type in patches_replace:
-                    block_patches_dict = patches_replace[block_type]
-                    for block_id, patch_content in block_patches_dict.items():
-                        # Try to find mask_fn in nested dict
-                        if isinstance(patch_content, dict):
-                            for key, module in patch_content.items():
-                                if key == "mask_fn" or (isinstance(key, tuple) and key[0] == "mask_fn"):
-                                    regional_mask_module = module
-                                    found_block_type = block_type
-                                    found_block_id = block_id
-                                    break
-                        # Or direct RegionalMask instance
-                        elif isinstance(patch_content, RegionalMask):
-                            regional_mask_module = patch_content
-                            found_block_type = block_type
-                            found_block_id = block_id
-                            break
-                    
-                    if regional_mask_module is not None:
-                        break
-            
-            if regional_mask_module is None or not isinstance(regional_mask_module, RegionalMask):
-                raise ValueError("Model doesn't have Flux regional patching applied")
-            
-            print(f"[RegionExtractor] Found regional mask in {found_block_type} block ('{found_block_id}')")
-            
-            # Extract stored regions
-            num_regions = regional_mask_module.num_regions
-            region_masks = []
-            region_conds = []
-            
-            for i in range(num_regions):
-                mask = getattr(regional_mask_module, f'region_mask_{i}')
-                cond = getattr(regional_mask_module, f'region_cond_{i}')
-                region_masks.append(mask)
-                region_conds.append(cond)
-            
-            log_debug(f"Found {num_regions} regions in Flux model")
+            region_masks, region_conds, _, metadata = self._extract_regions_from_metadata(transformer_options)
+            if region_masks and region_conds:
+                num_regions = len(region_masks)
+                attn_override = metadata.get("attn_override")
+                start_percent = metadata.get("start_percent", 0.0)
+                end_percent = metadata.get("end_percent", 0.5)
+                apply_t5_background = metadata.get("apply_t5_background", True)
+
+                print("[RegionExtractor] Found Flux regional metadata in transformer_options")
+            else:
+                regional_mask_module, found_block_type, found_block_id = find_regional_mask_module(transformer_options)
+                if regional_mask_module is None:
+                    raise ValueError("Model doesn't have Flux regional patching applied")
+                
+                print(f"[RegionExtractor] Found regional mask in {found_block_type} block ('{found_block_id}')")
+                
+                num_regions = regional_mask_module.num_regions
+                region_masks = []
+                region_conds = []
+                
+                for i in range(num_regions):
+                    mask = getattr(regional_mask_module, f'region_mask_{i}')
+                    cond = getattr(regional_mask_module, f'region_cond_{i}')
+                    region_masks.append(mask)
+                    region_conds.append(cond)
+
+                attn_override = None
+                start_percent = regional_mask_module.start_percent
+                end_percent = regional_mask_module.end_percent
+                apply_t5_background = regional_mask_module.apply_t5_background
+
+                log_debug(f"Found {num_regions} regions in Flux model")
             
             # Find matching region(s)
             matched_indices, match_scores = self._find_matching_regions(
@@ -460,10 +452,10 @@ class ComfyCoupleRegionExtractor:
             patcher = FluxAttentionPatcher(
                 coupled_model, 
                 new_regions,
-                start_percent=regional_mask_module.start_percent,
-                end_percent=regional_mask_module.end_percent,
-                attn_override=None,  # Will use default
-                apply_t5_background=regional_mask_module.apply_t5_background
+                start_percent=start_percent,
+                end_percent=end_percent,
+                attn_override=attn_override,
+                apply_t5_background=apply_t5_background,
             )
             
             new_model, _ = patcher.patch()
@@ -493,14 +485,14 @@ class ComfyCoupleRegionExtractor:
         try:
             # Extract region data from attention patches
             transformer_options = coupled_model.model_options.get("transformer_options", {})
-            patches_replace = transformer_options.get("patches_replace", {})
-            
-            if 'attn2' not in patches_replace:
-                raise ValueError("Model doesn't have SD/SDXL regional patching applied")
-            
-            # Extract region data safely
-            first_patch = next(iter(patches_replace['attn2'].values()))
-            region_masks, region_conds, region_strengths = self._extract_regions_from_patch(coupled_model, first_patch)
+            region_masks, region_conds, region_strengths, metadata = self._extract_regions_from_metadata(transformer_options)
+
+            if not region_masks:
+                first_patch = find_attn2_patch(transformer_options)
+                if first_patch is None:
+                    raise ValueError("Model doesn't have SD/SDXL regional patching applied")
+
+                region_masks, region_conds, region_strengths = self._extract_regions_from_patch(coupled_model, first_patch)
             
             if not region_masks:
                 raise ValueError("No region data found in coupled model")
@@ -658,6 +650,28 @@ class ComfyCoupleRegionExtractor:
         
         return matched_indices, match_scores
 
+    def _extract_regions_from_metadata(
+        self, transformer_options: Dict[str, Any]
+    ) -> Tuple[List[torch.Tensor], List[torch.Tensor], List[float], Dict[str, Any]]:
+        metadata = get_region_metadata(transformer_options)
+        if metadata is None:
+            return [], [], [], {}
+
+        region_masks = [
+            mask for mask in metadata.get("region_masks", [])
+            if isinstance(mask, torch.Tensor)
+        ]
+        region_conds = [
+            cond for cond in metadata.get("region_conditioning", [])
+            if isinstance(cond, torch.Tensor)
+        ]
+        region_strengths = list(metadata.get("region_strengths", []))
+
+        if region_masks:
+            log_debug("Extracted region data from shared metadata")
+
+        return region_masks, region_conds, region_strengths, metadata
+
     def _extract_regions_from_patch(self, model: Any, patch_function: Any) -> Tuple[List[torch.Tensor], List[torch.Tensor], List[float]]:
         """Extract region data using robust transformer_options or fallback to closure"""
         try:
@@ -665,15 +679,14 @@ class ComfyCoupleRegionExtractor:
             padded_pos_conds = []
             pos_strengths = []
             
-            # Robust extraction method (ComfyCouple standard)
             transformer_options = model.model_options.get("transformer_options", {})
-            regions_data = transformer_options.get("comfycouple_regions")
+            regions_data = get_region_metadata(transformer_options)
             
             if regions_data is not None:
-                pos_masks = regions_data.get("pos_masks", [])
-                padded_pos_conds = regions_data.get("padded_pos_conds", [])
-                pos_strengths = regions_data.get("pos_strengths", [])
-                log_debug("Extracted region data from transformer_options successfully")
+                pos_masks = regions_data.get("region_masks", [])
+                padded_pos_conds = regions_data.get("region_conditioning", [])
+                pos_strengths = regions_data.get("region_strengths", [])
+                log_debug("Extracted region data from metadata successfully")
             else:
                 # Fallback to fragile closure extraction (for backward compatibility)
                 log_warning("comfycouple_regions not found in transformer_options, falling back to closure.")
@@ -717,7 +730,10 @@ class ComfyCoupleRegionExtractor:
                             original_transformer_options: Dict) -> Any:
         """Create new model with only extracted region patches"""
         new_model = base_model.clone()
-        arch_info = detect_model_architecture(new_model)
+        metadata = get_region_metadata(original_transformer_options) or {}
+        model_type = metadata.get("model_type") or "auto"
+        debug_handles = metadata.get("debug_handles", {})
+        arch_info = detect_or_force_architecture(new_model, model_type)
         
         # Create dummy negative conditioning
         neg_cond = create_zero_conditioning([(extracted_conds[0][0], {})])
@@ -727,8 +743,8 @@ class ComfyCoupleRegionExtractor:
             model=new_model,
             positive=extracted_conds,
             negative=neg_cond,
-            cross_region_attention=0.0,
-            cross_region_mode="self_exclusion",
+            cross_region_attention=debug_handles.get("cross_region_attention", 0.0),
+            cross_region_mode=debug_handles.get("cross_region_mode", "self_exclusion"),
             model_type=arch_info.type.value
         )
         

@@ -10,9 +10,11 @@ import torch
 
 from .couple_utils import (
     ARCH_CONFIGS,
+    build_region_metadata,
     find_best_divisors,
     log_debug,
     log_warning,
+    save_region_metadata,
 )
 
 
@@ -362,6 +364,24 @@ class RegionalConditioning(torch.nn.Module):
         return None
 
 
+def find_regional_mask_module(transformer_options: Dict[str, Any]) -> Tuple[Optional[RegionalMask], Optional[str], Optional[Any]]:
+    """Return the first registered Flux regional mask plus its block location."""
+    patches_replace = transformer_options.get("patches_replace", {})
+
+    for block_type in ["double", "single"]:
+        block_patches = patches_replace.get(block_type, {})
+        for block_id, patch_content in block_patches.items():
+            if isinstance(patch_content, dict):
+                for key, module in patch_content.items():
+                    if key == "mask_fn" or (isinstance(key, tuple) and key[0] == "mask_fn"):
+                        if isinstance(module, RegionalMask):
+                            return module, block_type, block_id
+            elif isinstance(patch_content, RegionalMask):
+                return patch_content, block_type, block_id
+
+    return None, None, None
+
+
 class FluxAttentionPatcher:
     """
     Manages attention masking for Flux regional prompting.
@@ -437,5 +457,28 @@ class FluxAttentionPatcher:
         )
         print(f"[ComfyCouple Flux] Active timesteps: {self.start_percent * 100:.0f}% - {self.end_percent * 100:.0f}%")
         print("[ComfyCouple Flux] Mask computed dynamically at runtime")
+
+        transformer_options = new_model.model_options.setdefault("transformer_options", {})
+        save_region_metadata(
+            transformer_options,
+            build_region_metadata(
+                "flux",
+                region_masks=region_masks,
+                region_strengths=[region.get("strength", 1.0) for region in active_regions],
+                region_conditioning=region_conds,
+                background_present=any(region.get("is_background", False) for region in active_regions),
+                debug_handles={
+                    "double_blocks": list(self.attn_override["double"]),
+                    "single_blocks": list(self.attn_override["single"]),
+                },
+                start_percent=self.start_percent,
+                end_percent=self.end_percent,
+                apply_t5_background=self.apply_t5_background,
+                attn_override={
+                    "double": list(self.attn_override["double"]),
+                    "single": list(self.attn_override["single"]),
+                },
+            ),
+        )
 
         return new_model, active_regions[0]["positive"]

@@ -11,9 +11,11 @@ from PIL import Image, ImageDraw, ImageFont
 
 from .couple_utils import (
     log_debug, log_warning, ArchitectureInfo, MASK_EPSILON,
-    detect_or_force_architecture
+    detect_or_force_architecture, get_model_type_input_options,
+    get_region_metadata,
 )
-from .couple_flux_patching import RegionalMask
+from .couple_flux_patching import find_regional_mask_module
+from .couple_patching import find_attn2_patch
 
 
 class ComfyCoupleRegionVisualizer:
@@ -72,7 +74,7 @@ class ComfyCoupleRegionVisualizer:
                     "default": "medium",
                     "tooltip": "Size of region index labels"
                 }),
-                "model_type": (["auto", "sd15", "sdxl", "flux"], {
+                "model_type": (get_model_type_input_options(), {
                     "default": "auto",
                     "tooltip": "Force specific architecture detection"
                 }),
@@ -139,8 +141,12 @@ class ComfyCoupleRegionVisualizer:
         arch_info = self._detect_architecture(coupled_model, model_type)
         is_flux = arch_info.is_flux
         
-        print(f"[RegionVisualizer] Architecture: {arch_info.type.value.upper()}")
+        display_name = arch_info.display_name or arch_info.type.value.upper()
+        print(f"[RegionVisualizer] Architecture: {display_name}")
         print(f"[RegionVisualizer] Mode: {visualization_mode}, Colors: {color_scheme}")
+
+        if not arch_info.supports("supports_visualizer"):
+            raise ValueError(f"{display_name} does not support Region Visualizer")
         
         # Extract region data
         if is_flux:
@@ -185,26 +191,13 @@ class ComfyCoupleRegionVisualizer:
         """Extract region masks from Flux model"""
         try:
             transformer_options = coupled_model.model_options.get("transformer_options", {})
-            patches_replace = transformer_options.get("patches_replace", {})
-            
-            regional_mask_module = None
-            
-            for block_type in ["double", "single"]:
-                if block_type in patches_replace:
-                    for block_id, patch_content in patches_replace[block_type].items():
-                        if isinstance(patch_content, dict):
-                            for key, module in patch_content.items():
-                                if key == "mask_fn" or (isinstance(key, tuple) and key[0] == "mask_fn"):
-                                    regional_mask_module = module
-                                    break
-                        elif isinstance(patch_content, RegionalMask):
-                            regional_mask_module = patch_content
-                            break
-                    
-                    if regional_mask_module is not None:
-                        break
-            
-            if regional_mask_module is None or not isinstance(regional_mask_module, RegionalMask):
+            region_masks, region_info = self._extract_regions_from_metadata(transformer_options)
+            if region_masks:
+                log_debug("Extracted Flux regions from shared metadata")
+                return region_masks, region_info
+
+            regional_mask_module, _, _ = find_regional_mask_module(transformer_options)
+            if regional_mask_module is None:
                 log_warning("No Flux regional masks found")
                 return [], "No Flux regional masks found"
             
@@ -230,15 +223,15 @@ class ComfyCoupleRegionVisualizer:
         """Extract region masks from SD/SDXL model"""
         try:
             transformer_options = coupled_model.model_options.get("transformer_options", {})
-            patches_replace = transformer_options.get("patches_replace", {})
-            attn2_patches = patches_replace.get("attn2", {})
-            
-            if not attn2_patches:
+            region_masks, region_info = self._extract_regions_from_metadata(transformer_options)
+            if region_masks:
+                log_debug("Extracted SD/SDXL regions from shared metadata")
+                return region_masks, region_info
+
+            first_patch = find_attn2_patch(transformer_options)
+            if first_patch is None:
                 return [], "No SD/SDXL regional patches found"
-            
-            first_patch_key = list(attn2_patches.keys())[0]
-            first_patch = attn2_patches[first_patch_key]
-            
+
             region_masks = self._extract_masks_from_patch(coupled_model, first_patch)
             
             if not region_masks:
@@ -253,18 +246,40 @@ class ComfyCoupleRegionVisualizer:
             log_warning(f"Failed to extract SD/SDXL regions: {e}")
             return [], f"Error: {e}"
 
+    def _extract_regions_from_metadata(self, transformer_options: Dict[str, Any]) -> Tuple[List[torch.Tensor], str]:
+        metadata = get_region_metadata(transformer_options)
+        if metadata is None:
+            return [], ""
+
+        masks = []
+        for mask in metadata.get("region_masks", []):
+            if isinstance(mask, torch.Tensor):
+                masks.append(mask.cpu().float())
+
+        if not masks:
+            return [], ""
+
+        display_name = metadata.get("display_name") or metadata.get("model_type") or "ComfyCouple"
+        region_info = f"{display_name}: {len(masks)} regions"
+
+        start_percent = metadata.get("start_percent")
+        end_percent = metadata.get("end_percent")
+        if start_percent is not None and end_percent is not None:
+            region_info += f", timesteps: {start_percent*100:.0f}%-{end_percent*100:.0f}%"
+
+        return masks, region_info
+
     def _extract_masks_from_patch(self, model: Any, patch_function: Any) -> List[torch.Tensor]:
         """Extract masks using robust transformer_options or fallback to closure"""
         try:
             pos_masks = []
             
-            # Robust extraction method (ComfyCouple standard)
             transformer_options = model.model_options.get("transformer_options", {})
-            regions_data = transformer_options.get("comfycouple_regions")
+            regions_data = get_region_metadata(transformer_options)
             
             if regions_data is not None:
-                pos_masks = regions_data.get("pos_masks", [])
-                log_debug("Extracted masks from transformer_options successfully")
+                pos_masks = regions_data.get("region_masks", [])
+                log_debug("Extracted masks from region metadata successfully")
             else:
                 # Fallback to fragile closure extraction (for backward compatibility)
                 log_warning("comfycouple_regions not found in transformer_options, falling back to closure.")

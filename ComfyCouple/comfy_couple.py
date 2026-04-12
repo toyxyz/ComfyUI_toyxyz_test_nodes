@@ -14,10 +14,12 @@ from nodes import ConditioningCombine, ConditioningConcat, ConditioningSetMask, 
 from .couple_utils import (
     log_debug, log_warning, validate_strength, create_zero_conditioning,
     MaskProcessor, MASK_EPSILON, detect_model_architecture, ModelType,
-    FLUX_BLOCK_PRESETS, get_flux_preset, detect_or_force_architecture
+    FLUX_BLOCK_PRESETS, get_flux_preset, detect_or_force_architecture,
+    get_model_type_input_options,
 )
 from .couple_patching import AttentionPatcher
 from .couple_flux_patching import FluxAttentionPatcher
+from .couple_strategies import build_region_strategy
 
 # Debug mode can be toggled
 import os
@@ -116,7 +118,7 @@ class ComfyCoupleMask:
                     "default": 0, "min": 0, "max": 200, "step": 1,
                     "tooltip": "Soften mask edges (0: sharp, 10-30: soft)"
                 }),
-                "model_type": (["auto", "sd15", "sdxl", "flux"], {
+                "model_type": (get_model_type_input_options(), {
                     "default": "auto",
                     "tooltip": "Model architecture (auto: detect, flux: force Flux mode)"
                 }),
@@ -169,21 +171,46 @@ class ComfyCoupleMask:
         if not isinstance(region, list) or not region:
             raise ValueError("At least one region required")
 
-        # Detect model architecture
         arch_info = self._detect_architecture(model, kwargs.get("model_type", "auto"))
-        is_flux = arch_info.is_flux
-        
-        print(f"[ComfyCouple] Detected: {arch_info.type.value.upper()}")
-        
-        # ✅ Flux Injection (if enabled and Flux detected)
-        if is_flux and kwargs.get("auto_inject_flux", True):
-            model = self._inject_flux_if_needed(model)
-        
-        # Route to appropriate implementation
-        if is_flux:
-            return self._process_flux(model, region, negative, arch_info, **kwargs)
-        else:
-            return self._process_sd_sdxl(model, region, negative, arch_info, **kwargs)
+        kwargs = self._apply_capability_constraints(model, arch_info, region, dict(kwargs))
+        strategy = build_region_strategy(arch_info)
+        display_name = arch_info.display_name or arch_info.type.value.upper()
+
+        print(f"[ComfyCouple] Detected: {display_name}")
+
+        model = strategy.prepare_model(self, model, kwargs)
+        return strategy.process(self, model, region, negative, **kwargs)
+
+    def _apply_capability_constraints(
+        self,
+        model: Any,
+        arch_info: Any,
+        region: List[Dict[str, Any]],
+        kwargs: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        display_name = arch_info.display_name or arch_info.type.value.upper()
+
+        has_any_lora = any(r.get("lora_hook") is not None for r in region)
+        if has_any_lora and not arch_info.supports("supports_lora_hooks"):
+            print(f"[ComfyCouple] Warning: LoRA hooks are not supported for {display_name} and will be ignored")
+            log_warning(f"LoRA hooks detected but {display_name} does not support them")
+
+        cross_region_attention = kwargs.get("cross_region_attention", 0.0)
+        if cross_region_attention > 0.0 and not arch_info.supports("supports_cross_region_attention"):
+            print(f"[ComfyCouple] Warning: Cross-region attention is not supported for {display_name}; using 0.0")
+            log_warning(f"cross_region_attention ignored for {display_name}")
+            kwargs["cross_region_attention"] = 0.0
+
+        if arch_info.supports("requires_injection") and not kwargs.get("auto_inject_flux", True):
+            print(f"[ComfyCouple] Warning: {display_name} may require injection; auto_inject_flux is disabled")
+            log_warning(f"{display_name} usually requires injection for regional prompting")
+
+        transformer_options = model.model_options.get("transformer_options", {})
+        if transformer_options.get("tiled_diffusion") and not arch_info.supports("supports_tiled_diffusion"):
+            print(f"[ComfyCouple] Warning: TiledDiffusion is not supported for {display_name}")
+            log_warning(f"TiledDiffusion metadata detected but {display_name} does not support it")
+
+        return kwargs
 
     def _inject_flux_if_needed(self, model: Any) -> Any:
         """
@@ -220,12 +247,6 @@ class ComfyCoupleMask:
 
     def _process_flux(self, model, region, negative, arch_info, **kwargs) -> Tuple[Any, Any, Any]:
         """Process Flux model using attention mask approach - WITH DYNAMIC CALCULATION"""
-        
-        # ✅ Check for LoRA hooks and warn
-        has_any_lora = any(r.get('lora_hook') is not None for r in region)
-        if has_any_lora:
-            print("[ComfyCouple] ⚠️ Warning: LoRA hooks are not supported in Flux mode and will be ignored")
-            log_warning("LoRA hooks detected but Flux mode does not support them")
         
         # Remove duplicates
         region = self._remove_duplicate_regions(region)
@@ -264,7 +285,8 @@ class ComfyCoupleMask:
             bg_region = {
                 'positive': bg_positive,
                 'mask': background_mask,
-                'strength': 1.0
+                'strength': 1.0,
+                'is_background': True,
             }
             # Add background as first region
             final_regions = [bg_region] + active_regions

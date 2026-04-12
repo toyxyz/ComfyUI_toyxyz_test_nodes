@@ -10,8 +10,9 @@ from comfy.ldm.modules.attention import optimized_attention
 
 from .couple_utils import (
     ModelType, ArchitectureInfo, ARCH_CONFIGS,
-    log_debug, detect_model_architecture, MaskProcessor,
-    pad_conditioning_tensors, ensure_dtype_device
+    log_debug, detect_or_force_architecture, MaskProcessor,
+    pad_conditioning_tensors, ensure_dtype_device,
+    COMFYCOUPLE_REGIONS_LEGACY_KEY, build_region_metadata, save_region_metadata,
 )
 
 def set_model_patch(model: Any, patch: Any, key: Any, attn_type: str = 'attn2') -> None:
@@ -20,6 +21,15 @@ def set_model_patch(model: Any, patch: Any, key: Any, attn_type: str = 'attn2') 
     patches_replace = transformer_options.setdefault("patches_replace", {})
     attn_patches = patches_replace.setdefault(attn_type, {})
     attn_patches[key] = patch
+
+
+def find_attn2_patch(transformer_options: Dict[str, Any]) -> Any:
+    """Return the first registered attn2 patch, if present."""
+    patches_replace = transformer_options.get("patches_replace", {})
+    attn2_patches = patches_replace.get("attn2", {})
+    if not attn2_patches:
+        return None
+    return next(iter(attn2_patches.values()))
 
 class AttentionPatcher:
     """Manages attention coupling for regional prompting"""
@@ -36,18 +46,18 @@ class AttentionPatcher:
     def patch(self) -> Tuple[Any, Any, Any]:
         """Apply attention coupling based on model architecture"""
         self.arch_info = self._get_architecture_info()
-        print(f"[ComfyCouple] Model: {self.arch_info.type.value.upper()}, Dim: {self.arch_info.dim}, Cross-Attention applied")
+        display_name = self.arch_info.display_name or self.arch_info.type.value.upper()
+        print(f"[ComfyCouple] Model: {display_name}, Dim: {self.arch_info.dim}, Cross-Attention applied")
         return self._apply_patch()
 
     def _get_architecture_info(self) -> ArchitectureInfo:
+        arch_info = detect_or_force_architecture(self.model, self.manual_model_type)
+        display_name = arch_info.display_name or arch_info.type.value.upper()
+
         if self.manual_model_type == "auto":
-            arch_info = detect_model_architecture(self.model)
-            print(f"[ComfyCouple] Auto-detected: {arch_info.type.value.upper()}")
+            print(f"[ComfyCouple] Auto-detected: {display_name}")
         else:
-            model_type_enum = ModelType.SDXL if self.manual_model_type == "sdxl" else ModelType.SD15
-            dim = 2048 if model_type_enum == ModelType.SDXL else 768
-            arch_info = ArchitectureInfo(type=model_type_enum, use_cfg=True, dim=dim)
-            print(f"[ComfyCouple] Manual: {self.manual_model_type.upper()}")
+            print(f"[ComfyCouple] Manual: {display_name}")
         return arch_info
 
     def _apply_patch(self) -> Tuple[Any, Any, Any]:
@@ -60,11 +70,25 @@ class AttentionPatcher:
         
         # Save explicitly to model_options for robust extraction by Extractor/Visualizer
         transformer_options = new_model.model_options.setdefault("transformer_options", {})
-        transformer_options["comfycouple_regions"] = {
+        transformer_options[COMFYCOUPLE_REGIONS_LEGACY_KEY] = {
             "pos_masks": self.pos_masks,
             "padded_pos_conds": self.padded_pos_conds,
             "pos_strengths": self.pos_strengths,
         }
+        save_region_metadata(
+            transformer_options,
+            build_region_metadata(
+                self.arch_info.profile_key or self.arch_info.type.value,
+                region_masks=self.pos_masks,
+                region_strengths=self.pos_strengths,
+                region_conditioning=self.padded_pos_conds,
+                debug_handles={
+                    "attn_type": "attn2",
+                    "cross_region_attention": self.cross_region_attention,
+                    "cross_region_mode": self.cross_region_mode,
+                },
+            ),
+        )
         
         self._patch_model_blocks(new_model)
         

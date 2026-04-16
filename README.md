@@ -8,6 +8,8 @@ https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8536e96a-514a
 
 Update 
 
+2026/04/16 - Add Anima support to ComfyCouple Region node
+
 2025/10/30 - Add lora hook support to ComfyCouple Region node
 
 2025/10/21 - Add Openpose Editor Node, Pose Interpolation, ComfyCouple Region, ComfyCouple Mask, Comfy Couple Region Extractor

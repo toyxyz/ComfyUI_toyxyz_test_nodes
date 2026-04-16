@@ -97,9 +97,10 @@ Direct Webcam capture workflow (without webcam app)
 
 ## ComfyCouple Region / ComfyCouple Mask 
 
-  Regional Prompting Node. Supported models are SD 1.5, SDXL, and Flux. To disable Auto_inject_flux, you must free the model cache. To use Lora_hook, set skip_positive_conditioning to false.
+  Regional Prompting Node. Supported models are SD 1.5, SDXL, and Flux, Anima. To disable Auto_inject_flux, you must free the model cache. To use Lora_hook, set skip_positive_conditioning to false.
 
-<img width="2376" height="1818" alt="image" src="https://github.com/user-attachments/assets/d78d5d1d-67e7-4a0c-bc1f-26569cc638b6" />
+<img width="3442" height="1324" alt="image" src="https://github.com/user-attachments/assets/1186f43e-4599-4aaa-8f89-6a38eac1fcc1" />
+
 
 ## Comfy Couple Region Extractor
 

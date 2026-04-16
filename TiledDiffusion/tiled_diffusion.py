@@ -92,6 +92,10 @@ class BBox:
     def __getitem__(self, idx: int) -> int:
         return self.box[idx]
 
+    def slicer_for(self, ndim: int):
+        prefix = (slice(None),) * max(ndim - 2, 0)
+        return prefix + (slice(self.y, self.y + self.h), slice(self.x, self.x + self.w))
+
 
 class CustomBBox(BBox):
     """Region control bounding box."""
@@ -128,7 +132,7 @@ def split_bboxes(w: int, h: int, tile_w: int, tile_h: int,
             x = min(int(col * dx), w - tile_w)
             bbox = BBox(x, y, tile_w, tile_h)
             bbox_list.append(bbox)
-            weight[bbox.slicer] += init_weight
+            weight[bbox.slicer_for(weight.ndim)] += init_weight
 
     return bbox_list, weight
 
@@ -447,7 +451,8 @@ class MultiDiffusion(AbstractDiffusion):
         c_in: dict = args["c"]
         cond_or_uncond: List = args["cond_or_uncond"]
 
-        N, C, H, W = x_in.shape
+        N = x_in.shape[0]
+        H, W = x_in.shape[-2:]
 
         self.refresh = False
         if self.weights is None or self.h != H or self.w != W:
@@ -463,7 +468,7 @@ class MultiDiffusion(AbstractDiffusion):
                 if processing_interrupted():
                     return x_in
 
-                x_tile = torch.cat([x_in[bbox.slicer] for bbox in bboxes], dim=0)
+                x_tile = torch.cat([x_in[bbox.slicer_for(x_in.ndim)] for bbox in bboxes], dim=0)
                 t_tile = repeat_to_batch_size(t_in, x_tile.shape[0])
                 c_tile = {}
                 for k, v in c_in.items():
@@ -478,7 +483,7 @@ class MultiDiffusion(AbstractDiffusion):
                                     v.shape[-1], v.shape[-2],
                                     x_in.device, self.get_tile_weights,
                                 )
-                            v = torch.cat([v[bbox_.slicer] for bbox_ in bboxes_[batch_id]])
+                            v = torch.cat([v[bbox_.slicer_for(v.ndim)] for bbox_ in bboxes_[batch_id]])
                         if v.shape[0] != x_tile.shape[0]:
                             v = repeat_to_batch_size(v, x_tile.shape[0])
                     c_tile[k] = v
@@ -496,10 +501,11 @@ class MultiDiffusion(AbstractDiffusion):
                 x_tile_out = model_function(x_tile, t_tile, **c_tile)
 
                 for i, bbox in enumerate(bboxes):
-                    self.x_buffer[bbox.slicer] += x_tile_out[i * N:(i + 1) * N, :, :, :]
+                    self.x_buffer[bbox.slicer_for(self.x_buffer.ndim)] += x_tile_out[i * N:(i + 1) * N]
                 del x_tile_out, x_tile, t_tile, c_tile
 
-        x_out = torch.where(self.weights > 1, self.x_buffer / self.weights, self.x_buffer)
+        weights = self.weights.unsqueeze(2) if self.x_buffer.ndim == 5 else self.weights
+        x_out = torch.where(weights > 1, self.x_buffer / weights, self.x_buffer)
         return x_out
 
 
@@ -515,7 +521,8 @@ class SpotDiffusion(AbstractDiffusion):
         c_in: dict = args["c"]
         cond_or_uncond: List = args["cond_or_uncond"]
 
-        N, C, H, W = x_in.shape
+        N = x_in.shape[0]
+        H, W = x_in.shape[-2:]
 
         self.refresh = False
         if self.weights is None or self.h != H or self.w != W:
@@ -579,7 +586,7 @@ class SpotDiffusion(AbstractDiffusion):
                 if processing_interrupted():
                     return x_in
 
-                x_tile = torch.cat([x_in[bbox.slicer] for bbox in bboxes], dim=0)
+                x_tile = torch.cat([x_in[bbox.slicer_for(x_in.ndim)] for bbox in bboxes], dim=0)
                 t_tile = repeat_to_batch_size(t_in, x_tile.shape[0])
                 c_tile = {}
                 for k, v in c_in.items():
@@ -597,7 +604,7 @@ class SpotDiffusion(AbstractDiffusion):
                                 )
                                 sh_h_new, sh_w_new = round(sh_h * self.compression / cf), round(sh_w * self.compression / cf)
                             v = v.roll(shifts=(sh_h_new, sh_w_new), dims=(-2, -1))
-                            v = torch.cat([v[bbox_.slicer] for bbox_ in bboxes_[batch_id]])
+                            v = torch.cat([v[bbox_.slicer_for(v.ndim)] for bbox_ in bboxes_[batch_id]])
                         if v.shape[0] != x_tile.shape[0]:
                             v = repeat_to_batch_size(v, x_tile.shape[0])
                     c_tile[k] = v
@@ -617,7 +624,7 @@ class SpotDiffusion(AbstractDiffusion):
                 x_tile_out = model_function(x_tile, t_tile, **c_tile)
 
                 for i, bbox in enumerate(bboxes):
-                    self.x_buffer[bbox.slicer] = x_tile_out[i * N:(i + 1) * N, :, :, :]
+                    self.x_buffer[bbox.slicer_for(self.x_buffer.ndim)] = x_tile_out[i * N:(i + 1) * N]
                 del x_tile_out, x_tile, t_tile, c_tile
 
         # Reverse the shift
@@ -651,7 +658,7 @@ class MixtureOfDiffusers(AbstractDiffusion):
         self.rescale_factor = 1 / self.weights
         for bbox_id, bbox in enumerate(self.custom_bboxes):
             if bbox.blend_mode == BlendMode.BACKGROUND:
-                self.custom_weights[bbox_id] *= self.rescale_factor[bbox.slicer]
+                self.custom_weights[bbox_id] *= self.rescale_factor[bbox.slicer_for(self.rescale_factor.ndim)]
 
     @grid_bbox
     def get_tile_weights(self) -> Tensor:
@@ -665,7 +672,8 @@ class MixtureOfDiffusers(AbstractDiffusion):
         c_in: dict = args["c"]
         cond_or_uncond: List = args["cond_or_uncond"]
 
-        N, C, H, W = x_in.shape
+        N = x_in.shape[0]
+        H, W = x_in.shape[-2:]
 
         self.refresh = False
         if self.weights is None or self.h != H or self.w != W:
@@ -683,7 +691,7 @@ class MixtureOfDiffusers(AbstractDiffusion):
 
                 x_tile_list = []
                 for bbox in bboxes:
-                    x_tile_list.append(x_in[bbox.slicer])
+                    x_tile_list.append(x_in[bbox.slicer_for(x_in.ndim)])
 
                 x_tile = torch.cat(x_tile_list, dim=0)
                 t_tile = repeat_to_batch_size(t_in, x_tile.shape[0])
@@ -703,7 +711,7 @@ class MixtureOfDiffusers(AbstractDiffusion):
                                     x_in.device,
                                     lambda: self.get_weight(tile_w, tile_h),
                                 )
-                            v = torch.cat([v[bbox_.slicer] for bbox_ in bboxes_[batch_id]])
+                            v = torch.cat([v[bbox_.slicer_for(v.ndim)] for bbox_ in bboxes_[batch_id]])
                         if v.shape[0] != x_tile.shape[0]:
                             v = repeat_to_batch_size(v, x_tile.shape[0])
                     c_tile[k] = v
@@ -721,8 +729,10 @@ class MixtureOfDiffusers(AbstractDiffusion):
                 x_tile_out = model_function(x_tile, t_tile, **c_tile)
 
                 for i, bbox in enumerate(bboxes):
-                    w = self.tile_weights * self.rescale_factor[bbox.slicer]
-                    self.x_buffer[bbox.slicer] += x_tile_out[i * N:(i + 1) * N, :, :, :] * w
+                    w = self.tile_weights * self.rescale_factor[bbox.slicer_for(self.rescale_factor.ndim)]
+                    if x_tile_out.ndim == 5:
+                        w = w.unsqueeze(2)
+                    self.x_buffer[bbox.slicer_for(self.x_buffer.ndim)] += x_tile_out[i * N:(i + 1) * N] * w
                 del x_tile_out, x_tile, t_tile, c_tile
 
         return self.x_buffer

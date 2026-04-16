@@ -6,10 +6,11 @@ Region Extractor Node - Extract specific region(s) from coupled attention patch
 import torch
 import copy
 from typing import Any, Tuple, List, Dict, Optional
+import comfy.patcher_extension
 
 from .couple_utils import (
     log_debug, log_warning, MaskProcessor, MASK_EPSILON,
-    ArchitectureInfo,
+    ArchitectureInfo, ModelType,
     create_zero_conditioning, detect_or_force_architecture,
     get_model_type_input_options,
     get_region_metadata,
@@ -17,6 +18,7 @@ from .couple_utils import (
 
 from .couple_patching import AttentionPatcher, find_attn2_patch
 from .couple_flux_patching import FluxAttentionPatcher, find_regional_mask_module
+from .couple_anima_patching import AnimaAttentionPatcher
 
 
 class ComfyCoupleRegionExtractor:
@@ -30,7 +32,7 @@ class ComfyCoupleRegionExtractor:
         return {
             "required": {
                 "coupled_model": ("MODEL", {
-                    "tooltip": "Model with regional attention already applied"
+                    "tooltip": "Model with regional attention already applied. For Anima, the extracted model is the main output that carries the region selection."
                 }),
                 "extraction_mask": ("MASK", {
                     "tooltip": "Mask defining region(s) to extract (white=include, black=exclude)"
@@ -48,7 +50,7 @@ class ComfyCoupleRegionExtractor:
                 }),
                 "background_mode": (["zero", "replicate", "original", "remove"], {
                     "default": "replicate",
-                    "tooltip": "zero: Empty prompt | replicate: Copy extracted region(s) | original: Keep other regions | remove: No background"
+                    "tooltip": "zero: Empty prompt | replicate: Copy extracted region(s) | original: Keep other regions | remove: No background. For Anima, this affects the extracted model patching rather than extracted conditioning."
                 }),
             },
             "optional": {
@@ -60,7 +62,7 @@ class ComfyCoupleRegionExtractor:
                     "min": 0.0,
                     "max": 2.0,
                     "step": 0.01,
-                    "tooltip": "Prompt strength for extracted region(s) (0.0=ignore, 1.0=normal, >1.0=emphasize)"
+                    "tooltip": "Prompt strength for extracted region(s) (0.0=ignore, 1.0=normal, >1.0=emphasize). For Anima, the extracted model carries the usable region result."
                 }),
                 "background_strength": ("FLOAT", {
                     "default": 1.0,
@@ -71,7 +73,7 @@ class ComfyCoupleRegionExtractor:
                 }),
                 "model_type": (get_model_type_input_options(), {
                     "default": "auto",
-                    "tooltip": "auto: Detect automatically | sd15/sdxl/flux: Force specific architecture"
+                    "tooltip": "auto: Detect automatically | sd15/sdxl/flux/anima: Force specific architecture. Anima supports model extraction, but extracted_conditioning is intentionally disabled."
                 }),
             }
         }
@@ -110,7 +112,12 @@ class ComfyCoupleRegionExtractor:
             print(f"[RegionExtractor] ✅ Conditioning extraction enabled")
         
         # Extract region data from coupled model
-        if is_flux:
+        if arch_info.type == ModelType.ANIMA:
+            extracted_model, indices, info = self._extract_anima(
+                coupled_model, extraction_mask, extraction_mode, threshold,
+                background_mode, extracted_strength, background_strength
+            )
+        elif is_flux:
             extracted_model, indices, info = self._extract_flux(
                 coupled_model, extraction_mask, extraction_mode, threshold,
                 background_mode, extracted_strength, background_strength
@@ -123,7 +130,13 @@ class ComfyCoupleRegionExtractor:
         
         # ✅ NEW: Extract conditioning if provided
         extracted_conditioning = None
-        if conditioning is not None:
+        if arch_info.type == ModelType.ANIMA:
+            if conditioning is not None:
+                extracted_conditioning = create_zero_conditioning(conditioning)
+            else:
+                extracted_conditioning = create_zero_conditioning([(torch.zeros(1, 77, arch_info.dim), {})])
+            print("[RegionExtractor] Anima extracted_conditioning is disabled; outputting zero conditioning")
+        elif conditioning is not None:
             try:
                 extracted_conditioning, cond_info = self._extract_conditioning(
                     conditioning, extraction_mask, extraction_mode, threshold,
@@ -285,6 +298,84 @@ class ComfyCoupleRegionExtractor:
         if background_mode != "remove":
             info += f", background={background_mode}"
         
+        return (output_conds, info)
+
+    def _extract_anima_conditioning(
+        self,
+        coupled_model: Any,
+        extraction_mask: torch.Tensor,
+        extraction_mode: str,
+        threshold: float,
+        background_mode: str,
+        extracted_strength: float,
+        background_strength: float,
+    ) -> Tuple[Any, str]:
+        """Build extracted conditioning for Anima directly from shared region metadata."""
+        transformer_options = coupled_model.model_options.get("transformer_options", {})
+        region_masks, region_conds, _, _ = self._extract_regions_from_metadata(transformer_options)
+
+        if not region_masks or not region_conds:
+            raise ValueError("No Anima region metadata available for conditioning extraction")
+
+        matched_indices, match_scores = self._find_matching_regions(
+            extraction_mask, region_masks, threshold
+        )
+
+        if not matched_indices:
+            raise ValueError(f"No Anima conditioning matched extraction mask with threshold {threshold:.0%}")
+
+        if extraction_mode == "single_best":
+            matched_indices = [matched_indices[0]]
+            match_scores = [match_scores[0]]
+            print(f"[CondExtractor] Anima single best: Region {matched_indices[0]} ({match_scores[0]:.1%})")
+        else:
+            print(f"[CondExtractor] Anima all matching: {len(matched_indices)} regions")
+            for idx, score in zip(matched_indices, match_scores):
+                print(f"  Region {idx}: {score:.1%} coverage")
+
+        output_conds = []
+
+        if background_mode != "remove":
+            unmatched_indices = [i for i in range(len(region_masks)) if i not in matched_indices]
+            background_mask = self._calculate_background_mask(
+                extraction_mask,
+                [region_masks[idx] for idx in matched_indices],
+            )
+
+            if background_mask.sum() > MASK_EPSILON:
+                if background_mode == "zero":
+                    bg_tensor = torch.zeros_like(region_conds[matched_indices[0]])
+                elif background_mode == "replicate":
+                    bg_tensor = self._average_compatible_tensors(
+                        [region_conds[idx] for idx in matched_indices],
+                        region_conds[matched_indices[0]],
+                    )
+                elif background_mode == "original" and unmatched_indices:
+                    bg_tensor = self._average_compatible_tensors(
+                        [region_conds[idx] for idx in unmatched_indices],
+                        region_conds[unmatched_indices[0]],
+                    )
+                else:
+                    bg_tensor = torch.zeros_like(region_conds[matched_indices[0]])
+
+                output_conds.append((
+                    bg_tensor,
+                    {"mask": background_mask, "mask_strength": background_strength},
+                ))
+
+        for idx in matched_indices:
+            output_conds.append((
+                region_conds[idx],
+                {"mask": region_masks[idx], "mask_strength": extracted_strength},
+            ))
+
+        indices_str = ",".join(str(i) for i in matched_indices)
+        info = (f"Extracted {len(matched_indices)} Anima conditioning(s) "
+                f"[{indices_str}]/{len(region_conds)}, mode={extraction_mode}")
+
+        if background_mode != "remove":
+            info += f", background={background_mode}"
+
         return (output_conds, info)
 
     def _calculate_coverage(self, extraction_mask: torch.Tensor, 
@@ -476,6 +567,145 @@ class ComfyCoupleRegionExtractor:
         
         except Exception as e:
             raise RuntimeError(f"Failed to extract Flux region: {e}")
+
+    def _extract_anima(self, coupled_model: Any, extraction_mask: torch.Tensor,
+                      extraction_mode: str, threshold: float, background_mode: str,
+                      extracted_strength: float, background_strength: float) -> Tuple[Any, str, str]:
+        """Extract region(s) from Anima model using shared metadata."""
+
+        try:
+            transformer_options = coupled_model.model_options.get("transformer_options", {})
+            region_masks, region_conds, region_strengths, metadata = self._extract_regions_from_metadata(transformer_options)
+            region_conditioning_objects = list(metadata.get("region_conditioning_objects", []))
+
+            if not region_masks or not region_conds:
+                raise ValueError("Model doesn't have Anima regional metadata available")
+
+            num_regions = len(region_masks)
+            log_debug(f"Found {num_regions} regions in Anima model")
+
+            matched_indices, match_scores = self._find_matching_regions(
+                extraction_mask, region_masks, threshold
+            )
+
+            if not matched_indices:
+                raise ValueError(f"No regions match extraction mask with threshold {threshold:.0%}")
+
+            if extraction_mode == "single_best":
+                matched_indices = [matched_indices[0]]
+                match_scores = [match_scores[0]]
+                print(f"[RegionExtractor] Single best: Region {matched_indices[0]} ({match_scores[0]:.1%})")
+            else:
+                print(f"[RegionExtractor] All matching: {len(matched_indices)} regions")
+                for idx, score in zip(matched_indices, match_scores):
+                    print(f"  Region {idx}: {score:.1%} coverage")
+
+            extracted_regions = []
+
+            if background_mode != "remove":
+                unmatched_indices = [i for i in range(num_regions) if i not in matched_indices]
+
+                background_mask = torch.ones_like(region_masks[0])
+                for idx in matched_indices:
+                    background_mask = background_mask - region_masks[idx]
+                background_mask = background_mask.clamp(min=0)
+
+                if background_mask.sum() > MASK_EPSILON:
+                    if background_mode == "zero":
+                        background_cond = torch.zeros_like(region_conds[matched_indices[0]])
+                        background_region = {
+                            "context_tensor": background_cond,
+                            "mask": background_mask,
+                            "strength": background_strength,
+                            "is_background": True,
+                        }
+                        log_debug("Anima background: zero conditioning")
+                    elif background_mode == "replicate":
+                        if matched_indices[0] < len(region_conditioning_objects) and region_conditioning_objects[matched_indices[0]] is not None:
+                            background_region = {
+                                "conditioning": copy.deepcopy(region_conditioning_objects[matched_indices[0]]),
+                                "mask": background_mask,
+                                "strength": background_strength,
+                                "is_background": True,
+                            }
+                        else:
+                            background_cond = self._average_compatible_tensors(
+                                [region_conds[i] for i in matched_indices],
+                                region_conds[matched_indices[0]],
+                            )
+                            background_region = {
+                                "context_tensor": background_cond,
+                                "mask": background_mask,
+                                "strength": background_strength,
+                                "is_background": True,
+                            }
+                        log_debug(f"Anima background: replicated from {len(matched_indices)} region(s)")
+                    elif background_mode == "original" and unmatched_indices:
+                        if unmatched_indices[0] < len(region_conditioning_objects) and region_conditioning_objects[unmatched_indices[0]] is not None:
+                            background_region = {
+                                "conditioning": copy.deepcopy(region_conditioning_objects[unmatched_indices[0]]),
+                                "mask": background_mask,
+                                "strength": background_strength,
+                                "is_background": True,
+                            }
+                        else:
+                            background_cond = self._average_compatible_tensors(
+                                [region_conds[i] for i in unmatched_indices],
+                                region_conds[unmatched_indices[0]],
+                            )
+                            background_region = {
+                                "context_tensor": background_cond,
+                                "mask": background_mask,
+                                "strength": background_strength,
+                                "is_background": True,
+                            }
+                        log_debug(f"Anima background: original ({len(unmatched_indices)} region(s))")
+                    else:
+                        background_cond = torch.zeros_like(region_conds[matched_indices[0]])
+                        background_region = {
+                            "context_tensor": background_cond,
+                            "mask": background_mask,
+                            "strength": background_strength,
+                            "is_background": True,
+                        }
+
+                    extracted_regions.append(background_region)
+
+            for idx in matched_indices:
+                strength = region_strengths[idx] if idx < len(region_strengths) else 1.0
+                strength = extracted_strength if extracted_strength is not None else strength
+                if idx < len(region_conditioning_objects) and region_conditioning_objects[idx] is not None:
+                    extracted_regions.append({
+                        "conditioning": copy.deepcopy(region_conditioning_objects[idx]),
+                        "mask": region_masks[idx],
+                        "strength": strength,
+                        "is_background": False,
+                    })
+                else:
+                    extracted_regions.append({
+                        "context_tensor": region_conds[idx],
+                        "mask": region_masks[idx],
+                        "strength": strength,
+                        "is_background": False,
+                    })
+
+            new_model = self._create_anima_patched_model(coupled_model, extracted_regions)
+
+            indices_str = ",".join(str(i) for i in matched_indices)
+            region_info = (f"Anima: Extracted {len(matched_indices)} region(s) "
+                          f"[{indices_str}]/{num_regions}, "
+                          f"mode={extraction_mode}, "
+                          f"extracted_strength={extracted_strength:.2f}")
+
+            if background_mode != "remove":
+                region_info += f", background={background_mode} (strength={background_strength:.2f})"
+
+            print(f"[RegionExtractor] {region_info}")
+
+            return (new_model, indices_str, region_info)
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to extract Anima region: {e}")
 
     def _extract_sd_sdxl(self, coupled_model: Any, extraction_mask: torch.Tensor,
                         extraction_mode: str, threshold: float, background_mode: str,
@@ -725,6 +955,43 @@ class ComfyCoupleRegionExtractor:
         except Exception as e:
             log_warning(f"Failed to extract regions from patch: {e}")
             return [], [], []
+
+    def _average_compatible_tensors(self, tensors: List[torch.Tensor], fallback: torch.Tensor) -> torch.Tensor:
+        """Average tensors that share the same token length, fallback to reference shape when needed."""
+        if not tensors:
+            return torch.zeros_like(fallback)
+
+        ref_shape = tensors[0].shape[1]
+        compatible = [tensor for tensor in tensors if tensor.shape[1] == ref_shape]
+        if not compatible:
+            return torch.zeros_like(fallback)
+
+        return torch.stack(compatible).mean(dim=0)
+
+    def _create_anima_patched_model(self, base_model: Any, extracted_regions: List[Dict[str, Any]]) -> Any:
+        """Create a new Anima patched model from extracted region contexts."""
+        if not extracted_regions:
+            raise ValueError("No extracted Anima regions available")
+
+        new_model = base_model.clone()
+        if hasattr(new_model, "remove_wrappers_with_key"):
+            new_model.remove_wrappers_with_key(
+                comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL,
+                AnimaAttentionPatcher.WRAPPER_KEY,
+            )
+        transformer_options = new_model.model_options.setdefault("transformer_options", {})
+        wrappers = transformer_options.get("wrappers", {})
+        diffusion_wrappers = wrappers.get("diffusion_model", {})
+        if AnimaAttentionPatcher.WRAPPER_KEY in diffusion_wrappers:
+            diffusion_wrappers.pop(AnimaAttentionPatcher.WRAPPER_KEY, None)
+        if not diffusion_wrappers and "diffusion_model" in wrappers:
+            wrappers.pop("diffusion_model", None)
+
+        patcher = AnimaAttentionPatcher(
+            model=new_model,
+            regions=extracted_regions,
+        )
+        return patcher.patch()
 
     def _create_patched_model(self, base_model: Any, extracted_conds: List,
                             original_transformer_options: Dict) -> Any:

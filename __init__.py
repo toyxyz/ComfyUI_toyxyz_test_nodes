@@ -1,4 +1,4 @@
-from .ComfyCouple.comfy_couple import ComfyCoupleMask, ComfyCoupleRegion
+from .ComfyCouple.comfy_couple import ComfyCoupleBackgroundPrompt, ComfyCoupleBasePrompt, ComfyCoupleMask, ComfyCoupleRegion
 from .ComfyCouple.Extractor import ComfyCoupleRegionExtractor
 from .ComfyCouple.Visualizer import ComfyCoupleRegionVisualizer
 from .nodes.toyxyz_test_nodes import CaptureWebcam, LoadWebcamImage, SaveImagetoPath, LatentDelay, ImageResize_Padding, Direct_screenCap, Depth_to_normal, Remove_noise, Export_glb, Load_Random_Text_From_File
@@ -10,6 +10,8 @@ from .TiledDiffusion import NODE_CLASS_MAPPINGS as TD_NCM, NODE_DISPLAY_NAME_MAP
 
 NODE_CLASS_MAPPINGS = {
     "ComfyCoupleMask": ComfyCoupleMask,
+    "ComfyCoupleBackgroundPrompt": ComfyCoupleBackgroundPrompt,
+    "ComfyCoupleBasePrompt": ComfyCoupleBasePrompt,
     "ComfyCoupleRegion": ComfyCoupleRegion,
     "VisualAreaMask": VisualAreaMask,
     "CaptureWebcam": CaptureWebcam,
@@ -34,6 +36,8 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "ComfyCoupleMask": "ComfyCouple Mask",
+    "ComfyCoupleBackgroundPrompt": "ComfyCouple Background Prompt",
+    "ComfyCoupleBasePrompt": "ComfyCouple Base Prompt",
     "ComfyCoupleRegion": "ComfyCouple Region",
     "VisualAreaMask": "Visual Area Mask",
     "CaptureWebcam": "Capture Webcam",

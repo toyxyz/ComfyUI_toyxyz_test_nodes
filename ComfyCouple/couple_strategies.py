@@ -64,8 +64,23 @@ class FluxMaskStrategy(BaseRegionStrategy):
         return processor._process_flux(model, region, negative, self.arch_info, **kwargs)
 
 
+class AnimaApplyModelStrategy(BaseRegionStrategy):
+    """Strategy for Anima regional prompting via apply_model wrapper patching."""
+
+    def process(
+        self,
+        processor: Any,
+        model: Any,
+        region: List[Dict[str, Any]],
+        negative: Any,
+        **kwargs,
+    ) -> Tuple[Any, Any, Any]:
+        return processor._process_anima(model, region, negative, self.arch_info, **kwargs)
+
+
 STRATEGY_REGISTRY: Dict[str, Type[BaseRegionStrategy]] = {
     "unet_attn2": UNetCrossAttentionStrategy,
+    "anima_apply_model": AnimaApplyModelStrategy,
     "flux_mask": FluxMaskStrategy,
 }
 

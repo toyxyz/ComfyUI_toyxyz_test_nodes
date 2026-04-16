@@ -8,9 +8,9 @@ With built-in Flux injection capability and Regional LoRA Hook support
 """
 import torch
 import copy
-from typing import Dict, List, Tuple, Optional, Any, Callable
+from typing import Dict, List, Tuple, Optional, Any
 
-from nodes import ConditioningCombine, ConditioningConcat, ConditioningSetMask, ConditioningAverage
+from nodes import CLIPTextEncode, ConditioningCombine, ConditioningSetMask, ConditioningAverage
 from .couple_utils import (
     log_debug, log_warning, validate_strength, create_zero_conditioning,
     MaskProcessor, MASK_EPSILON, detect_model_architecture, ModelType,
@@ -19,6 +19,7 @@ from .couple_utils import (
 )
 from .couple_patching import AttentionPatcher
 from .couple_flux_patching import FluxAttentionPatcher
+from .couple_anima_patching import AnimaAttentionPatcher
 from .couple_strategies import build_region_strategy
 
 # Debug mode can be toggled
@@ -30,10 +31,83 @@ if DEBUG_ENABLED:
     couple_utils.DEBUG_MODE = True
     print("[ComfyCouple] Debug mode enabled (set COMFYCOUPLE_DEBUG=0 to disable)")
 
-COND_METHODS: Dict[str, Callable] = {
-    'concat': lambda a, b: ConditioningConcat().concat(a, b)[0],
-    'combine': lambda a, b: ConditioningCombine().combine(a, b)[0]
-}
+CHAIN_META_KEY = "__comfycouple_chain_meta__"
+CHAIN_BASE_PROMPT_TEXT_KEY = "base_prompt_text"
+CHAIN_BACKGROUND_PROMPT_TEXT_KEY = "background_prompt_text"
+
+
+class ComfyCoupleBasePrompt:
+    """Attach shared base prompt text to the region chain."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "base_prompt_text": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                    "dynamicPrompts": True,
+                    "tooltip": "Common base prompt text shared through the region chain. Appended to every region prompt_text that uses the chain text system."
+                }),
+            },
+            "optional": {
+                "region": ("region", {"tooltip": "Optional existing region chain"}),
+            }
+        }
+
+    RETURN_TYPES = ("region",)
+    FUNCTION = "process"
+    CATEGORY = "ToyxyzTestNodes"
+
+    def process(
+        self,
+        base_prompt_text: str,
+        region: Optional[List[Dict[str, Any]]] = None,
+    ) -> Tuple[List[Dict[str, Any]]]:
+        region_list = copy.deepcopy(region) if region is not None else []
+        region_list.append({
+            CHAIN_META_KEY: {
+                CHAIN_BASE_PROMPT_TEXT_KEY: base_prompt_text,
+            }
+        })
+        return (region_list,)
+
+
+class ComfyCoupleBackgroundPrompt:
+    """Attach shared background prompt text to the region chain."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "background_prompt_text": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                    "dynamicPrompts": True,
+                    "tooltip": "Background prompt text shared through the region chain. Appended to every region prompt_text and used for uncovered background areas."
+                }),
+            },
+            "optional": {
+                "region": ("region", {"tooltip": "Optional existing region chain"}),
+            }
+        }
+
+    RETURN_TYPES = ("region",)
+    FUNCTION = "process"
+    CATEGORY = "ToyxyzTestNodes"
+
+    def process(
+        self,
+        background_prompt_text: str,
+        region: Optional[List[Dict[str, Any]]] = None,
+    ) -> Tuple[List[Dict[str, Any]]]:
+        region_list = copy.deepcopy(region) if region is not None else []
+        region_list.append({
+            CHAIN_META_KEY: {
+                CHAIN_BACKGROUND_PROMPT_TEXT_KEY: background_prompt_text,
+            }
+        })
+        return (region_list,)
 
 class ComfyCoupleRegion:
     """Define a region with prompt and mask"""
@@ -42,11 +116,19 @@ class ComfyCoupleRegion:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "positive": ("CONDITIONING", {"tooltip": "Prompt for this region"}),
                 "mask": ("MASK", {"tooltip": "Region mask (white=100%, black=0%)"}),
                 "strength": ("FLOAT", {
                     "default": 1.0, "min": 0.0, "max": 10.0, "step": 0.01,
                     "tooltip": "Prompt strength (<1: blend, 1: full, >1: emphasize) [Flux: 0 or 1 only]"
+                }),
+                "prompt_text": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                    "dynamicPrompts": True,
+                    "tooltip": "Primary prompt text for this region. When prompt_text and clip are connected, the chain text system uses this for all supported model types."
+                }),
+                "clip": ("CLIP", {
+                    "tooltip": "CLIP used to encode prompt_text for the chain text system. Use the same CLIP family as the connected model."
                 }),
             },
             "optional": {
@@ -61,25 +143,27 @@ class ComfyCoupleRegion:
     FUNCTION = "process"
     CATEGORY = "ToyxyzTestNodes"
 
-    def process(self, positive: Any, mask: torch.Tensor, strength: float,
+    def process(self, mask: torch.Tensor, strength: float, prompt_text: str, clip: Any,
                 lora_hook: Optional[Any] = None,
                 region: Optional[List[Dict[str, Any]]] = None) -> Tuple[List[Dict[str, Any]]]:
         if not isinstance(mask, torch.Tensor):
             raise TypeError(f"Mask must be torch.Tensor, got {type(mask)}")
 
         current_region = {
-            "positive": positive, 
             "mask": mask, 
             "strength": strength,
+            "prompt_text": prompt_text,
+            "clip": clip,
             "lora_hook": lora_hook  # ✅ Store LoRA hook
         }
         
         region_list = region if region is not None else []
+        first_region = next((item for item in region_list if "mask" in item), None)
         
         # Auto-resize if needed
-        if region_list and region_list[0]["mask"].shape != mask.shape:
+        if first_region is not None and first_region["mask"].shape != mask.shape:
             try:
-                target_shape = region_list[0]["mask"].shape
+                target_shape = first_region["mask"].shape
                 current_region["mask"] = MaskProcessor.resize_to_match(mask, target_shape)
                 log_debug(f"Auto-resized mask: {mask.shape} -> {target_shape}")
             except Exception as e:
@@ -128,20 +212,6 @@ class ComfyCoupleMask:
                 }),
             },
             "optional": {
-                "background": ("CONDITIONING", {"tooltip": "Prompt for unmasked areas"}),
-                "background_to_region_mode": (["none", "concat", "combine"], {
-                    "default": "concat",
-                    "tooltip": "How to apply background to regions"
-                }),
-                "base_prompt": ("CONDITIONING", {"tooltip": "Common prompt for all regions"}),
-                "base_prompt_method": (["concat", "combine"], {
-                    "default": "concat",
-                    "tooltip": "How to merge base prompt"
-                }),
-                "background_strength": ("FLOAT", {
-                    "default": 1.0, "min": 0.0, "max": 10.0, "step": 0.01,
-                    "tooltip": "Background prompt strength"
-                }),
                 # Flux-specific options
                 "flux_block_preset": (flux_preset_options, {
                     "default": "default",
@@ -171,8 +241,14 @@ class ComfyCoupleMask:
         if not isinstance(region, list) or not region:
             raise ValueError("At least one region required")
 
+        region, chain_metadata = self._split_region_chain(region)
+        if not region:
+            raise ValueError("At least one real region required")
+
         arch_info = self._detect_architecture(model, kwargs.get("model_type", "auto"))
-        kwargs = self._apply_capability_constraints(model, arch_info, region, dict(kwargs))
+        kwargs = dict(kwargs)
+        kwargs["_chain_metadata"] = chain_metadata
+        kwargs = self._apply_capability_constraints(model, arch_info, region, kwargs)
         strategy = build_region_strategy(arch_info)
         display_name = arch_info.display_name or arch_info.type.value.upper()
 
@@ -180,6 +256,18 @@ class ComfyCoupleMask:
 
         model = strategy.prepare_model(self, model, kwargs)
         return strategy.process(self, model, region, negative, **kwargs)
+
+    def _split_region_chain(self, region_chain: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        regions: List[Dict[str, Any]] = []
+        chain_metadata: Dict[str, Any] = {}
+
+        for item in region_chain:
+            if isinstance(item, dict) and CHAIN_META_KEY in item:
+                chain_metadata.update(item[CHAIN_META_KEY])
+            else:
+                regions.append(item)
+
+        return regions, chain_metadata
 
     def _apply_capability_constraints(
         self,
@@ -247,7 +335,8 @@ class ComfyCoupleMask:
 
     def _process_flux(self, model, region, negative, arch_info, **kwargs) -> Tuple[Any, Any, Any]:
         """Process Flux model using attention mask approach - WITH DYNAMIC CALCULATION"""
-        
+        chain_metadata = kwargs.get("_chain_metadata", {})
+
         # Remove duplicates
         region = self._remove_duplicate_regions(region)
         log_debug(f"Processing {len(region)} unique regions (Flux mode - dynamic calculation)")
@@ -272,44 +361,28 @@ class ComfyCoupleMask:
         combined_mask = torch.stack([r['mask'] for r in active_regions]).sum(dim=0)
         background_mask = (1.0 - combined_mask).clamp(min=0.0)
         has_background = background_mask.sum() > MASK_EPSILON
-        
+
+        final_active_regions = []
+        for r in active_regions:
+            final_active_regions.append({
+                **r,
+                "positive": self._resolve_region_conditioning(r, chain_metadata),
+            })
+
         # Add background region if needed
-        bg_positive = kwargs.get('background')
-        if has_background and bg_positive is not None:
-            # Apply base_prompt to background if provided
-            if kwargs.get('base_prompt'):
-                base_method = kwargs.get('base_prompt_method', 'concat')
-                bg_positive = COND_METHODS[base_method](bg_positive, kwargs['base_prompt'])
-            
-            # Create background region
+        if has_background:
+            bg_positive = self._resolve_background_conditioning(prepared_regions, chain_metadata)
             bg_region = {
                 'positive': bg_positive,
                 'mask': background_mask,
                 'strength': 1.0,
                 'is_background': True,
             }
-            # Add background as first region
-            final_regions = [bg_region] + active_regions
+            final_regions = [bg_region] + final_active_regions
             log_debug(f"Background added (coverage: {background_mask.sum().item():.1f} pixels)")
         else:
-            final_regions = active_regions
-            if has_background:
-                log_debug("No background provided, unmask area will not be filled")
-            else:
-                log_debug("No background area (regions cover entire image)")
-        
-        # Apply background_to_region_mode to active regions (same as SD/SDXL)
-        if kwargs.get('background') and kwargs.get('background_to_region_mode', 'concat') != 'none':
-            bg_mode = kwargs.get('background_to_region_mode', 'concat')
-            for r in active_regions:
-                r['positive'] = COND_METHODS[bg_mode](r['positive'], kwargs['background'])
-            log_debug(f"Applied background_to_region_mode={bg_mode} to {len(active_regions)} regions")
-        
-        # Apply base_prompt to active regions
-        if kwargs.get('base_prompt'):
-            base_method = kwargs.get('base_prompt_method', 'concat')
-            for r in active_regions:
-                r['positive'] = COND_METHODS[base_method](r['positive'], kwargs['base_prompt'])
+            final_regions = final_active_regions
+            log_debug("No background area (regions cover entire image)")
         
         # Get Flux block preset
         preset_name = kwargs.get('flux_block_preset', 'default')
@@ -361,26 +434,66 @@ class ComfyCoupleMask:
         
         return (patched_model, final_positive, negative)
 
+    def _process_anima(self, model, region, negative, arch_info, **kwargs) -> Tuple[Any, Any, Any]:
+        """Process Anima using an apply_model wrapper on the cloned ModelPatcher."""
+        chain_metadata = kwargs.get("_chain_metadata", {})
+        region = self._remove_duplicate_regions(region)
+        self._validate_mask_sizes_for_upscale(region)
+        log_debug(f"Processing {len(region)} unique regions (Anima mode)")
+
+        prepared_regions = self._prepare_regions(region, kwargs, is_flux=False)
+        active_regions, background_mask = self._process_strength_zero_regions(prepared_regions)
+        if not active_regions:
+            raise ValueError("All regions have zero strength")
+
+        processed_regions = []
+        for r in active_regions:
+            region_cond = self._resolve_region_conditioning(r, chain_metadata)
+            processed_regions.append(
+                {
+                    "conditioning": region_cond,
+                    "mask": r["mask"],
+                    "strength": r["strength"],
+                    "is_background": False,
+                }
+            )
+
+        if background_mask.sum() > MASK_EPSILON:
+            final_bg = self._resolve_background_conditioning(prepared_regions, chain_metadata)
+            processed_regions.append(
+                {
+                    "conditioning": final_bg,
+                    "mask": background_mask,
+                    "strength": 1.0,
+                    "is_background": True,
+                }
+            )
+
+        patcher = AnimaAttentionPatcher(model=model, regions=processed_regions)
+        patched_model = patcher.patch()
+
+        if kwargs.get("skip_positive_conditioning", True):
+            final_positive_output = create_zero_conditioning(negative)
+        else:
+            print("[ComfyCouple] Anima positive output passthrough is experimental")
+            log_warning("Anima skip_positive_conditioning=False may change conditioning behavior depending on downstream nodes")
+            final_positive_output = self._convert_to_output_format(processed_regions)
+        return (patched_model, final_positive_output, negative)
+
     def _process_sd_sdxl(self, model, region, negative, arch_info, **kwargs) -> Tuple[Any, Any, Any]:
         """Process SD/SDXL model using original approach with LoRA Hook support"""
         
+        chain_metadata = kwargs.get("_chain_metadata", {})
+
         # Remove duplicates
         region = self._remove_duplicate_regions(region)
         self._validate_mask_sizes_for_upscale(region)
         log_debug(f"Processing {len(region)} unique regions (SD/SDXL mode)")
 
-        # Validate strengths
-        bg_strength = validate_strength(kwargs.get("background_strength", 1.0), "Background", is_flux=False)
         prepared_regions = self._prepare_regions(region, kwargs, is_flux=False)
         
-        # Get background
-        bg_positive = kwargs.get("background")
-        if bg_positive is None:
-            log_debug("No background provided, creating zero conditioning")
-            bg_positive = create_zero_conditioning(prepared_regions[0]["positive"])
-        
         # Separate active and zero-strength regions
-        active_regions, background_mask = self._process_strength_zero_regions(prepared_regions, bg_strength)
+        active_regions, background_mask = self._process_strength_zero_regions(prepared_regions)
         
         if not active_regions:
             raise ValueError("All regions have zero strength")
@@ -390,20 +503,15 @@ class ComfyCoupleMask:
         
         # Process active regions
         for r in active_regions:
-            # Step 1: Copy conditioning
-            region_cond = copy.deepcopy(r['positive'])
+            # Step 1: Resolve chain-text conditioning or fallback conditioning
+            region_cond = self._resolve_region_conditioning(r, chain_metadata)
             
-            # Step 2: Apply background/base_prompt modifiers
-            region_cond = self._apply_conditioning_modifiers(
-                region_cond, kwargs, is_background=False
-            )
-            
-            # Step 3: Apply mask metadata FIRST
+            # Step 2: Apply mask metadata FIRST
             region_cond = ConditioningSetMask().append(
                 region_cond, r['mask'], "default", r['strength']
             )[0]
             
-            # Step 4: ✅ Attach LoRA hook AFTER ConditioningSetMask
+            # Step 3: Attach LoRA hook AFTER ConditioningSetMask
             # Follows ComfyUI's Cond Set Props behavior: preserve existing hooks
             has_lora = False
             if r.get('lora_hook') is not None:
@@ -451,16 +559,16 @@ class ComfyCoupleMask:
         # Process background
         has_background = background_mask.sum() > MASK_EPSILON
         if has_background:
-            final_bg = self._apply_conditioning_modifiers(bg_positive, kwargs, is_background=True)
+            final_bg = self._resolve_background_conditioning(prepared_regions, chain_metadata)
             final_bg = ConditioningSetMask().append(
-                final_bg, background_mask, "default", bg_strength
+                final_bg, background_mask, "default", 1.0
             )[0]
             
             all_processed_conds.append({
                 'conditioning': final_bg,
                 'has_lora': False,  # ✅ Background doesn't have LoRA hook
                 'mask': background_mask,
-                'strength': bg_strength
+                'strength': 1.0
             })
             log_debug(f"Background included (mask coverage: {background_mask.sum().item():.1f})")
 
@@ -513,6 +621,75 @@ class ComfyCoupleMask:
 
         return (patched_model, final_positive_output, negative)
 
+    def _build_chain_text_conditioning(
+        self,
+        region: Dict[str, Any],
+        chain_metadata: Dict[str, Any],
+    ) -> Optional[Any]:
+        base_prompt_text = str(chain_metadata.get(CHAIN_BASE_PROMPT_TEXT_KEY, "") or "").strip()
+        background_prompt_text = str(chain_metadata.get(CHAIN_BACKGROUND_PROMPT_TEXT_KEY, "") or "").strip()
+        prompt_text = str(region.get("prompt_text", "") or "").strip()
+        clip = region.get("clip")
+
+        if not prompt_text or clip is None:
+            return None
+
+        merged_prompt = self._merge_prompt_text(prompt_text, base_prompt_text, background_prompt_text)
+        return CLIPTextEncode().encode(clip, merged_prompt)[0]
+
+    def _build_chain_background_conditioning(
+        self,
+        regions: List[Dict[str, Any]],
+        chain_metadata: Dict[str, Any],
+    ) -> Optional[Any]:
+        background_prompt_text = str(chain_metadata.get(CHAIN_BACKGROUND_PROMPT_TEXT_KEY, "") or "").strip()
+        base_prompt_text = str(chain_metadata.get(CHAIN_BASE_PROMPT_TEXT_KEY, "") or "").strip()
+        if not background_prompt_text:
+            return None
+
+        clip = next((r.get("clip") for r in regions if r.get("clip") is not None), None)
+        if clip is None:
+            return None
+
+        merged_prompt = self._merge_prompt_text(background_prompt_text, base_prompt_text)
+        return CLIPTextEncode().encode(clip, merged_prompt)[0]
+
+    def _merge_prompt_text(self, *prompt_parts: str) -> str:
+        parts = [str(part).strip() for part in prompt_parts if str(part).strip()]
+        return ", ".join(parts)
+
+    def _resolve_region_conditioning(
+        self,
+        region: Dict[str, Any],
+        chain_metadata: Dict[str, Any],
+    ) -> Any:
+        chain_cond = self._build_chain_text_conditioning(region, chain_metadata)
+        if chain_cond is not None:
+            return chain_cond
+
+        missing = []
+        if not str(region.get("prompt_text", "") or "").strip():
+            missing.append("prompt_text")
+        if region.get("clip") is None:
+            missing.append("clip")
+
+        if missing:
+            raise ValueError(
+                f"ComfyCouple Region requires {', '.join(missing)} for the chain text system"
+            )
+
+        raise ValueError("ComfyCouple Region could not build conditioning from the chain text system")
+
+    def _resolve_background_conditioning(
+        self,
+        regions: List[Dict[str, Any]],
+        chain_metadata: Dict[str, Any],
+    ) -> Any:
+        chain_cond = self._build_chain_background_conditioning(regions, chain_metadata)
+        if chain_cond is not None:
+            return chain_cond
+        return create_zero_conditioning(self._resolve_region_conditioning(regions[0], chain_metadata))
+
     # ===== Helper methods =====
 
     def _validate_mask_sizes_for_upscale(self, region_list: List[Dict]) -> None:
@@ -561,9 +738,10 @@ class ComfyCoupleMask:
         prepared_regions = []
         for i, r in enumerate(region_list):
             new_region = {
-                "positive": r["positive"],
                 "mask": r["mask"].clone(),
                 "strength": validate_strength(r["strength"], f"Region {i}", is_flux=is_flux),
+                "prompt_text": r.get("prompt_text", ""),
+                "clip": r.get("clip"),
                 "lora_hook": r.get("lora_hook")  # ✅ Preserve LoRA hook
             }
             if feather_pixels > 0:
@@ -576,7 +754,7 @@ class ComfyCoupleMask:
         # ✅ Apply overlap normalization (original behavior)
         return MaskProcessor.normalize_overlaps(prepared_regions)
 
-    def _process_strength_zero_regions(self, regions: List[Dict], bg_strength: float) -> Tuple[List[Dict], torch.Tensor]:
+    def _process_strength_zero_regions(self, regions: List[Dict]) -> Tuple[List[Dict], torch.Tensor]:
         """Separate active regions and calculate background mask"""
         active_regions = []
         zero_strength_count = 0
@@ -596,21 +774,6 @@ class ComfyCoupleMask:
         
         log_debug(f"Active regions: {len(active_regions)}, Zero-strength regions: {zero_strength_count}")
         return active_regions, background_mask
-
-    def _apply_conditioning_modifiers(self, conditioning: Any, kwargs: Dict, 
-                                     is_background: bool = False) -> Any:
-        """Apply background and base prompt to conditioning"""
-        modified_cond = copy.deepcopy(conditioning)
-        
-        if not is_background and kwargs.get("background") and kwargs.get("background_to_region_mode") != "none":
-            bg_mode = kwargs.get("background_to_region_mode", "concat")
-            modified_cond = COND_METHODS[bg_mode](modified_cond, kwargs["background"])
-
-        if "base_prompt" in kwargs:
-            base_method = kwargs.get("base_prompt_method", "concat")
-            modified_cond = COND_METHODS[base_method](modified_cond, kwargs["base_prompt"])
-
-        return modified_cond
 
     def _convert_to_output_format(self, processed_conds: List[Dict[str, Any]]) -> Any:
         """Convert to ComfyUI output format (original method for Flux)"""

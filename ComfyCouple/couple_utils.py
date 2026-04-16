@@ -18,6 +18,8 @@ MIN_STRENGTH = 0.0
 MAX_STRENGTH = 10.0
 COMFYCOUPLE_REGIONS_LEGACY_KEY = "comfycouple_regions"
 COMFYCOUPLE_REGIONS_V2_KEY = "comfycouple_regions_v2"
+COMFYCOUPLE_ANIMA_CONCAT_GROUP_KEY = "comfycouple_anima_concat_group"
+COMFYCOUPLE_ANIMA_CONCAT_ORDER_KEY = "comfycouple_anima_concat_order"
 
 # Flux Block Presets
 FLUX_BLOCK_PRESETS = {
@@ -76,12 +78,14 @@ ARCH_CONFIGS = {
         'middle_count': 1, 
         'output_blocks': list(range(3, 12))
     },
+    'anima': {},
     'flux': FLUX_BLOCK_PRESETS['default']  # Default preset
 }
 
 class ModelType(Enum):
     SDXL = "sdxl"
     SD15 = "sd15"
+    ANIMA = "anima"
     FLUX = "flux"
 
 @dataclass
@@ -137,6 +141,22 @@ MODEL_SUPPORT_REGISTRY: Dict[str, ModelSupportProfile] = {
         strategy_key="unet_attn2",
         dim=2048,
         capabilities={**DEFAULT_CAPABILITIES},
+    ),
+    "anima": ModelSupportProfile(
+        key="anima",
+        model_type=ModelType.ANIMA,
+        display_name="Anima",
+        strategy_key="anima_apply_model",
+        dim=4096,
+        capabilities={
+            **DEFAULT_CAPABILITIES,
+            "supports_tiled_diffusion": True,
+            "supports_visualizer": False,
+            "supports_extractor": True,
+            "supports_lora_hooks": False,
+            "supports_cross_region_attention": False,
+            "requires_injection": False,
+        },
     ),
     "flux": ModelSupportProfile(
         key="flux",
@@ -325,10 +345,18 @@ def pad_conditioning_tensors(cond_list: List[torch.Tensor]) -> List[torch.Tensor
 # Model detection
 def detect_model_architecture(model: Any) -> ArchitectureInfo:
     """
-    Detect model architecture (SD1.5, SDXL, or Flux)
+    Detect model architecture (SD1.5, SDXL, Anima, or Flux)
     """
     try:
         diff_model = model.model.diffusion_model
+
+        if diff_model.__class__.__name__ == "Anima":
+            log_debug("Detected Anima architecture")
+            return architecture_info_from_profile(get_model_support_profile("anima"))
+
+        if hasattr(diff_model, "llm_adapter") and hasattr(diff_model, "blocks") and hasattr(diff_model, "patch_spatial"):
+            log_debug("Detected Anima-like DiT architecture")
+            return architecture_info_from_profile(get_model_support_profile("anima"))
         
         # Check for Flux (DiT architecture with double/single blocks)
         if hasattr(diff_model, 'double_blocks') and hasattr(diff_model, 'single_blocks'):

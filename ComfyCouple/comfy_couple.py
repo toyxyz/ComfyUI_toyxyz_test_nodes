@@ -173,6 +173,133 @@ class ComfyCoupleRegion:
         return (region_list,)
 
 
+class ComfyCoupleRegionMulti:
+    """Define multiple regions at once from mask and prompt text lists."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "masks": ("MASK", {"tooltip": "Mask list input. Each mask becomes one region in order."}),
+                "strength": ("FLOAT", {
+                    "default": 1.0, "min": 0.0, "max": 10.0, "step": 0.01,
+                    "tooltip": "Shared prompt strength for all generated regions (<1: blend, 1: full, >1: emphasize) [Flux: 0 or 1 only]"
+                }),
+                "prompt_texts": ("STRING", {
+                    "forceInput": True,
+                    "multiline": True,
+                    "dynamicPrompts": True,
+                    "tooltip": "String list input. Each text is matched to the mask at the same index."
+                }),
+                "clip": ("CLIP", {
+                    "tooltip": "CLIP used to encode every prompt_text in the chain text system. Use the same CLIP family as the connected model."
+                }),
+            },
+            "optional": {
+                "region": ("region", {"tooltip": "Optional existing region chain to append to"}),
+            }
+        }
+
+    INPUT_IS_LIST = True
+    RETURN_TYPES = ("region",)
+    FUNCTION = "process"
+    CATEGORY = "ToyxyzTestNodes"
+
+    @staticmethod
+    def _resolve_single_value(values: Any, name: str, allow_none: bool = False) -> Any:
+        if isinstance(values, list):
+            filtered = [value for value in values if value is not None]
+            if not filtered:
+                if allow_none:
+                    return None
+                raise ValueError(f"ComfyCouple Region multi requires '{name}' to be connected")
+            if len(filtered) > 1:
+                raise ValueError(f"ComfyCouple Region multi expects a single '{name}' value")
+            return filtered[0]
+
+        if values is None and not allow_none:
+            raise ValueError(f"ComfyCouple Region multi requires '{name}' to be connected")
+        return values
+
+    @staticmethod
+    def _resolve_mask_list(masks: Any) -> List[torch.Tensor]:
+        if isinstance(masks, list):
+            mask_list = masks
+        else:
+            mask_list = [masks]
+
+        resolved_masks = []
+        for index, mask in enumerate(mask_list):
+            if mask is None:
+                continue
+            if not isinstance(mask, torch.Tensor):
+                raise TypeError(f"Mask at index {index} must be torch.Tensor, got {type(mask)}")
+            resolved_masks.append(mask)
+
+        if not resolved_masks:
+            raise ValueError("ComfyCouple Region multi requires at least one mask")
+
+        return resolved_masks
+
+    @staticmethod
+    def _resolve_prompt_text_list(prompt_texts: Any) -> List[str]:
+        if isinstance(prompt_texts, list):
+            return [str(text if text is not None else "") for text in prompt_texts]
+        return [str(prompt_texts if prompt_texts is not None else "")]
+
+    @staticmethod
+    def _find_reference_mask_shape(region_list: List[Dict[str, Any]]) -> Optional[torch.Size]:
+        first_region = next((item for item in region_list if isinstance(item, dict) and "mask" in item), None)
+        if first_region is None:
+            return None
+        return first_region["mask"].shape
+
+    def process(
+        self,
+        masks,
+        strength,
+        prompt_texts,
+        clip,
+        region=None,
+    ) -> Tuple[List[Dict[str, Any]]]:
+        mask_list = self._resolve_mask_list(masks)
+        prompt_text_list = self._resolve_prompt_text_list(prompt_texts)
+        strength_value = float(self._resolve_single_value(strength, "strength"))
+        clip_value = self._resolve_single_value(clip, "clip")
+        region_chain = self._resolve_single_value(region, "region", allow_none=True)
+        region_list = list(region_chain) if region_chain is not None else []
+
+        if len(mask_list) != len(prompt_text_list):
+            raise ValueError(
+                f"ComfyCouple Region multi requires the same number of masks and prompt_texts "
+                f"(got {len(mask_list)} masks and {len(prompt_text_list)} prompt_texts)"
+            )
+
+        target_shape = self._find_reference_mask_shape(region_list)
+
+        for index, (mask, prompt_text) in enumerate(zip(mask_list, prompt_text_list)):
+            current_mask = mask
+
+            if target_shape is None:
+                target_shape = current_mask.shape
+            elif current_mask.shape != target_shape:
+                try:
+                    current_mask = MaskProcessor.resize_to_match(current_mask, target_shape)
+                    log_debug(f"Auto-resized multi region mask {index}: {mask.shape} -> {target_shape}")
+                except Exception as e:
+                    raise RuntimeError(f"Mask resize failed for multi region index {index}: {e}")
+
+            region_list.append({
+                "mask": current_mask,
+                "strength": strength_value,
+                "prompt_text": prompt_text,
+                "clip": clip_value,
+                "lora_hook": None,
+            })
+
+        return (region_list,)
+
+
 class ComfyCoupleMask:
     """Process multiple regions with individual prompts - Supports SD/SDXL/Flux"""
 

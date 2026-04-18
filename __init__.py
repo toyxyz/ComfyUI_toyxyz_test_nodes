@@ -1,6 +1,8 @@
-from .ComfyCouple.comfy_couple import ComfyCoupleBackgroundPrompt, ComfyCoupleBasePrompt, ComfyCoupleMask, ComfyCoupleRegion
+from .ComfyCouple.comfy_couple import ComfyCoupleBackgroundPrompt, ComfyCoupleBasePrompt, ComfyCoupleMask, ComfyCoupleRegion, ComfyCoupleRegionMulti
 from .ComfyCouple.Extractor import ComfyCoupleRegionExtractor
 from .ComfyCouple.Visualizer import ComfyCoupleRegionVisualizer
+from .nodes.crop_area_mask import CropAreaMask
+from .nodes.draw_area_mask import DrawAreaMask
 from .nodes.toyxyz_test_nodes import CaptureWebcam, LoadWebcamImage, SaveImagetoPath, LatentDelay, ImageResize_Padding, Direct_screenCap, Depth_to_normal, Remove_noise, Export_glb, Load_Random_Text_From_File
 from .nodes.visual_area_mask import VisualAreaMask
 from .openposeeditor.openpose_editor_nodes import OpenposeEditorNode, PoseToMaskNode
@@ -13,6 +15,9 @@ NODE_CLASS_MAPPINGS = {
     "ComfyCoupleBackgroundPrompt": ComfyCoupleBackgroundPrompt,
     "ComfyCoupleBasePrompt": ComfyCoupleBasePrompt,
     "ComfyCoupleRegion": ComfyCoupleRegion,
+    "ComfyCoupleRegionMulti": ComfyCoupleRegionMulti,
+    "CropAreaMask": CropAreaMask,
+    "DrawAreaMask": DrawAreaMask,
     "VisualAreaMask": VisualAreaMask,
     "CaptureWebcam": CaptureWebcam,
     "LoadWebcamImage": LoadWebcamImage,
@@ -39,6 +44,9 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ComfyCoupleBackgroundPrompt": "ComfyCouple Background Prompt",
     "ComfyCoupleBasePrompt": "ComfyCouple Base Prompt",
     "ComfyCoupleRegion": "ComfyCouple Region",
+    "ComfyCoupleRegionMulti": "ComfyCouple Region multi",
+    "CropAreaMask": "Crop area mask",
+    "DrawAreaMask": "Draw area mask",
     "VisualAreaMask": "Visual Area Mask",
     "CaptureWebcam": "Capture Webcam",
     "LoadWebcamImage": "Load Webcam Image",

@@ -8,6 +8,8 @@ https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8536e96a-514a
 
 Update 
 
+2026/04/18 Add Draw area mask, ComfyCouple Region multi, Crop area mask node
+
 2026/04/16 - Add Anima support to ComfyCouple Region node
 
 2025/10/30 - Add lora hook support to ComfyCouple Region node
@@ -84,6 +86,13 @@ Direct Webcam capture workflow (without webcam app)
   Update outputs: Update nodes according to the number in area_number.
 
 <img width="1576" height="1591" alt="image" src="https://github.com/user-attachments/assets/dcc54f06-7d5c-4a2c-844c-11f8ec8088ae" />
+
+## Draw area mask
+
+Create a mask for regional prompting. Use Ctrl + click to select an area, and Alt + click to remove it.
+
+<img width="1697" height="1526" alt="image" src="https://github.com/user-attachments/assets/7c570775-5ae8-4eea-bb56-67164a0c1f69" />
+
 
 ## Openpose Editor Node
 

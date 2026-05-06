@@ -25,6 +25,7 @@ import trimesh
 import random
 import re
 import io
+import hashlib
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -80,15 +81,32 @@ def get_surface_normal_by_depth(image: torch.Tensor, depth_m, mix_ratio, s_ksize
     
     return normal_unit
 
-def save_image(img: torch.Tensor, path, image_format, jpg_quality, png_compress_level):
+def save_image(img: torch.Tensor, path, image_format, jpg_quality, png_compress_level, alpha_mask=None):
     path = str(path)
 
     if len(img.shape) != 3:
         raise ValueError(f"can't take image batch as input, got {img.shape[0]} images")
 
+    if alpha_mask is not None:
+        alpha_mask = alpha_mask.to(device=img.device, dtype=img.dtype)
+        if len(alpha_mask.shape) == 3:
+            alpha_mask = alpha_mask.squeeze(0)
+        if alpha_mask.shape != img.shape[:2]:
+            alpha_mask = torch.nn.functional.interpolate(
+                alpha_mask.reshape(1, 1, alpha_mask.shape[-2], alpha_mask.shape[-1]),
+                size=img.shape[:2],
+                mode="bilinear",
+                align_corners=False,
+            ).reshape(img.shape[:2])
+
+        alpha = (1.0 - alpha_mask).clamp(0, 1).unsqueeze(-1)
+        if img.shape[-1] == 4:
+            img = img[..., :3]
+        img = torch.cat((img, alpha), dim=-1)
+
     img = img.permute(2, 0, 1)
-    if img.shape[0] != 3:
-        raise ValueError(f"image must have 3 channels, but got {img.shape[0]} channels")
+    if img.shape[0] not in (3, 4):
+        raise ValueError(f"image must have 3 or 4 channels, but got {img.shape[0]} channels")
 
     img = img.clamp(0, 1)
     img = tf.to_pil_image(img)
@@ -97,11 +115,19 @@ def save_image(img: torch.Tensor, path, image_format, jpg_quality, png_compress_
 
     if ext == ".jpg":
         # Save as JPEG with specified quality
+        if img.mode == "RGBA":
+            background = Image.new("RGB", img.size, (255, 255, 255))
+            background.paste(img, mask=img.getchannel("A"))
+            img = background
         img.save(path, format="JPEG", quality=jpg_quality)
     elif ext == ".png":
         # Save as PNG with specified compression level
         img.save(path, format="PNG", compress_level=png_compress_level)
     elif ext == ".bmp":
+        if img.mode == "RGBA":
+            background = Image.new("RGB", img.size, (255, 255, 255))
+            background.paste(img, mask=img.getchannel("A"))
+            img = background
         img.save(path, format="bmp")
     else:
         # Raise an error for unsupported file formats
@@ -110,6 +136,62 @@ def save_image(img: torch.Tensor, path, image_format, jpg_quality, png_compress_
     subfolder, filename = os.path.split(path)
 
     return {"filename": filename, "subfolder": subfolder, "type": "output"}
+
+def normalize_filename(name: str) -> str:
+    name = Path(name.strip()).stem
+    name = re.sub(r'[<>:"/\\|?*]', "_", name).strip()
+    return name or "comfyui"
+
+def get_save_path(folder: Path, name: str, image_format: str, save_method: str) -> Path:
+    if save_method in ("Overwrite", "overwrite"):
+        return folder / f"{name}{image_format}"
+
+    count = 1
+    while True:
+        save_path = folder / f"{name}_{format(count, '06')}{image_format}"
+        if not save_path.exists():
+            return save_path
+        count += 1
+
+def save_text_for_image(image_path: Path, text: str):
+    if text is None or text == "":
+        return
+
+    image_path.with_suffix(".txt").write_text(text, encoding="utf-8")
+
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+
+def list_image_files(path: str):
+    image_path = Path(path)
+    if image_path.is_file() and image_path.suffix.lower() in IMAGE_EXTENSIONS:
+        return [image_path]
+
+    if not image_path.exists() or not image_path.is_dir():
+        return []
+
+    return sorted(
+        [file for file in image_path.iterdir() if file.is_file() and file.suffix.lower() in IMAGE_EXTENSIONS],
+        key=lambda file: file.name.lower(),
+    )
+
+def pil_image_to_comfy(image: Image.Image):
+    if image.mode == "I":
+        image = image.point(lambda i: i * (1 / 255))
+
+    if "A" in image.getbands():
+        alpha = np.array(image.getchannel("A")).astype(np.float32) / 255.0
+        mask = 1.0 - torch.from_numpy(alpha)
+    elif image.mode == "P" and "transparency" in image.info:
+        alpha = np.array(image.convert("RGBA").getchannel("A")).astype(np.float32) / 255.0
+        mask = 1.0 - torch.from_numpy(alpha)
+    else:
+        mask = torch.zeros((image.height, image.width), dtype=torch.float32)
+
+    rgb_image = image.convert("RGB")
+    rgb_image = np.array(rgb_image).astype(np.float32) / 255.0
+    rgb_image = torch.from_numpy(rgb_image)[None,]
+
+    return rgb_image, mask.unsqueeze(0)
 
 def find_window(name):
     
@@ -380,14 +462,70 @@ class LoadWebcamImage:
             m.update(f.read())
         return m.digest().hex()
 
+class LoadImageFromPath:
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "path": ("STRING", {"default": "./ComfyUI/input", "multiline": False}),
+                "index": ("INT", {
+                    "default": 0,
+                    "min": 0,
+                    "max": 999999,
+                    "step": 1,
+                    "display": "number"
+                }),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", "MASK", "STRING")
+    RETURN_NAMES = ("image", "mask", "filename")
+    FUNCTION = "load_image"
+
+    CATEGORY = "ToyxyzTestNodes"
+
+    def load_image(self, path, index):
+        image_files = list_image_files(path)
+
+        if len(image_files) == 0:
+            image = Image.new(mode="RGB", size=(512, 512), color=(0, 0, 0))
+            comfy_image, mask = pil_image_to_comfy(image)
+            return (comfy_image, mask, "")
+
+        selected_index = min(index, len(image_files) - 1)
+        selected_file = image_files[selected_index]
+
+        with Image.open(selected_file) as image:
+            comfy_image, mask = pil_image_to_comfy(image)
+
+        return (comfy_image, mask, selected_file.stem)
+
+    @classmethod
+    def IS_CHANGED(cls, path, index):
+        image_files = list_image_files(path)
+        if len(image_files) == 0:
+            return ""
+
+        selected_index = min(index, len(image_files) - 1)
+        selected_file = image_files[selected_index]
+        stat = selected_file.stat()
+
+        m = hashlib.sha256()
+        m.update(str(selected_file).encode("utf-8"))
+        m.update(str(stat.st_mtime_ns).encode("utf-8"))
+        m.update(str(stat.st_size).encode("utf-8"))
+        return m.digest().hex()
+
 class SaveImagetoPath:
 
     INPUT_TYPES = lambda: {
         "required": {
-            "path": ("STRING", {"default": "./ComfyUI/custom_nodes/ComfyUI_toyxyz_test_nodes/CaptureCam/rendered_frames/render.jpg"}),
+            "path": ("STRING", {"default": "./ComfyUI/custom_nodes/ComfyUI_toyxyz_test_nodes/CaptureCam/rendered_frames"}),
+            "name": ("STRING", {"default": "comfyui"}),
             "image": ("IMAGE",),
-            "save_sequence": (("false", "true"), {"default": "false"}),
-            "image_format": ((".jpg", ".png", ".bmp"), {"default": ".jpg"}),
+            "save_method": (("Save", "Overwrite"), {"default": "Save"}),
+            "image_format": ((".jpg", ".png", ".bmp"), {"default": ".png"}),
             "jpg_quality": ("INT", {
                     "default": 70,
                     "min": 0,
@@ -403,6 +541,10 @@ class SaveImagetoPath:
                     "display": "number"
                 }),
         },
+        "optional": {
+            "mask": ("MASK",),
+            "text": ("STRING", {"default": "", "multiline": True}),
+        },
     }
     RETURN_TYPES = ()
     OUTPUT_NODE = True
@@ -413,71 +555,55 @@ class SaveImagetoPath:
     def execute(
         self,
         path: str,
+        name: str,
         image_format: str,
         image: torch.Tensor,
-        save_sequence: str,
+        save_method: str,
         jpg_quality,
         png_compression,
+        mask=None,
+        text="",
     ):
         assert isinstance(path, str)
+        assert isinstance(name, str)
         assert isinstance(image_format, str)
         assert isinstance(image, torch.Tensor)
-        assert isinstance(save_sequence, str)
+        assert isinstance(save_method, str)
 
-        save_sequence: bool = save_sequence == "true"
-
-        path: Path = Path(path)
-
-        path2 = path
-        
-        if save_sequence :
-            count = 0
-            base_filename, file_extension = path2.stem, path2.suffix
-            while path2.exists():
-                filename = f"{base_filename}_{format(count, '06')}{file_extension}"
-                path2 = Path(path2.parent, filename)
-                count += 1
-
-        path.parent.mkdir(exist_ok=True)
+        folder: Path = Path(path)
+        filename = normalize_filename(name)
+        folder.mkdir(parents=True, exist_ok=True)
         
         if image.shape[0] == 1:
             # batch has 1 image only
+            save_path = get_save_path(folder, filename, image_format, save_method)
             save_image(
                 image[0],
-                path,
+                save_path,
                 image_format,
                 jpg_quality,
                 png_compression,
+                mask[0] if mask is not None and len(mask.shape) == 3 else mask,
             )
-            if save_sequence :
-                save_image(
-                    image[0],
-                    path2,
-                    image_format,
-                    jpg_quality,
-                    png_compression,
-                )
+            save_text_for_image(save_path, text)
             
         else:
             # batch has multiple images
             for i, img in enumerate(image):
-                subpath = path.with_stem(f"{path.stem}-{i}")
+                if save_method in ("Overwrite", "overwrite"):
+                    subpath = folder / f"{filename}-{i}{image_format}"
+                else:
+                    subpath = get_save_path(folder, filename, image_format, save_method)
+
                 save_image(
                     img,
                     subpath,
                     image_format,
                     jpg_quality,
                     png_compression,
+                    mask[i] if mask is not None and len(mask.shape) == 3 and mask.shape[0] > 1 else mask,
                 )
-                for i, img in enumerate(image):
-                    subpath = path.with_stem(f"{path2.stem}-{i}")
-                    save_image(
-                        img,
-                        subpath,
-                        image_format,
-                        jpg_quality,
-                        png_compression,
-                    )
+                save_text_for_image(subpath, text)
 
         return ()
         

@@ -3,7 +3,7 @@ from .ComfyCouple.Extractor import ComfyCoupleRegionExtractor
 from .ComfyCouple.Visualizer import ComfyCoupleRegionVisualizer
 from .nodes.crop_area_mask import CropAreaMask
 from .nodes.draw_area_mask import DrawAreaMask
-from .nodes.toyxyz_test_nodes import CaptureWebcam, LoadWebcamImage, SaveImagetoPath, LatentDelay, ImageResize_Padding, Direct_screenCap, Depth_to_normal, Remove_noise, Export_glb, Load_Random_Text_From_File
+from .nodes.toyxyz_test_nodes import CaptureWebcam, LoadWebcamImage, LoadImageFromPath, SaveImagetoPath, LatentDelay, ImageResize_Padding, Direct_screenCap, Depth_to_normal, Remove_noise, Export_glb, Load_Random_Text_From_File
 from .nodes.visual_area_mask import VisualAreaMask
 from .openposeeditor.openpose_editor_nodes import OpenposeEditorNode, PoseToMaskNode
 from .openposeeditor.poseinter import Pose_Inter, PoseKeypointToCoordStr, JoinPose
@@ -21,6 +21,7 @@ NODE_CLASS_MAPPINGS = {
     "VisualAreaMask": VisualAreaMask,
     "CaptureWebcam": CaptureWebcam,
     "LoadWebcamImage": LoadWebcamImage,
+    "LoadImageFromPath": LoadImageFromPath,
     "SaveImagetoPath": SaveImagetoPath,
     "LatentDelay": LatentDelay,
     "ImageResize_Padding": ImageResize_Padding,
@@ -50,6 +51,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "VisualAreaMask": "Visual Area Mask",
     "CaptureWebcam": "Capture Webcam",
     "LoadWebcamImage": "Load Webcam Image",
+    "LoadImageFromPath": "Load Image From Path",
     "SaveImagetoPath": "Save Image to Path",
     "LatentDelay": "LatentDelay",
     "ImageResize_Padding": "ImageResize_Padding",

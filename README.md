@@ -239,11 +239,19 @@ If you're using obs, I recommend using the Load Webcam Image node.
 
 ### Save image to path
 
-This node saves the generated images to a defined path. 
+This node saves the generated images to a defined folder path.
 
-If save_sequence is true, it saves the images in order without overwriting them.
+Set `name` to choose the base file name. In the `Save` method, images are saved without overwriting existing files by appending a number such as `comfyui_000001.png`. In `Overwrite` mode, an existing image with the same name is replaced.
+
+Connect the `MASK` output from ComfyUI's Load Image node to preserve transparency when saving RGBA PNG images.
+
+Connect or enter optional `text` to save a `.txt` file with the same name and folder as the saved image.
 
 ![image](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/71c3cb06-1a7a-42ee-8ebf-59ea59b82562)
+
+### Load image from path
+
+This node loads an image from a folder path by zero-based `index`. If `index` is larger than the number of images, it loads the last image. It outputs the image, mask, and selected image file name without extension.
 
 ### LatentDelay 
 
@@ -266,7 +274,7 @@ You can specify the resolution, format, and path of the image to be saved.
 
 If you don't enter a path, it will be saved to the default path. 
 
-You can combine a sequence of saved images into a video using the Export button. Make sure to set save_sequence in Save Image to Path to true. 
+You can combine a sequence of saved images into a video using the Export button. Set the Save Image to Path save method to `Save` so each frame gets a unique numbered file name.
 
 To use AI Render, you need a Save Image to Path node.
 

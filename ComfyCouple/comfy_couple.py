@@ -33,6 +33,9 @@ if DEBUG_ENABLED:
 CHAIN_META_KEY = "__comfycouple_chain_meta__"
 CHAIN_BASE_PROMPT_TEXT_KEY = "base_prompt_text"
 CHAIN_BACKGROUND_PROMPT_TEXT_KEY = "background_prompt_text"
+CHAIN_BACKGROUND_PROMPT_MODE_KEY = "background_prompt_mode"
+BACKGROUND_MODE_REGION_AND_BACKGROUND = "region_and_background"
+BACKGROUND_MODE_BACKGROUND_ONLY = "background_only"
 
 
 class ComfyCoupleBasePrompt:
@@ -83,7 +86,14 @@ class ComfyCoupleBackgroundPrompt:
                     "default": "",
                     "multiline": True,
                     "dynamicPrompts": True,
-                    "tooltip": "Background prompt text shared through the region chain. Appended to every region prompt_text and used for uncovered background areas."
+                    "tooltip": "Background prompt text shared through the region chain."
+                }),
+                "mode": ([BACKGROUND_MODE_REGION_AND_BACKGROUND, BACKGROUND_MODE_BACKGROUND_ONLY], {
+                    "default": BACKGROUND_MODE_REGION_AND_BACKGROUND,
+                    "tooltip": (
+                        "region_and_background: append to each region prompt and use for uncovered background. "
+                        "background_only: use only for uncovered background conditioning."
+                    )
                 }),
             },
             "optional": {
@@ -98,12 +108,17 @@ class ComfyCoupleBackgroundPrompt:
     def process(
         self,
         background_prompt_text: str,
+        mode: str = BACKGROUND_MODE_REGION_AND_BACKGROUND,
         region: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[List[Dict[str, Any]]]:
+        if mode not in (BACKGROUND_MODE_REGION_AND_BACKGROUND, BACKGROUND_MODE_BACKGROUND_ONLY):
+            mode = BACKGROUND_MODE_REGION_AND_BACKGROUND
+
         region_list = list(region) if region is not None else []
         region_list.append({
             CHAIN_META_KEY: {
                 CHAIN_BACKGROUND_PROMPT_TEXT_KEY: background_prompt_text,
+                CHAIN_BACKGROUND_PROMPT_MODE_KEY: mode,
             }
         })
         return (region_list,)
@@ -754,11 +769,18 @@ class ComfyCoupleMask:
     ) -> Optional[Any]:
         base_prompt_text = str(chain_metadata.get(CHAIN_BASE_PROMPT_TEXT_KEY, "") or "").strip()
         background_prompt_text = str(chain_metadata.get(CHAIN_BACKGROUND_PROMPT_TEXT_KEY, "") or "").strip()
+        background_prompt_mode = chain_metadata.get(
+            CHAIN_BACKGROUND_PROMPT_MODE_KEY,
+            BACKGROUND_MODE_REGION_AND_BACKGROUND,
+        )
         prompt_text = str(region.get("prompt_text", "") or "").strip()
         clip = region.get("clip")
 
         if not prompt_text or clip is None:
             return None
+
+        if background_prompt_mode != BACKGROUND_MODE_REGION_AND_BACKGROUND:
+            background_prompt_text = ""
 
         merged_prompt = self._merge_prompt_text(prompt_text, base_prompt_text, background_prompt_text)
         return CLIPTextEncode().encode(clip, merged_prompt)[0]

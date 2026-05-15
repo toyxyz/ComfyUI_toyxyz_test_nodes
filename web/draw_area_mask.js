@@ -11,6 +11,7 @@ const PREVIEW_MIN_HEIGHT = 220;
 const PREVIEW_MAX_HEIGHT = 1120;
 const PREVIEW_MARGIN = 10;
 const BOX_MIN_PIXELS = 6;
+const EDIT_HANDLE_PIXELS = 10;
 const FALLBACK_ASPECT_RATIO = 1;
 
 function ensureNodeProperties(node) {
@@ -231,6 +232,11 @@ function getPreviewState(node) {
       drawScheduled: false,
       dragBox: null,
       dragStartPoint: null,
+      editBox: null,
+      editBoxIndex: -1,
+      editMode: null,
+      editStartBox: null,
+      editStartPoint: null,
       canvasRect: null,
     };
   }
@@ -331,12 +337,20 @@ function drawPreview(canvas, node) {
 
   const boxes = getBoxes(node);
   boxes.forEach((box, index) => {
-    const boxRect = toCanvasBox(box, canvasRect);
+    const isEditing = index === state.editBoxIndex && state.editBox;
+    const displayBox = isEditing ? state.editBox : box;
+    const boxRect = toCanvasBox(displayBox, canvasRect);
     ctx.fillStyle = hueFillColor(box.hue);
     ctx.fillRect(boxRect.x, boxRect.y, boxRect.width, boxRect.height);
     ctx.strokeStyle = hueBorderColor(box.hue);
-    ctx.lineWidth = 2;
+    ctx.lineWidth = isEditing ? 3 : 2;
+    if (isEditing) {
+      ctx.setLineDash([8, 5]);
+    }
     ctx.strokeRect(boxRect.x, boxRect.y, boxRect.width, boxRect.height);
+    if (isEditing) {
+      ctx.setLineDash([]);
+    }
     drawLabel(ctx, String(index), boxRect);
   });
 
@@ -359,7 +373,7 @@ function drawPreview(canvas, node) {
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(
-    `Ctrl+drag: add box   Alt+click: remove box   ${Math.round(ensureNodeProperties(node)[WIDTH_PROPERTY] || 0)} x ${Math.round(ensureNodeProperties(node)[HEIGHT_PROPERTY] || 0)}`,
+    `Ctrl+drag: add   Shift+drag: move/resize   Alt+click: remove   ${Math.round(ensureNodeProperties(node)[WIDTH_PROPERTY] || 0)} x ${Math.round(ensureNodeProperties(node)[HEIGHT_PROPERTY] || 0)}`,
     canvasRect.x + canvasRect.width / 2,
     canvasRect.y + canvasRect.height - 12
   );
@@ -426,6 +440,66 @@ function getHitBoxIndex(node, point) {
   return -1;
 }
 
+function getEditModeForBox(point, boxRect) {
+  if (!isPointInRect(point, boxRect)) {
+    return null;
+  }
+
+  const horizontalHandle = Math.min(EDIT_HANDLE_PIXELS, Math.max(1, boxRect.width / 2));
+  const verticalHandle = Math.min(EDIT_HANDLE_PIXELS, Math.max(1, boxRect.height / 2));
+  const nearLeft = Math.abs(point.x - boxRect.x) <= horizontalHandle;
+  const nearRight = Math.abs(point.x - (boxRect.x + boxRect.width)) <= horizontalHandle;
+  const nearTop = Math.abs(point.y - boxRect.y) <= verticalHandle;
+  const nearBottom = Math.abs(point.y - (boxRect.y + boxRect.height)) <= verticalHandle;
+  const horizontal = nearLeft ? "w" : nearRight ? "e" : "";
+  const vertical = nearTop ? "n" : nearBottom ? "s" : "";
+
+  if (horizontal || vertical) {
+    return `resize-${vertical}${horizontal}`;
+  }
+
+  return "move";
+}
+
+function getBoxEditHit(node, point) {
+  const state = getPreviewState(node);
+  const boxes = getBoxes(node);
+  const canvasRect = state.canvasRect;
+  if (!canvasRect) {
+    return null;
+  }
+
+  for (let index = boxes.length - 1; index >= 0; index -= 1) {
+    const boxRect = toCanvasBox(boxes[index], canvasRect);
+    const mode = getEditModeForBox(point, boxRect);
+    if (mode) {
+      return { index, mode };
+    }
+  }
+
+  return null;
+}
+
+function editModeToCursor(mode) {
+  if (!mode) {
+    return "crosshair";
+  }
+  if (mode === "move") {
+    return "move";
+  }
+  const direction = mode.replace("resize-", "");
+  if (direction === "n" || direction === "s") {
+    return "ns-resize";
+  }
+  if (direction === "e" || direction === "w") {
+    return "ew-resize";
+  }
+  if (direction === "ne" || direction === "sw") {
+    return "nesw-resize";
+  }
+  return "nwse-resize";
+}
+
 function randomHue() {
   return Math.floor(Math.random() * 360);
 }
@@ -474,6 +548,95 @@ function createDragBox(startPoint, currentPoint, canvasRect, hue) {
   };
 }
 
+function moveEditBox(startBox, startPoint, currentPoint, canvasRect) {
+  const dx = (currentPoint.x - startPoint.x) / canvasRect.width;
+  const dy = (currentPoint.y - startPoint.y) / canvasRect.height;
+  return {
+    ...startBox,
+    x: clamp(startBox.x + dx, 0, 1 - startBox.width),
+    y: clamp(startBox.y + dy, 0, 1 - startBox.height),
+  };
+}
+
+function resizeEditBox(startBox, startPoint, currentPoint, canvasRect, mode) {
+  const dx = (currentPoint.x - startPoint.x) / canvasRect.width;
+  const dy = (currentPoint.y - startPoint.y) / canvasRect.height;
+  const direction = mode.replace("resize-", "");
+  const minWidth = BOX_MIN_PIXELS / canvasRect.width;
+  const minHeight = BOX_MIN_PIXELS / canvasRect.height;
+  let left = startBox.x;
+  let top = startBox.y;
+  let right = startBox.x + startBox.width;
+  let bottom = startBox.y + startBox.height;
+
+  if (direction.includes("w")) {
+    left = clamp(left + dx, 0, right - minWidth);
+  }
+  if (direction.includes("e")) {
+    right = clamp(right + dx, left + minWidth, 1);
+  }
+  if (direction.includes("n")) {
+    top = clamp(top + dy, 0, bottom - minHeight);
+  }
+  if (direction.includes("s")) {
+    bottom = clamp(bottom + dy, top + minHeight, 1);
+  }
+
+  return normalizeBox({
+    x: left,
+    y: top,
+    width: right - left,
+    height: bottom - top,
+    hue: startBox.hue,
+  }) || startBox;
+}
+
+function updateEditBox(node, point) {
+  const state = getPreviewState(node);
+  if (!state.editStartBox || !state.editStartPoint || !state.canvasRect || !state.editMode) {
+    return;
+  }
+
+  state.editBox = state.editMode === "move"
+    ? moveEditBox(state.editStartBox, state.editStartPoint, point, state.canvasRect)
+    : resizeEditBox(state.editStartBox, state.editStartPoint, point, state.canvasRect, state.editMode);
+}
+
+function finalizeEditBox(node) {
+  const state = getPreviewState(node);
+  const editBox = normalizeBox(state.editBox);
+  const editBoxIndex = state.editBoxIndex;
+
+  state.editBox = null;
+  state.editBoxIndex = -1;
+  state.editMode = null;
+  state.editStartBox = null;
+  state.editStartPoint = null;
+
+  if (!editBox || editBoxIndex < 0) {
+    refreshPreview(node);
+    return;
+  }
+
+  const boxes = [...getBoxes(node)];
+  if (editBoxIndex >= boxes.length) {
+    refreshPreview(node);
+    return;
+  }
+
+  boxes[editBoxIndex] = editBox;
+  setBoxes(node, boxes);
+}
+
+function clearEditState(node) {
+  const state = getPreviewState(node);
+  state.editBox = null;
+  state.editBoxIndex = -1;
+  state.editMode = null;
+  state.editStartBox = null;
+  state.editStartPoint = null;
+}
+
 function attachCanvasInteractions(node, canvas) {
   const handlePointerDown = (event) => {
     const state = getPreviewState(node);
@@ -489,6 +652,27 @@ function attachCanvasInteractions(node, canvas) {
         event.preventDefault();
         event.stopPropagation();
       }
+      return;
+    }
+
+    if (event.shiftKey) {
+      const editHit = getBoxEditHit(node, point);
+      if (!editHit) {
+        return;
+      }
+
+      const boxes = getBoxes(node);
+      state.editBoxIndex = editHit.index;
+      state.editMode = editHit.mode;
+      state.editStartPoint = clampPointToRect(point, canvasRect);
+      state.editStartBox = { ...boxes[editHit.index] };
+      state.editBox = { ...boxes[editHit.index] };
+
+      canvas.style.cursor = editModeToCursor(editHit.mode);
+      canvas.setPointerCapture?.(event.pointerId);
+      event.preventDefault();
+      event.stopPropagation();
+      refreshPreview(node);
       return;
     }
 
@@ -509,7 +693,23 @@ function attachCanvasInteractions(node, canvas) {
   const handlePointerMove = (event) => {
     const state = getPreviewState(node);
     const canvasRect = state.canvasRect;
-    if (!state.dragBox || !canvasRect) {
+    if (!canvasRect) {
+      return;
+    }
+
+    if (state.editBox) {
+      const point = clampPointToRect(getLocalPoint(canvas, event), canvasRect);
+      updateEditBox(node, point);
+      event.preventDefault();
+      event.stopPropagation();
+      refreshPreview(node);
+      return;
+    }
+
+    if (!state.dragBox) {
+      const point = getLocalPoint(canvas, event);
+      const editHit = event.shiftKey ? getBoxEditHit(node, point) : null;
+      canvas.style.cursor = editHit ? editModeToCursor(editHit.mode) : "crosshair";
       return;
     }
 
@@ -522,6 +722,15 @@ function attachCanvasInteractions(node, canvas) {
 
   const handlePointerUp = (event) => {
     const state = getPreviewState(node);
+    if (state.editBox) {
+      canvas.releasePointerCapture?.(event.pointerId);
+      canvas.style.cursor = "crosshair";
+      event.preventDefault();
+      event.stopPropagation();
+      finalizeEditBox(node);
+      return;
+    }
+
     if (!state.dragBox) {
       return;
     }
@@ -535,6 +744,16 @@ function attachCanvasInteractions(node, canvas) {
 
   const handlePointerCancel = (event) => {
     const state = getPreviewState(node);
+    if (state.editBox) {
+      clearEditState(node);
+      canvas.style.cursor = "crosshair";
+      canvas.releasePointerCapture?.(event.pointerId);
+      event.preventDefault();
+      event.stopPropagation();
+      refreshPreview(node);
+      return;
+    }
+
     if (!state.dragBox) {
       return;
     }

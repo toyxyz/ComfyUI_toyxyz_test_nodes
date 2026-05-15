@@ -7,7 +7,6 @@ With built-in Flux injection capability and Regional LoRA Hook support
 ✅ FIXED: skip_positive now works correctly with/without LoRA hooks
 """
 import torch
-import copy
 from typing import Dict, List, Tuple, Optional, Any
 
 from nodes import CLIPTextEncode, ConditioningCombine, ConditioningSetMask, ConditioningAverage
@@ -64,7 +63,7 @@ class ComfyCoupleBasePrompt:
         base_prompt_text: str,
         region: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[List[Dict[str, Any]]]:
-        region_list = copy.deepcopy(region) if region is not None else []
+        region_list = list(region) if region is not None else []
         region_list.append({
             CHAIN_META_KEY: {
                 CHAIN_BASE_PROMPT_TEXT_KEY: base_prompt_text,
@@ -101,7 +100,7 @@ class ComfyCoupleBackgroundPrompt:
         background_prompt_text: str,
         region: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[List[Dict[str, Any]]]:
-        region_list = copy.deepcopy(region) if region is not None else []
+        region_list = list(region) if region is not None else []
         region_list.append({
             CHAIN_META_KEY: {
                 CHAIN_BACKGROUND_PROMPT_TEXT_KEY: background_prompt_text,
@@ -157,7 +156,7 @@ class ComfyCoupleRegion:
             "lora_hook": lora_hook  # ✅ Store LoRA hook
         }
         
-        region_list = region if region is not None else []
+        region_list = list(region) if region is not None else []
         first_region = next((item for item in region_list if "mask" in item), None)
         
         # Auto-resize if needed

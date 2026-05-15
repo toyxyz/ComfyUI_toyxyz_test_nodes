@@ -4,7 +4,6 @@ Region Extractor Node - Extract specific region(s) from coupled attention patch
 """
 
 import torch
-import copy
 from typing import Any, Tuple, List, Dict, Optional
 import comfy.patcher_extension
 
@@ -82,6 +81,16 @@ class ComfyCoupleRegionExtractor:
     RETURN_NAMES = ("extracted_model", "extracted_conditioning", "matched_indices", "region_info")
     FUNCTION = "extract"
     CATEGORY = "ToyxyzTestNodes"
+
+    @staticmethod
+    def _copy_metadata(metadata: Any) -> Dict[str, Any]:
+        """Copy only the metadata container; keep tensors/hooks by reference."""
+        return dict(metadata) if isinstance(metadata, dict) else {}
+
+    @staticmethod
+    def _reference_conditioning(conditioning: Any) -> Any:
+        """Copy only the conditioning list container; avoid deep-copying CLIP/hooks."""
+        return list(conditioning) if isinstance(conditioning, list) else conditioning
 
     def extract(self, coupled_model: Any, extraction_mask: torch.Tensor,
                 extraction_mode: str = "single_best",
@@ -189,7 +198,7 @@ class ComfyCoupleRegionExtractor:
                     'index': idx,
                     'coverage': coverage,
                     'tensor': cond_tensor,
-                    'metadata': copy.deepcopy(metadata),
+                    'metadata': self._copy_metadata(metadata),
                 })
                 log_debug(f"Conditioning {idx}: Matched with {coverage:.1%} coverage ✓")
             else:
@@ -243,7 +252,7 @@ class ComfyCoupleRegionExtractor:
                 if background_mode == "zero":
                     bg_tensor = torch.zeros_like(selected_matches[0]['tensor'])
                     # ✅ Copy metadata structure to preserve pooled_output and other required fields
-                    bg_metadata = copy.deepcopy(selected_matches[0]['metadata'])
+                    bg_metadata = self._copy_metadata(selected_matches[0]['metadata'])
                     bg_metadata['mask'] = background_mask
                     bg_metadata['mask_strength'] = background_strength
                     # Remove hooks from zero background
@@ -252,7 +261,7 @@ class ComfyCoupleRegionExtractor:
                 elif background_mode == "replicate":
                     # Average matched tensors
                     bg_tensor = torch.stack([m['tensor'] for m in selected_matches]).mean(dim=0)
-                    bg_metadata = copy.deepcopy(selected_matches[0]['metadata'])
+                    bg_metadata = self._copy_metadata(selected_matches[0]['metadata'])
                     bg_metadata['mask'] = background_mask
                     bg_metadata['mask_strength'] = background_strength
                     # Keep LoRA hook from first region
@@ -272,14 +281,14 @@ class ComfyCoupleRegionExtractor:
                             padded.append(t)
                         bg_tensor = torch.stack(padded).mean(dim=0)
                         # ✅ Use first unmatched region's metadata to preserve pooled_output
-                        bg_metadata = copy.deepcopy(conditioning[unmatched[0]][1])
+                        bg_metadata = self._copy_metadata(conditioning[unmatched[0]][1])
                         bg_metadata['mask'] = background_mask
                         bg_metadata['mask_strength'] = background_strength
                         # No LoRA for background from unmatched regions
                     else:
                         bg_tensor = torch.zeros_like(selected_matches[0]['tensor'])
                         # ✅ Copy metadata structure to preserve pooled_output
-                        bg_metadata = copy.deepcopy(selected_matches[0]['metadata'])
+                        bg_metadata = self._copy_metadata(selected_matches[0]['metadata'])
                         bg_metadata['mask'] = background_mask
                         bg_metadata['mask_strength'] = background_strength
                         bg_metadata.pop('hooks', None)
@@ -623,7 +632,7 @@ class ComfyCoupleRegionExtractor:
                     elif background_mode == "replicate":
                         if matched_indices[0] < len(region_conditioning_objects) and region_conditioning_objects[matched_indices[0]] is not None:
                             background_region = {
-                                "conditioning": copy.deepcopy(region_conditioning_objects[matched_indices[0]]),
+                                "conditioning": self._reference_conditioning(region_conditioning_objects[matched_indices[0]]),
                                 "mask": background_mask,
                                 "strength": background_strength,
                                 "is_background": True,
@@ -643,7 +652,7 @@ class ComfyCoupleRegionExtractor:
                     elif background_mode == "original" and unmatched_indices:
                         if unmatched_indices[0] < len(region_conditioning_objects) and region_conditioning_objects[unmatched_indices[0]] is not None:
                             background_region = {
-                                "conditioning": copy.deepcopy(region_conditioning_objects[unmatched_indices[0]]),
+                                "conditioning": self._reference_conditioning(region_conditioning_objects[unmatched_indices[0]]),
                                 "mask": background_mask,
                                 "strength": background_strength,
                                 "is_background": True,
@@ -676,7 +685,7 @@ class ComfyCoupleRegionExtractor:
                 strength = extracted_strength if extracted_strength is not None else strength
                 if idx < len(region_conditioning_objects) and region_conditioning_objects[idx] is not None:
                     extracted_regions.append({
-                        "conditioning": copy.deepcopy(region_conditioning_objects[idx]),
+                        "conditioning": self._reference_conditioning(region_conditioning_objects[idx]),
                         "mask": region_masks[idx],
                         "strength": strength,
                         "is_background": False,

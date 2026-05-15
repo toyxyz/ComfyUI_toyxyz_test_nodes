@@ -5,7 +5,6 @@ Utility functions and data classes for Comfy Couple - WITH FLUX SUPPORT
 import torch
 import torch.nn.functional as F
 import math
-import copy
 from typing import Dict, List, Tuple, Any, Optional
 from dataclasses import dataclass, field
 from enum import Enum
@@ -313,7 +312,7 @@ def create_zero_conditioning(ref_cond: List[Tuple[torch.Tensor, Dict]]) -> List[
     """Create zero conditioning with proper dimensions"""
     zero_cond = []
     for cond_tensor, metadata in ref_cond:
-        new_metadata = copy.deepcopy(metadata)
+        new_metadata = dict(metadata) if isinstance(metadata, dict) else {}
         if "pooled_output" in new_metadata and isinstance(new_metadata["pooled_output"], torch.Tensor):
             new_metadata["pooled_output"] = torch.zeros_like(new_metadata["pooled_output"])
         zero_cond.append((torch.zeros_like(cond_tensor), new_metadata))

@@ -24,10 +24,22 @@ from .couple_utils import build_region_metadata, log_warning, save_region_metada
 
 class AnimaAttentionPatcher:
     WRAPPER_KEY = "ComfyCouple_AnimaDiffusionModel"
+    MODE_CROSS_ATTENTION = "cross_attention"
+    MODE_FULL_BLOCK = "full_block"
 
-    def __init__(self, model: Any, regions: List[Dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        model: Any,
+        regions: List[Dict[str, Any]],
+        region_mode: str = MODE_CROSS_ATTENTION,
+    ) -> None:
         self.model = model
         self.regions = regions
+        self.region_mode = (
+            region_mode
+            if region_mode in {self.MODE_CROSS_ATTENTION, self.MODE_FULL_BLOCK}
+            else self.MODE_CROSS_ATTENTION
+        )
         self._region_bundle_cache: Dict[Tuple[Any, ...], Optional[Dict[str, Any]]] = {}
 
     def patch(self) -> Any:
@@ -49,6 +61,7 @@ class AnimaAttentionPatcher:
                 ],
                 background_present=any(bool(r.get("is_background")) for r in self.regions),
                 wrapper="diffusion_model",
+                anima_region_mode=self.region_mode,
                 region_conditioning_objects=[
                     r.get("conditioning")
                     for r in self.regions
@@ -92,17 +105,29 @@ class AnimaAttentionPatcher:
 
             original_forwards = []
             try:
-                for block in diffusion_model.blocks:
-                    attn = block.cross_attn
-                    original_forwards.append((attn, attn.forward))
-                    attn.forward = types.MethodType(
-                        self._build_cross_attn_forward(attn.forward, region_bundle),
-                        attn,
-                    )
+                for block_index, block in enumerate(diffusion_model.blocks):
+                    if self.region_mode == self.MODE_FULL_BLOCK:
+                        original_forwards.append((block, block.forward))
+                        block.forward = types.MethodType(
+                            self._build_block_forward(
+                                block.forward,
+                                region_bundle,
+                                base_batch_size=chunk_size,
+                                is_last_block=block_index == len(diffusion_model.blocks) - 1,
+                            ),
+                            block,
+                        )
+                    else:
+                        attn = block.cross_attn
+                        original_forwards.append((attn, attn.forward))
+                        attn.forward = types.MethodType(
+                            self._build_cross_attn_forward(attn.forward, region_bundle),
+                            attn,
+                        )
                 return executor(x, timesteps, context, fps, padding_mask, **kwargs)
             finally:
-                for attn, original_forward in original_forwards:
-                    attn.forward = original_forward
+                for module, original_forward in original_forwards:
+                    module.forward = original_forward
 
         return anima_diffusion_wrapper
 
@@ -269,32 +294,27 @@ class AnimaAttentionPatcher:
             )
             new_x = []
             new_context = []
+            expanded_cond_or_uncond = []
 
             for idx, cond_flag in enumerate(cond_or_uncond):
                 if cond_flag == 1:
                     new_x.append(x_chunks[idx])
                     new_context.append(self._expand_context_tokens(context_chunks[idx], target_tokens))
+                    expanded_cond_or_uncond.append(cond_flag)
                 else:
                     new_x.append(x_chunks[idx].repeat(region_bundle["num_regions"], 1, 1))
                     new_context.append(region_context_tensor)
+                    expanded_cond_or_uncond.extend([cond_flag] * region_bundle["num_regions"])
 
             x_in = torch.cat(new_x, dim=0)
             context_in = torch.cat(new_context, dim=0)
+            expanded_transformer_options = dict(transformer_options)
+            expanded_transformer_options["cond_or_uncond"] = expanded_cond_or_uncond
             out = original_forward(
                 x_in,
                 context=context_in,
                 rope_emb=rope_emb,
-                transformer_options=transformer_options,
-            )
-
-            seq_len = out.shape[1]
-            mask = self._get_sequence_mask(
-                region_bundle,
-                seq_len,
-                out.device,
-                out.dtype,
-                batch_size,
-                transformer_options=transformer_options,
+                transformer_options=expanded_transformer_options,
             )
 
             outputs = []
@@ -305,13 +325,209 @@ class AnimaAttentionPatcher:
                     pos += batch_size
                 else:
                     chunk = out[pos : pos + region_bundle["num_regions"] * batch_size]
-                    chunk = chunk.view(region_bundle["num_regions"], batch_size, seq_len, -1)
-                    outputs.append((chunk * mask).sum(dim=0))
+                    outputs.append(
+                        self._merge_region_outputs(
+                            chunk,
+                            region_bundle,
+                            batch_size,
+                            transformer_options,
+                        )
+                    )
                     pos += region_bundle["num_regions"] * batch_size
 
             return torch.cat(outputs, dim=0)
 
         return patched_cross_attn_forward
+
+    def _build_block_forward(
+        self,
+        original_forward,
+        region_bundle: Dict[str, Any],
+        base_batch_size: int,
+        is_last_block: bool,
+    ):
+        def patched_block_forward(
+            self_block,
+            x_B_T_H_W_D,
+            emb_B_T_D,
+            crossattn_emb,
+            *args,
+            **kwargs,
+        ):
+            transformer_options = kwargs.get("transformer_options", {})
+            if transformer_options is None:
+                transformer_options = {}
+                kwargs["transformer_options"] = transformer_options
+
+            cond_or_uncond = transformer_options.get("cond_or_uncond", [])
+            if not cond_or_uncond:
+                return original_forward(x_B_T_H_W_D, emb_B_T_D, crossattn_emb, *args, **kwargs)
+
+            num_chunks = len(cond_or_uncond)
+            original_total = base_batch_size * num_chunks
+            expanded_sizes = [
+                base_batch_size * (region_bundle["num_regions"] if cond_flag != 1 else 1)
+                for cond_flag in cond_or_uncond
+            ]
+            expanded_total = sum(expanded_sizes)
+            if x_B_T_H_W_D.shape[0] not in {original_total, expanded_total}:
+                return original_forward(x_B_T_H_W_D, emb_B_T_D, crossattn_emb, *args, **kwargs)
+
+            if emb_B_T_D.shape[0] != original_total or crossattn_emb.shape[0] != original_total:
+                return original_forward(x_B_T_H_W_D, emb_B_T_D, crossattn_emb, *args, **kwargs)
+
+            x_is_expanded = x_B_T_H_W_D.shape[0] == expanded_total
+            x_chunks = (
+                self._split_expanded_chunks(x_B_T_H_W_D, expanded_sizes)
+                if x_is_expanded
+                else list(x_B_T_H_W_D.chunk(num_chunks, dim=0))
+            )
+            emb_chunks = emb_B_T_D.chunk(num_chunks, dim=0)
+            context_chunks = crossattn_emb.chunk(num_chunks, dim=0)
+
+            target_tokens = self._lcm_for_list(
+                [region_bundle["context_tokens"], int(context_chunks[0].shape[1])]
+            )
+            region_context_tensor = torch.cat(
+                [self._expand_context_tokens(ctx, target_tokens) for ctx in region_bundle["contexts"]],
+                dim=0,
+            )
+
+            expanded_x = []
+            expanded_emb = []
+            expanded_context = []
+            expanded_cond_or_uncond = []
+            for idx, cond_flag in enumerate(cond_or_uncond):
+                if cond_flag == 1:
+                    expanded_x.append(x_chunks[idx])
+                    expanded_emb.append(emb_chunks[idx])
+                    expanded_context.append(self._expand_context_tokens(context_chunks[idx], target_tokens))
+                    expanded_cond_or_uncond.append(cond_flag)
+                else:
+                    if x_is_expanded:
+                        expanded_x.append(x_chunks[idx])
+                    else:
+                        expanded_x.append(
+                            x_chunks[idx].repeat(
+                                region_bundle["num_regions"],
+                                *([1] * (x_chunks[idx].dim() - 1)),
+                            )
+                        )
+                    expanded_emb.append(
+                        emb_chunks[idx].repeat(
+                            region_bundle["num_regions"],
+                            *([1] * (emb_chunks[idx].dim() - 1)),
+                        )
+                    )
+                    expanded_context.append(region_context_tensor)
+                    expanded_cond_or_uncond.extend([cond_flag] * region_bundle["num_regions"])
+
+            patched_kwargs = dict(kwargs)
+            expanded_transformer_options = dict(transformer_options)
+            expanded_transformer_options["cond_or_uncond"] = expanded_cond_or_uncond
+            patched_kwargs["transformer_options"] = expanded_transformer_options
+            self._expand_block_kwarg_tensor(
+                patched_kwargs,
+                "adaln_lora_B_T_3D",
+                cond_or_uncond,
+                base_batch_size,
+                region_bundle["num_regions"],
+            )
+            self._expand_block_kwarg_tensor(
+                patched_kwargs,
+                "extra_per_block_pos_emb",
+                cond_or_uncond,
+                base_batch_size,
+                region_bundle["num_regions"],
+            )
+
+            out = original_forward(
+                torch.cat(expanded_x, dim=0),
+                torch.cat(expanded_emb, dim=0),
+                torch.cat(expanded_context, dim=0),
+                *args,
+                **patched_kwargs,
+            )
+
+            if not is_last_block:
+                return out
+
+            outputs = []
+            pos = 0
+            for cond_flag, expanded_size in zip(cond_or_uncond, expanded_sizes):
+                if cond_flag == 1:
+                    outputs.append(out[pos : pos + base_batch_size])
+                    pos += base_batch_size
+                else:
+                    chunk = out[pos : pos + expanded_size]
+                    outputs.append(
+                        self._merge_region_outputs(
+                            chunk,
+                            region_bundle,
+                            base_batch_size,
+                            transformer_options,
+                        )
+                    )
+                    pos += expanded_size
+
+            return torch.cat(outputs, dim=0)
+
+        return patched_block_forward
+
+    def _split_expanded_chunks(self, tensor: torch.Tensor, sizes: List[int]) -> List[torch.Tensor]:
+        chunks = []
+        pos = 0
+        for size in sizes:
+            chunks.append(tensor[pos : pos + size])
+            pos += size
+        return chunks
+
+    def _expand_block_kwarg_tensor(
+        self,
+        kwargs: Dict[str, Any],
+        key: str,
+        cond_or_uncond: List[int],
+        batch_size: int,
+        num_regions: int,
+    ) -> None:
+        tensor = kwargs.get(key)
+        if not isinstance(tensor, torch.Tensor):
+            return
+
+        total_batch = batch_size * len(cond_or_uncond)
+        if tensor.shape[0] != total_batch:
+            return
+
+        expanded = []
+        for chunk, cond_flag in zip(tensor.chunk(len(cond_or_uncond), dim=0), cond_or_uncond):
+            if cond_flag == 1:
+                expanded.append(chunk)
+            else:
+                expanded.append(chunk.repeat(num_regions, *([1] * (chunk.dim() - 1))))
+        kwargs[key] = torch.cat(expanded, dim=0)
+
+    def _merge_region_outputs(
+        self,
+        region_output: torch.Tensor,
+        region_bundle: Dict[str, Any],
+        batch_size: int,
+        transformer_options: Optional[Dict[str, Any]],
+    ) -> torch.Tensor:
+        num_regions = region_bundle["num_regions"]
+        feature_dim = int(region_output.shape[-1])
+        leading_shape = tuple(region_output.shape[1:-1])
+        seq_len = math.prod(leading_shape) if leading_shape else 1
+        mask = self._get_sequence_mask(
+            region_bundle,
+            seq_len,
+            region_output.device,
+            region_output.dtype,
+            batch_size,
+            transformer_options=transformer_options,
+        )
+        chunk = region_output.reshape(num_regions, batch_size, seq_len, feature_dim)
+        merged = (chunk * mask).sum(dim=0)
+        return merged.reshape(batch_size, *leading_shape, feature_dim)
 
     def _get_sequence_mask(
         self,

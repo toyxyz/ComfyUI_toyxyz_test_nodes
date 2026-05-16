@@ -996,9 +996,14 @@ class ComfyCoupleRegionExtractor:
         if not diffusion_wrappers and "diffusion_model" in wrappers:
             wrappers.pop("diffusion_model", None)
 
+        metadata = get_region_metadata(new_model.model_options.get("transformer_options", {})) or {}
         patcher = AnimaAttentionPatcher(
             model=new_model,
             regions=extracted_regions,
+            region_mode=metadata.get(
+                "anima_region_mode",
+                AnimaAttentionPatcher.MODE_CROSS_ATTENTION,
+            ),
         )
         return patcher.patch()
 

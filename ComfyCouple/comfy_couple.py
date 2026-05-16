@@ -370,6 +370,13 @@ class ComfyCoupleMask:
                     "default": True,
                     "tooltip": "Auto-inject Flux modifications. This must be set to True when using the Flux model. Once executed, it will remain active until the model cache is freed."
                 }),
+                "anima_region_mode": ([
+                    AnimaAttentionPatcher.MODE_CROSS_ATTENTION,
+                    AnimaAttentionPatcher.MODE_FULL_BLOCK,
+                ], {
+                    "default": AnimaAttentionPatcher.MODE_CROSS_ATTENTION,
+                    "tooltip": "Anima patched modes: cross_attention patches only cross-attention. full_block keeps regions separated through the block stack before merging."
+                }),
             }
         }
 
@@ -610,7 +617,14 @@ class ComfyCoupleMask:
                 }
             )
 
-        patcher = AnimaAttentionPatcher(model=model, regions=processed_regions)
+        patcher = AnimaAttentionPatcher(
+            model=model,
+            regions=processed_regions,
+            region_mode=kwargs.get(
+                "anima_region_mode",
+                AnimaAttentionPatcher.MODE_CROSS_ATTENTION,
+            ),
+        )
         patched_model = patcher.patch()
 
         if kwargs.get("skip_positive_conditioning", True):
@@ -927,9 +941,9 @@ class ComfyCoupleMask:
         """Convert to ComfyUI output format (original method for Flux)"""
         if not processed_conds:
             raise ValueError("No processed conditionings available")
-        
+
         combined_positive = None
-        
+
         for item in processed_conds:
             masked_cond = ConditioningSetMask().append(
                 item['conditioning'],

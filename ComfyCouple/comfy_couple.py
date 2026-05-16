@@ -7,6 +7,7 @@ With built-in Flux injection capability and Regional LoRA Hook support
 ✅ FIXED: skip_positive now works correctly with/without LoRA hooks
 """
 import torch
+import comfy.hooks
 from typing import Dict, List, Tuple, Optional, Any
 
 from nodes import CLIPTextEncode, ConditioningCombine, ConditioningSetMask, ConditioningAverage
@@ -147,7 +148,7 @@ class ComfyCoupleRegion:
             },
             "optional": {
                 "lora_hook": ("HOOKS", {
-                    "tooltip": "LoRA hook from 'Create Hook LoRA' node (SD 1.5/SDXL only, ignored in Flux). Use 'Combine Hooks' node to merge multiple LoRAs before connecting."
+                    "tooltip": "LoRA hook from 'Create Hook LoRA' node (SD 1.5/SDXL/Anima, ignored in Flux). Use 'Combine Hooks' node to merge multiple LoRAs before connecting."
                 }),
                 "region": ("region", {"tooltip": "Chain multiple regions"}),
             }
@@ -349,7 +350,7 @@ class ComfyCoupleMask:
                 }),
                 "skip_positive_conditioning": ("BOOLEAN", {
                     "default": True,
-                    "tooltip": "Skip positive conditioning output (use zero conditioning). True: Only attention patching is applied, no positive output. False: Output all regions with full conditioning. If you are using the Lora hook, set it to false.[SD/SDXL only, always True for Flux]"
+                    "tooltip": "Skip positive conditioning output (use zero conditioning). True: Only attention patching is applied. False: Output all regions with full conditioning. SD/SDXL LoRA hooks require False; Anima LoRA hooks override True with a positive carrier. [Flux always outputs its required conditioning]"
                 }),
             },
             "optional": {
@@ -447,6 +448,40 @@ class ComfyCoupleMask:
             log_warning(f"TiledDiffusion metadata detected but {display_name} does not support it")
 
         return kwargs
+
+    def _attach_lora_hook_to_conditioning(
+        self,
+        conditioning: Any,
+        lora_hook: Optional[Any],
+    ) -> Tuple[Any, bool]:
+        """Attach a ComfyUI LoRA hook while preserving existing hook metadata."""
+        if lora_hook is None:
+            return conditioning, False
+
+        try:
+            return comfy.hooks.set_hooks_for_conditioning(
+                conditioning,
+                lora_hook,
+                append_hooks=True,
+            ), True
+        except Exception as e:
+            log_warning(f"Failed to attach LoRA hook: {e}")
+            return conditioning, False
+
+    def _build_masked_output_conditioning(
+        self,
+        conditioning: Any,
+        mask: torch.Tensor,
+        strength: float,
+        lora_hook: Optional[Any] = None,
+    ) -> Tuple[Any, bool]:
+        masked = ConditioningSetMask().append(
+            conditioning,
+            mask,
+            "default",
+            strength,
+        )[0]
+        return self._attach_lora_hook_to_conditioning(masked, lora_hook)
 
     def _inject_flux_if_needed(self, model: Any) -> Any:
         """
@@ -595,6 +630,8 @@ class ComfyCoupleMask:
             raise ValueError("All regions have zero strength")
 
         processed_regions = []
+        carrier_conds = []
+        lora_count = 0
         for r in active_regions:
             region_cond = self._resolve_region_conditioning(r, chain_metadata)
             processed_regions.append(
@@ -603,6 +640,23 @@ class ComfyCoupleMask:
                     "mask": r["mask"],
                     "strength": r["strength"],
                     "is_background": False,
+                }
+            )
+            carrier_cond, has_lora = self._build_masked_output_conditioning(
+                region_cond,
+                r["mask"],
+                r["strength"],
+                r.get("lora_hook"),
+            )
+            if has_lora:
+                lora_count += 1
+                log_debug(f"Attached Anima LoRA hook to region with mask shape {r['mask'].shape}")
+            carrier_conds.append(
+                {
+                    "conditioning": carrier_cond,
+                    "has_lora": has_lora,
+                    "mask": r["mask"],
+                    "strength": r["strength"],
                 }
             )
 
@@ -616,6 +670,15 @@ class ComfyCoupleMask:
                     "is_background": True,
                 }
             )
+            bg_carrier, _ = self._build_masked_output_conditioning(final_bg, background_mask, 1.0)
+            carrier_conds.append(
+                {
+                    "conditioning": bg_carrier,
+                    "has_lora": False,
+                    "mask": background_mask,
+                    "strength": 1.0,
+                }
+            )
 
         patcher = AnimaAttentionPatcher(
             model=model,
@@ -627,7 +690,15 @@ class ComfyCoupleMask:
         )
         patched_model = patcher.patch()
 
-        if kwargs.get("skip_positive_conditioning", True):
+        skip_positive = kwargs.get("skip_positive_conditioning", True)
+        if lora_count > 0:
+            if skip_positive:
+                print("[ComfyCouple] Anima LoRA hooks detected: using positive carrier conditioning")
+                log_warning("Anima LoRA hooks require positive carrier conditioning; skip_positive_conditioning=True was overridden")
+            final_positive_output = self._convert_to_output_format_lora(carrier_conds)
+            print(f"[ComfyCouple] Anima LoRA hooks: Output {lora_count} hooked regions + {len(carrier_conds) - lora_count} unhooked regions")
+            log_debug(f"Anima LoRA carrier output: {lora_count} hooked regions, {len(carrier_conds) - lora_count} unhooked regions")
+        elif skip_positive:
             final_positive_output = create_zero_conditioning(negative)
         else:
             print("[ComfyCouple] Anima positive output passthrough is experimental")
@@ -668,40 +739,11 @@ class ComfyCoupleMask:
             
             # Step 3: Attach LoRA hook AFTER ConditioningSetMask
             # Follows ComfyUI's Cond Set Props behavior: preserve existing hooks
-            has_lora = False
-            if r.get('lora_hook') is not None:
-                for cond_item in region_cond:
-                    # Get existing hooks (if any)
-                    existing_hooks = cond_item[1].get('hooks', None)
-                    new_hook = r['lora_hook']
-                    
-                    if existing_hooks is None:
-                        # No existing hooks: just set the new one
-                        cond_item[1]['hooks'] = new_hook
-                    else:
-                        # Merge hooks using clone() method
-                        # HookGroup has a clone() method that creates a merged copy
-                        try:
-                            if hasattr(existing_hooks, 'clone'):
-                                # Clone existing and merge with new
-                                merged_hooks = existing_hooks.clone()
-                                if hasattr(merged_hooks, 'hooks') and hasattr(new_hook, 'hooks'):
-                                    # Both are HookGroups, merge their hooks lists
-                                    merged_hooks.hooks.extend(new_hook.hooks)
-                                    cond_item[1]['hooks'] = merged_hooks
-                                else:
-                                    # Can't merge properly, use new hook
-                                    log_warning("Cannot merge hooks properly, using new hook only")
-                                    cond_item[1]['hooks'] = new_hook
-                            else:
-                                # No clone method, overwrite with new hook
-                                log_warning("Existing hooks don't support clone(), using new hook only")
-                                cond_item[1]['hooks'] = new_hook
-                        except Exception as e:
-                            log_warning(f"Hook merge failed: {e}, using new hook only")
-                            cond_item[1]['hooks'] = new_hook
-                
-                has_lora = True
+            region_cond, has_lora = self._attach_lora_hook_to_conditioning(
+                region_cond,
+                r.get("lora_hook"),
+            )
+            if has_lora:
                 log_debug(f"Attached LoRA hook to region with mask shape {r['mask'].shape}")
             
             all_processed_conds.append({

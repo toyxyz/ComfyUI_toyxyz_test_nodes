@@ -152,7 +152,7 @@ MODEL_SUPPORT_REGISTRY: Dict[str, ModelSupportProfile] = {
             "supports_tiled_diffusion": True,
             "supports_visualizer": False,
             "supports_extractor": True,
-            "supports_lora_hooks": False,
+            "supports_lora_hooks": True,
             "supports_cross_region_attention": False,
             "requires_injection": False,
         },

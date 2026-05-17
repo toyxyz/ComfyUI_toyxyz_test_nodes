@@ -10,7 +10,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from .couple_utils import (
-    log_debug, log_warning, ArchitectureInfo, MASK_EPSILON,
+    log_debug, log_warning, ArchitectureInfo, MASK_EPSILON, ModelType,
     detect_or_force_architecture, get_model_type_input_options,
     get_region_metadata,
 )
@@ -149,7 +149,9 @@ class ComfyCoupleRegionVisualizer:
             raise ValueError(f"{display_name} does not support Region Visualizer")
         
         # Extract region data
-        if is_flux:
+        if arch_info.type == ModelType.ANIMA:
+            region_masks, region_info = self._extract_anima_regions(coupled_model)
+        elif is_flux:
             region_masks, region_info = self._extract_flux_regions(coupled_model)
         else:
             region_masks, region_info = self._extract_sd_sdxl_regions(coupled_model)
@@ -217,6 +219,22 @@ class ComfyCoupleRegionVisualizer:
         
         except Exception as e:
             log_warning(f"Failed to extract Flux regions: {e}")
+            return [], f"Error: {e}"
+
+    def _extract_anima_regions(self, coupled_model: Any) -> Tuple[List[torch.Tensor], str]:
+        """Extract region masks from Anima model metadata."""
+        try:
+            transformer_options = coupled_model.model_options.get("transformer_options", {})
+            region_masks, region_info = self._extract_regions_from_metadata(transformer_options)
+            if region_masks:
+                log_debug("Extracted Anima regions from shared metadata")
+                return region_masks, region_info
+
+            log_warning("No Anima regional masks found")
+            return [], "No Anima regional masks found"
+
+        except Exception as e:
+            log_warning(f"Failed to extract Anima regions: {e}")
             return [], f"Error: {e}"
 
     def _extract_sd_sdxl_regions(self, coupled_model: Any) -> Tuple[List[torch.Tensor], str]:

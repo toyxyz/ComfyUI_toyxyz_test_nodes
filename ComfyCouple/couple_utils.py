@@ -499,13 +499,21 @@ class MaskProcessor:
             if isinstance(m, torch.Tensor):
                 working_mask = m
 
-                # Apply SpotDiffusion shift to mask (circular roll)
+                full_mask = F.interpolate(
+                    working_mask.unsqueeze(0).unsqueeze(0) if working_mask.dim() == 2 else working_mask.unsqueeze(1),
+                    size=(full_h, full_w),
+                    mode="bilinear",
+                    align_corners=False,
+                )
+                working_mask = full_mask.squeeze(0).squeeze(0) if working_mask.dim() == 2 else full_mask.squeeze(1)
+
+                # Apply SpotDiffusion shift to mask (circular roll) in full latent coordinates
                 if shift != (0, 0):
                     sh_h, sh_w = shift
                     mask_h, mask_w = working_mask.shape[-2], working_mask.shape[-1]
-                    sh_h_mask = round(sh_h * mask_h / full_h)
-                    sh_w_mask = round(sh_w * mask_w / full_w)
-                    if sh_h_mask == 0 or sh_w_mask == 0:
+                    sh_h_mask = round(sh_h)
+                    sh_w_mask = round(sh_w)
+                    if sh_h == 0 or sh_w == 0:
                         working_mask = working_mask.roll(shifts=(sh_h_mask, sh_w_mask), dims=(-2, -1))
                     else:
                         if shift_condition:
@@ -513,21 +521,19 @@ class MaskProcessor:
                         else:
                             working_mask = working_mask.roll(shifts=sh_w_mask, dims=-1)
 
-                mask_h, mask_w = working_mask.shape[-2], working_mask.shape[-1]
-                scale_h = mask_h / full_h
-                scale_w = mask_w / full_w
-
                 tile_masks = []
                 for bbox in bboxes:
-                    # Map bbox (latent coords) to mask coordinates
-                    y1 = int(bbox.y * scale_h)
-                    x1 = int(bbox.x * scale_w)
-                    y2 = int((bbox.y + bbox.h) * scale_h)
-                    x2 = int((bbox.x + bbox.w) * scale_w)
+                    # BBox already uses full latent coordinates.
+                    y1 = int(bbox.y)
+                    x1 = int(bbox.x)
+                    y2 = int(bbox.y + bbox.h)
+                    x2 = int(bbox.x + bbox.w)
 
                     # Clamp to mask bounds
-                    y2 = min(y2, mask_h)
-                    x2 = min(x2, mask_w)
+                    y1 = max(y1, 0)
+                    x1 = max(x1, 0)
+                    y2 = min(y2, full_h)
+                    x2 = min(x2, full_w)
 
                     cropped = working_mask[..., y1:y2, x1:x2]
 

@@ -984,17 +984,22 @@ class ComfyCoupleRegionExtractor:
 
         new_model = base_model.clone()
         if hasattr(new_model, "remove_wrappers_with_key"):
-            new_model.remove_wrappers_with_key(
+            for wrapper_type in (
                 comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL,
-                AnimaAttentionPatcher.WRAPPER_KEY,
-            )
+                comfy.patcher_extension.WrappersMP.SAMPLER_SAMPLE,
+            ):
+                new_model.remove_wrappers_with_key(
+                    wrapper_type,
+                    AnimaAttentionPatcher.WRAPPER_KEY,
+                )
         transformer_options = new_model.model_options.setdefault("transformer_options", {})
         wrappers = transformer_options.get("wrappers", {})
-        diffusion_wrappers = wrappers.get("diffusion_model", {})
-        if AnimaAttentionPatcher.WRAPPER_KEY in diffusion_wrappers:
-            diffusion_wrappers.pop(AnimaAttentionPatcher.WRAPPER_KEY, None)
-        if not diffusion_wrappers and "diffusion_model" in wrappers:
-            wrappers.pop("diffusion_model", None)
+        for wrapper_name in ("diffusion_model", "sampler_sample"):
+            typed_wrappers = wrappers.get(wrapper_name, {})
+            if AnimaAttentionPatcher.WRAPPER_KEY in typed_wrappers:
+                typed_wrappers.pop(AnimaAttentionPatcher.WRAPPER_KEY, None)
+            if not typed_wrappers and wrapper_name in wrappers:
+                wrappers.pop(wrapper_name, None)
 
         metadata = get_region_metadata(new_model.model_options.get("transformer_options", {})) or {}
         patcher = AnimaAttentionPatcher(

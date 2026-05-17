@@ -19,11 +19,12 @@ import comfy.patcher_extension
 import comfy.sampler_helpers
 import comfy.samplers
 
-from .couple_utils import build_region_metadata, log_warning, save_region_metadata
+from .couple_utils import build_region_metadata, log_debug, log_warning, save_region_metadata
 
 
 class AnimaAttentionPatcher:
     WRAPPER_KEY = "ComfyCouple_AnimaDiffusionModel"
+    PREENCODED_CONTEXTS_KEY = "comfycouple_anima_preencoded_contexts"
     MODE_CROSS_ATTENTION = "cross_attention"
     MODE_FULL_BLOCK = "full_block"
 
@@ -41,6 +42,8 @@ class AnimaAttentionPatcher:
             else self.MODE_CROSS_ATTENTION
         )
         self._region_bundle_cache: Dict[Tuple[Any, ...], Optional[Dict[str, Any]]] = {}
+        self._logged_tiled_layout = False
+        self._logged_tiled_full_block_fallback = False
 
     def patch(self) -> Any:
         patched_model = self.model.clone()
@@ -73,17 +76,144 @@ class AnimaAttentionPatcher:
             ),
         )
         patched_model.add_wrapper_with_key(
+            comfy.patcher_extension.WrappersMP.SAMPLER_SAMPLE,
+            self.WRAPPER_KEY,
+            self._build_sampler_wrapper(),
+        )
+        patched_model.add_wrapper_with_key(
             comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL,
             self.WRAPPER_KEY,
             self._build_diffusion_wrapper(patched_model),
         )
         return patched_model
 
+    def _build_sampler_wrapper(self):
+        converted_regions = []
+        static_contexts: List[Optional[torch.Tensor]] = []
+
+        for index, region in enumerate(self.regions):
+            context_tensor = region.get("context_tensor")
+            static_contexts.append(context_tensor if isinstance(context_tensor, torch.Tensor) else None)
+            if isinstance(context_tensor, torch.Tensor):
+                continue
+
+            conditioning = region.get("conditioning")
+            if not conditioning:
+                continue
+
+            converted = comfy.sampler_helpers.convert_cond(conditioning)
+            if not converted:
+                continue
+
+            if len(converted) > 1:
+                log_warning("Anima currently uses the first conditioning item per region")
+
+            converted_regions.append((index, converted[0]))
+
+        def anima_sampler_wrapper(executor, *args, **kwargs):
+            if not converted_regions and not any(isinstance(ctx, torch.Tensor) for ctx in static_contexts):
+                return executor(*args, **kwargs)
+
+            try:
+                extra_options = args[2] if len(args) > 2 and isinstance(args[2], dict) else kwargs.get("extra_options")
+                if not isinstance(extra_options, dict):
+                    return executor(*args, **kwargs)
+
+                model_options = extra_options.get("model_options")
+                if not isinstance(model_options, dict):
+                    return executor(*args, **kwargs)
+
+                transformer_options = dict(model_options.get("transformer_options", {}))
+                preencoded_contexts: List[Optional[torch.Tensor]] = list(static_contexts)
+                processed_count = 0
+
+                if converted_regions:
+                    guider = args[0] if len(args) > 0 else kwargs.get("guider")
+                    noise = args[4] if len(args) > 4 else kwargs.get("noise")
+                    latent_image = args[5] if len(args) > 5 else kwargs.get("latent_image")
+                    denoise_mask = args[6] if len(args) > 6 else kwargs.get("denoise_mask")
+                    seed = extra_options.get("seed")
+
+                    if guider is None or noise is None or latent_image is None or seed is None:
+                        raise ValueError("missing sampler inputs for Anima conditioning pre-encoding")
+
+                    processed = comfy.samplers.process_conds(
+                        guider.inner_model,
+                        noise,
+                        {"positive": [converted for _, converted in converted_regions]},
+                        noise.device,
+                        latent_image,
+                        denoise_mask,
+                        seed,
+                        latent_shapes=[latent_image.shape],
+                    ).get("positive", [])
+
+                    if len(processed) != len(converted_regions):
+                        log_warning(
+                            "Anima pre-encoding returned a different number of conditioning items; "
+                            "missing regions will use diffusion-time encoding"
+                        )
+
+                    for (region_index, _), processed_item in zip(converted_regions, processed):
+                        model_conds = processed_item.get("model_conds", {})
+                        crossattn_cond = model_conds.get("c_crossattn")
+                        crossattn = getattr(crossattn_cond, "cond", None)
+                        if isinstance(crossattn, torch.Tensor):
+                            preencoded_contexts[region_index] = crossattn
+                            processed_count += 1
+
+                transformer_options[self.PREENCODED_CONTEXTS_KEY] = preencoded_contexts
+                model_options["transformer_options"] = transformer_options
+                ready_count = sum(1 for ctx in preencoded_contexts if isinstance(ctx, torch.Tensor))
+                static_count = sum(1 for ctx in static_contexts if isinstance(ctx, torch.Tensor))
+                if converted_regions:
+                    print(
+                        "[ComfyCouple] Anima sampler pre-encoded "
+                        f"{processed_count}/{len(converted_regions)} region conditioning(s) "
+                        f"({ready_count}/{len(self.regions)} contexts ready)"
+                    )
+                    log_debug(
+                        "Anima sampler pre-encode: "
+                        f"processed={processed_count}, static={static_count}, ready={ready_count}, "
+                        f"regions={len(self.regions)}"
+                    )
+                elif static_count:
+                    print(
+                        "[ComfyCouple] Anima using "
+                        f"{static_count}/{len(self.regions)} precomputed region context(s)"
+                    )
+                    log_debug(
+                        "Anima static precomputed contexts: "
+                        f"static={static_count}, ready={ready_count}, regions={len(self.regions)}"
+                    )
+
+            except Exception as e:
+                try:
+                    extra_options = args[2] if len(args) > 2 and isinstance(args[2], dict) else kwargs.get("extra_options")
+                    model_options = extra_options.get("model_options") if isinstance(extra_options, dict) else None
+                    transformer_options = (
+                        model_options.get("transformer_options", {})
+                        if isinstance(model_options, dict)
+                        else {}
+                    )
+                    transformer_options.pop(self.PREENCODED_CONTEXTS_KEY, None)
+                except Exception:
+                    pass
+                log_warning(f"Anima sampler pre-encoding failed; falling back to diffusion-time encoding: {e}")
+
+            return executor(*args, **kwargs)
+
+        return anima_sampler_wrapper
+
     def _build_diffusion_wrapper(self, patched_model: Any):
         def anima_diffusion_wrapper(executor, x, timesteps, context, fps=None, padding_mask=None, **kwargs):
-            transformer_options = kwargs.get("transformer_options", {})
-            cond_or_uncond = transformer_options.get("cond_or_uncond", [])
+            diffusion_model = executor.class_obj
+            patch_spatial = int(max(getattr(diffusion_model, "patch_spatial", 1), 1))
+            transformer_options = dict(kwargs.get("transformer_options", {}) or {})
+            transformer_options["activations_shape"] = self._get_activations_shape(x, patch_spatial)
+            kwargs["transformer_options"] = transformer_options
 
+            cond_or_uncond = transformer_options.get("cond_or_uncond", [])
             if not cond_or_uncond:
                 return executor(x, timesteps, context, fps, padding_mask, **kwargs)
 
@@ -91,34 +221,52 @@ class AnimaAttentionPatcher:
             if x.shape[0] % batch_chunks != 0:
                 return executor(x, timesteps, context, fps, padding_mask, **kwargs)
 
-            diffusion_model = executor.class_obj
             chunk_size = x.shape[0] // batch_chunks
             region_bundle = self._get_region_bundle(
                 patched_model,
                 chunk_size,
                 x,
                 context,
-                int(diffusion_model.patch_spatial),
+                patch_spatial,
+                transformer_options,
             )
             if not region_bundle:
                 return executor(x, timesteps, context, fps, padding_mask, **kwargs)
 
             original_forwards = []
             try:
-                for block_index, block in enumerate(diffusion_model.blocks):
-                    if self.region_mode == self.MODE_FULL_BLOCK:
+                blocks = self._get_anima_blocks(diffusion_model)
+                tiled_bboxes = transformer_options.get("tiled_diffusion_bboxes")
+                use_full_block = self.region_mode == self.MODE_FULL_BLOCK and blocks and not tiled_bboxes
+                if (
+                    self.region_mode == self.MODE_FULL_BLOCK
+                    and blocks
+                    and tiled_bboxes
+                    and not self._logged_tiled_full_block_fallback
+                ):
+                    print(
+                        "[ComfyCouple] Anima full_block mode detected with Tiled Diffusion; "
+                        "using cross_attention mode for tiled batch alignment"
+                    )
+                    self._logged_tiled_full_block_fallback = True
+
+                if use_full_block:
+                    for block_index, block in enumerate(blocks):
                         original_forwards.append((block, block.forward))
                         block.forward = types.MethodType(
                             self._build_block_forward(
                                 block.forward,
                                 region_bundle,
                                 base_batch_size=chunk_size,
-                                is_last_block=block_index == len(diffusion_model.blocks) - 1,
+                                is_last_block=block_index == len(blocks) - 1,
                             ),
                             block,
                         )
-                    else:
-                        attn = block.cross_attn
+                else:
+                    attn_modules = self._get_cross_attention_modules(diffusion_model)
+                    if not attn_modules:
+                        return executor(x, timesteps, context, fps, padding_mask, **kwargs)
+                    for attn in attn_modules:
                         original_forwards.append((attn, attn.forward))
                         attn.forward = types.MethodType(
                             self._build_cross_attn_forward(attn.forward, region_bundle),
@@ -131,6 +279,37 @@ class AnimaAttentionPatcher:
 
         return anima_diffusion_wrapper
 
+    def _get_activations_shape(self, x: torch.Tensor, patch_spatial: int) -> List[int]:
+        activations_shape = list(x.shape)
+        if len(activations_shape) >= 4:
+            activations_shape[-2] = max(activations_shape[-2] // patch_spatial, 1)
+            activations_shape[-1] = max(activations_shape[-1] // patch_spatial, 1)
+        return activations_shape
+
+    def _get_anima_blocks(self, diffusion_model: Any) -> List[Any]:
+        blocks = getattr(diffusion_model, "blocks", None)
+        return list(blocks) if blocks is not None else []
+
+    def _get_cross_attention_modules(self, diffusion_model: Any) -> List[Any]:
+        modules = []
+        for block in self._get_anima_blocks(diffusion_model):
+            attn = getattr(block, "cross_attn", None)
+            if attn is not None and callable(getattr(attn, "forward", None)):
+                modules.append(attn)
+
+        if modules:
+            return modules
+
+        named_modules = getattr(diffusion_model, "named_modules", None)
+        if not callable(named_modules):
+            return []
+
+        for name, module in named_modules():
+            if "cross_attn" in name and callable(getattr(module, "forward", None)):
+                modules.append(module)
+
+        return modules
+
     def _get_region_bundle(
         self,
         patched_model: Any,
@@ -138,6 +317,7 @@ class AnimaAttentionPatcher:
         x: torch.Tensor,
         context: torch.Tensor,
         patch_spatial: int,
+        transformer_options: Optional[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
         cache_key = (
             batch_size,
@@ -147,14 +327,45 @@ class AnimaAttentionPatcher:
             str(context.dtype),
             tuple(x.shape[1:]),
             patch_spatial,
+            self._preencoded_contexts_signature(transformer_options),
         )
         cached = self._region_bundle_cache.get(cache_key)
         if cached is not None:
             return cached
 
-        bundle = self._build_region_bundle(patched_model, batch_size, x, context, patch_spatial)
+        bundle = self._build_region_bundle(
+            patched_model,
+            batch_size,
+            x,
+            context,
+            patch_spatial,
+            transformer_options,
+        )
         self._region_bundle_cache[cache_key] = bundle
         return bundle
+
+    def _preencoded_contexts_signature(
+        self,
+        transformer_options: Optional[Dict[str, Any]],
+    ) -> Tuple[Any, ...]:
+        if not transformer_options:
+            return ()
+
+        contexts = transformer_options.get(self.PREENCODED_CONTEXTS_KEY)
+        if not isinstance(contexts, list):
+            return ()
+
+        return tuple(
+            (
+                id(ctx),
+                tuple(ctx.shape),
+                str(ctx.device),
+                str(ctx.dtype),
+            )
+            if isinstance(ctx, torch.Tensor)
+            else None
+            for ctx in contexts
+        )
 
     def _build_region_bundle(
         self,
@@ -163,16 +374,32 @@ class AnimaAttentionPatcher:
         x: torch.Tensor,
         context: torch.Tensor,
         patch_spatial: int,
+        transformer_options: Optional[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
         sample_x = x[:batch_size]
         region_contexts: List[torch.Tensor] = []
         weighted_masks: List[torch.Tensor] = []
         raw_masks: List[torch.Tensor] = []
+        preencoded_contexts = (
+            transformer_options.get(self.PREENCODED_CONTEXTS_KEY)
+            if isinstance(transformer_options, dict)
+            else None
+        )
+        preencoded_used = 0
 
-        for region in self.regions:
+        for region_index, region in enumerate(self.regions):
             preencoded_context = region.get("context_tensor")
+            if (
+                not isinstance(preencoded_context, torch.Tensor)
+                and isinstance(preencoded_contexts, list)
+                and region_index < len(preencoded_contexts)
+                and isinstance(preencoded_contexts[region_index], torch.Tensor)
+            ):
+                preencoded_context = preencoded_contexts[region_index]
+
             if isinstance(preencoded_context, torch.Tensor):
                 crossattn = preencoded_context
+                preencoded_used += 1
             else:
                 conditioning = region.get("conditioning")
                 if not conditioning:
@@ -201,6 +428,7 @@ class AnimaAttentionPatcher:
 
                 crossattn_cond = encoded_item["model_conds"]["c_crossattn"]
                 crossattn = crossattn_cond.process_cond(batch_size=batch_size, area=None).cond
+            crossattn = self._match_context_batch(crossattn, batch_size)
             region_contexts.append(crossattn.to(device=context.device, dtype=context.dtype))
 
             mask = region["mask"]
@@ -212,6 +440,11 @@ class AnimaAttentionPatcher:
 
         if not region_contexts:
             return None
+
+        if preencoded_used > 0:
+            log_debug(
+                f"Anima region bundle using {preencoded_used}/{len(region_contexts)} pre-encoded context(s)"
+            )
 
         normalized_masks = self._normalize_region_masks(weighted_masks, raw_masks)
         if normalized_masks is None:
@@ -234,6 +467,12 @@ class AnimaAttentionPatcher:
             "patch_spatial": patch_spatial,
             "latent_height": int(x.shape[-2]),
             "latent_width": int(x.shape[-1]),
+            "activations_shape": (
+                list(transformer_options.get("activations_shape"))
+                if isinstance(transformer_options, dict)
+                and isinstance(transformer_options.get("activations_shape"), (list, tuple))
+                else None
+            ),
         }
 
     def _normalize_region_masks(
@@ -257,6 +496,19 @@ class AnimaAttentionPatcher:
 
         log_warning("Anima region strengths left uncovered pixels; falling back to raw mask normalization")
         return raw_stack / raw_sum.clamp_min(1e-6)
+
+    def _match_context_batch(self, context: torch.Tensor, batch_size: int) -> torch.Tensor:
+        if context.shape[0] == batch_size:
+            return context
+
+        if context.shape[0] == 1:
+            return context.repeat(batch_size, 1, 1)
+
+        if context.shape[0] > batch_size:
+            return context[:batch_size]
+
+        repeats = int(math.ceil(batch_size / max(int(context.shape[0]), 1)))
+        return context.repeat(repeats, 1, 1)[:batch_size]
 
     def _build_cross_attn_forward(self, original_forward, region_bundle: Dict[str, Any]):
         def patched_cross_attn_forward(self_attn, x, context=None, rope_emb=None, transformer_options=None):
@@ -282,8 +534,28 @@ class AnimaAttentionPatcher:
                 )
 
             batch_size = x.shape[0] // num_chunks
-            x_chunks = x.chunk(num_chunks, dim=0)
-            context_chunks = context.chunk(num_chunks, dim=0)
+            if context.shape[0] != x.shape[0] or context.shape[0] % num_chunks != 0:
+                return original_forward(
+                    x,
+                    context=context,
+                    rope_emb=rope_emb,
+                    transformer_options=transformer_options,
+                )
+
+            tiled_layout = self._get_tiled_batch_layout(transformer_options, x.shape[0], num_chunks)
+            if tiled_layout is not None:
+                if not self._logged_tiled_layout:
+                    print(
+                        "[ComfyCouple] Anima Tiled Diffusion batch layout detected: "
+                        f"{tiled_layout['num_tiles']} tile(s) x {num_chunks} condition chunk(s), "
+                        f"batch_per_tile={tiled_layout['batch_per_tile']}"
+                    )
+                    self._logged_tiled_layout = True
+                x_chunks = self._split_tiled_cond_chunks(x, num_chunks, tiled_layout)
+                context_chunks = self._split_tiled_cond_chunks(context, num_chunks, tiled_layout)
+            else:
+                x_chunks = x.chunk(num_chunks, dim=0)
+                context_chunks = context.chunk(num_chunks, dim=0)
 
             target_tokens = self._lcm_for_list(
                 [region_bundle["context_tokens"], int(context_chunks[0].shape[1])]
@@ -335,6 +607,8 @@ class AnimaAttentionPatcher:
                     )
                     pos += region_bundle["num_regions"] * batch_size
 
+            if tiled_layout is not None:
+                return self._combine_tiled_cond_chunks(outputs, tiled_layout)
             return torch.cat(outputs, dim=0)
 
         return patched_cross_attn_forward
@@ -482,6 +756,73 @@ class AnimaAttentionPatcher:
             pos += size
         return chunks
 
+    def _get_tiled_batch_layout(
+        self,
+        transformer_options: Optional[Dict[str, Any]],
+        total_batch: int,
+        num_chunks: int,
+    ) -> Optional[Dict[str, int]]:
+        if not transformer_options or num_chunks <= 1:
+            return None
+
+        bboxes = transformer_options.get("tiled_diffusion_bboxes")
+        if not bboxes:
+            return None
+
+        num_tiles = len(bboxes)
+        if num_tiles <= 1:
+            return None
+
+        divisor = num_tiles * num_chunks
+        if divisor <= 0 or total_batch % divisor != 0:
+            return None
+
+        return {
+            "num_tiles": int(num_tiles),
+            "batch_per_tile": int(total_batch // divisor),
+        }
+
+    def _split_tiled_cond_chunks(
+        self,
+        tensor: torch.Tensor,
+        num_chunks: int,
+        tiled_layout: Dict[str, int],
+    ) -> List[torch.Tensor]:
+        num_tiles = tiled_layout["num_tiles"]
+        batch_per_tile = tiled_layout["batch_per_tile"]
+        expected_batch = num_tiles * num_chunks * batch_per_tile
+        if tensor.shape[0] != expected_batch:
+            return list(tensor.chunk(num_chunks, dim=0))
+
+        trailing_shape = tuple(tensor.shape[1:])
+        tile_major = tensor.reshape(num_tiles, num_chunks, batch_per_tile, *trailing_shape)
+        permute_order = (1, 0, 2, *range(3, tile_major.dim()))
+        chunk_major = tile_major.permute(permute_order).reshape(
+            num_chunks,
+            num_tiles * batch_per_tile,
+            *trailing_shape,
+        )
+        return list(chunk_major.unbind(dim=0))
+
+    def _combine_tiled_cond_chunks(
+        self,
+        chunks: List[torch.Tensor],
+        tiled_layout: Dict[str, int],
+    ) -> torch.Tensor:
+        if not chunks:
+            raise ValueError("cannot combine empty tiled chunks")
+
+        num_tiles = tiled_layout["num_tiles"]
+        batch_per_tile = tiled_layout["batch_per_tile"]
+        trailing_shape = tuple(chunks[0].shape[1:])
+
+        reshaped = [
+            chunk.reshape(num_tiles, batch_per_tile, *trailing_shape)
+            for chunk in chunks
+        ]
+        tile_major = torch.stack(reshaped, dim=1)
+        return tile_major.reshape(num_tiles * len(chunks) * batch_per_tile, *trailing_shape)
+
     def _expand_block_kwarg_tensor(
         self,
         kwargs: Dict[str, Any],
@@ -557,8 +898,13 @@ class AnimaAttentionPatcher:
         masks = region_bundle["masks"].to(device=device, dtype=dtype)
         num_regions = masks.shape[0]
 
-        h_tokens = max(region_bundle["latent_height"] // region_bundle["patch_spatial"], 1)
-        w_tokens = max(region_bundle["latent_width"] // region_bundle["patch_spatial"], 1)
+        activations_shape = region_bundle.get("activations_shape")
+        if isinstance(activations_shape, list) and len(activations_shape) >= 4:
+            h_tokens = max(int(activations_shape[-2]), 1)
+            w_tokens = max(int(activations_shape[-1]), 1)
+        else:
+            h_tokens = max(region_bundle["latent_height"] // region_bundle["patch_spatial"], 1)
+            w_tokens = max(region_bundle["latent_width"] // region_bundle["patch_spatial"], 1)
         spatial_tokens = max(h_tokens * w_tokens, 1)
         temporal_tokens = max(int(math.ceil(seq_len / spatial_tokens)), 1)
 
@@ -635,23 +981,26 @@ class AnimaAttentionPatcher:
         tiled_masks = []
         for i in range(num_regions):
             working_mask = masks[i]
+            full_mask = F.interpolate(
+                working_mask.unsqueeze(0).unsqueeze(0),
+                size=(full_h, full_w),
+                mode="bilinear",
+                align_corners=False,
+            ).squeeze(0).squeeze(0)
+
             working_mask = self._apply_tiled_shift(
-                working_mask,
+                full_mask,
                 tiled_context["full_shape"],
                 tiled_context["shift"],
                 tiled_context["shift_condition"],
             )
 
-            mask_h, mask_w = working_mask.shape[-2:]
-            scale_h = mask_h / max(full_h, 1)
-            scale_w = mask_w / max(full_w, 1)
-
             region_tile_masks = []
             for bbox in tiled_context["bboxes"]:
-                y1 = int(bbox.y * scale_h)
-                x1 = int(bbox.x * scale_w)
-                y2 = min(int((bbox.y + bbox.h) * scale_h), mask_h)
-                x2 = min(int((bbox.x + bbox.w) * scale_w), mask_w)
+                y1 = max(int(bbox.y), 0)
+                x1 = max(int(bbox.x), 0)
+                y2 = min(int(bbox.y + bbox.h), full_h)
+                x2 = min(int(bbox.x + bbox.w), full_w)
 
                 cropped = working_mask[y1:y2, x1:x2]
                 if cropped.numel() == 0:
@@ -695,7 +1044,7 @@ class AnimaAttentionPatcher:
         sh_h_mask = round(sh_h * mask_h / max(full_h, 1))
         sh_w_mask = round(sh_w * mask_w / max(full_w, 1))
 
-        if sh_h_mask == 0 or sh_w_mask == 0:
+        if sh_h == 0 or sh_w == 0:
             return mask.roll(shifts=(sh_h_mask, sh_w_mask), dims=(-2, -1))
         if shift_condition:
             return mask.roll(shifts=sh_h_mask, dims=-2)

@@ -6,7 +6,7 @@ from typing import Any, Dict, List
 
 import numpy as np
 import torch
-from PIL import Image, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 import folder_paths
 
@@ -41,9 +41,9 @@ class CropAreaMask:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "MASK", "IMAGE")
-    RETURN_NAMES = ("crops", "masks", "source_image")
-    OUTPUT_IS_LIST = (True, True, False)
+    RETURN_TYPES = ("IMAGE", "MASK", "IMAGE", "IMAGE")
+    RETURN_NAMES = ("crops", "masks", "source_image", "canvas_image")
+    OUTPUT_IS_LIST = (True, True, False, False)
     FUNCTION = "crop_image"
     CATEGORY = "ToyxyzTestNodes"
 
@@ -135,6 +135,72 @@ class CropAreaMask:
         bottom = max(top + 1, min(height, int(math.ceil((box["y"] + box["height"]) * height))))
         return left, top, right, bottom
 
+    @staticmethod
+    def _hsl_to_rgb(h: float, s: float, l: float) -> tuple[int, int, int]:
+        h = h / 360.0
+        s = s / 100.0
+        l = l / 100.0
+
+        if s == 0:
+            r = g = b = l
+        else:
+            def hue_to_rgb(p, q, t):
+                if t < 0:
+                    t += 1
+                if t > 1:
+                    t -= 1
+                if t < 1 / 6:
+                    return p + (q - p) * 6 * t
+                if t < 1 / 2:
+                    return q
+                if t < 2 / 3:
+                    return p + (q - p) * (2 / 3 - t) * 6
+                return p
+
+            q = l * (1 + s) if l < 0.5 else l + s - l * s
+            p = 2 * l - q
+            r = hue_to_rgb(p, q, h + 1 / 3)
+            g = hue_to_rgb(p, q, h)
+            b = hue_to_rgb(p, q, h - 1 / 3)
+
+        return int(r * 255), int(g * 255), int(b * 255)
+
+    @classmethod
+    def _create_canvas_image(cls, source: Image.Image, boxes: List[Dict[str, float]]) -> torch.Tensor:
+        width, height = source.size
+        image = source.copy()
+        overlay = Image.new("RGBA", (width, height), color=(255, 255, 255, 0))
+        draw = ImageDraw.Draw(overlay, "RGBA")
+
+        try:
+            font = ImageFont.truetype("arial.ttf", 22)
+        except Exception:
+            font = ImageFont.load_default()
+
+        total_boxes = max(1, len(boxes))
+        for index, box in enumerate(boxes):
+            left, top, right, bottom = cls._box_to_pixels(box, width, height)
+            hue = float(box.get("hue", ((index + 1) / total_boxes) * 360.0))
+            r, g, b = cls._hsl_to_rgb(hue, 90, 65)
+            fill_color = (r, g, b, 72)
+            border_color = (r, g, b, 255)
+            draw.rectangle([left, top, right - 1, bottom - 1], fill=fill_color, outline=border_color, width=3)
+
+            label = str(index + 1)
+            bbox = draw.textbbox((0, 0), label, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+            text_x = left + (right - left - text_width) / 2
+            text_y = top + (bottom - top - text_height) / 2
+            draw.text((text_x - 1, text_y), label, fill=(0, 0, 0, 255), font=font)
+            draw.text((text_x + 1, text_y), label, fill=(0, 0, 0, 255), font=font)
+            draw.text((text_x, text_y - 1), label, fill=(0, 0, 0, 255), font=font)
+            draw.text((text_x, text_y + 1), label, fill=(0, 0, 0, 255), font=font)
+            draw.text((text_x, text_y), label, fill=(255, 255, 255, 255), font=font)
+
+        image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
+        return cls._pil_to_tensor(image)
+
     def crop_image(self, image, boxes_state, extra_pnginfo=None, unique_id=None):
         boxes = self._load_boxes_from_state(boxes_state)
         if not boxes:
@@ -151,6 +217,7 @@ class CropAreaMask:
 
         source_width, source_height = source.size
         source_tensor = self._pil_to_tensor(source)
+        canvas_tensor = self._create_canvas_image(source, boxes)
         crop_tensors = []
         mask_tensors = []
 
@@ -164,7 +231,7 @@ class CropAreaMask:
             mask[:, top:bottom, left:right] = 1.0
             mask_tensors.append(mask)
 
-        return (crop_tensors, mask_tensors, source_tensor)
+        return (crop_tensors, mask_tensors, source_tensor, canvas_tensor)
 
     @classmethod
     def IS_CHANGED(cls, image, boxes_state, extra_pnginfo=None, unique_id=None):

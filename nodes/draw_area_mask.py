@@ -1,11 +1,14 @@
 import hashlib
 import json
 import math
+import os
 from typing import Any, Dict, List
 
 import numpy as np
 import torch
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+import folder_paths
 
 
 class DrawAreaMask:
@@ -14,6 +17,9 @@ class DrawAreaMask:
 
     @classmethod
     def INPUT_TYPES(cls):
+        input_dir = folder_paths.get_input_directory()
+        files = [f for f in os.listdir(input_dir) if os.path.isfile(os.path.join(input_dir, f))]
+        files = folder_paths.filter_files_content_types(files, ["image"])
         return {
             "required": {
                 "width": (
@@ -44,11 +50,18 @@ class DrawAreaMask:
                         "tooltip": "Internal serialized box state.",
                     },
                 ),
+                "background_image": (
+                    [""] + sorted(files),
+                    {
+                        "image_upload": True,
+                        "tooltip": "Optional image shown behind the drawing canvas. The canvas size follows the image size.",
+                    },
+                ),
             },
         }
 
-    RETURN_TYPES = tuple(["IMAGE"] + ["MASK"] * MAX_OUTPUTS)
-    RETURN_NAMES = tuple(["canvas_image"] + [f"mask_{i}" for i in range(MAX_OUTPUTS)])
+    RETURN_TYPES = tuple(["IMAGE", "IMAGE"] + ["MASK"] * MAX_OUTPUTS)
+    RETURN_NAMES = tuple(["canvas_image", "background_image"] + [f"mask_{i}" for i in range(MAX_OUTPUTS)])
     FUNCTION = "draw_masks"
     CATEGORY = "ToyxyzTestNodes"
 
@@ -156,9 +169,36 @@ class DrawAreaMask:
         image_np = np.array(image).astype(np.float32) / 255.0
         return torch.from_numpy(image_np)[None,]
 
+    @staticmethod
+    def _pil_to_tensor(image: Image.Image) -> torch.Tensor:
+        image_np = np.array(image).astype(np.float32) / 255.0
+        return torch.from_numpy(image_np)[None,]
+
+    @staticmethod
+    def _load_background_image(background_image: str | None, width: int, height: int) -> Image.Image | None:
+        if not background_image:
+            return None
+
+        image_path = folder_paths.get_annotated_filepath(background_image)
+        with Image.open(image_path) as image_file:
+            image_file = ImageOps.exif_transpose(image_file)
+            if image_file.mode == "I":
+                image_file = image_file.point(lambda value: value * (1 / 255))
+            image = image_file.convert("RGB")
+
+        if image.size != (width, height):
+            image = image.resize((width, height), Image.Resampling.LANCZOS)
+        return image
+
     @classmethod
-    def _create_canvas_image(cls, width: int, height: int, boxes: List[Dict[str, float]]) -> torch.Tensor:
-        image = Image.new("RGB", (width, height), color="white")
+    def _create_canvas_image(
+        cls,
+        width: int,
+        height: int,
+        boxes: List[Dict[str, float]],
+        background_image: str | None = None,
+    ) -> torch.Tensor:
+        image = cls._load_background_image(background_image, width, height) or Image.new("RGB", (width, height), color="white")
         overlay = Image.new("RGBA", (width, height), color=(255, 255, 255, 0))
         draw = ImageDraw.Draw(overlay, "RGBA")
 
@@ -189,13 +229,14 @@ class DrawAreaMask:
             draw.text((text_x, text_y), label, fill=(255, 255, 255, 255), font=font)
 
         image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
-        image_np = np.array(image).astype(np.float32) / 255.0
-        return torch.from_numpy(image_np)[None,]
+        return cls._pil_to_tensor(image)
 
-    def draw_masks(self, width, height, boxes_state):
+    def draw_masks(self, width, height, boxes_state, background_image=""):
         boxes = self._load_boxes_from_state(boxes_state)
         blank_mask = self._blank_mask(width, height)
-        canvas_image = self._create_canvas_image(width, height, boxes) if boxes else self._blank_canvas_image(width, height)
+        background = self._load_background_image(background_image, width, height)
+        background_tensor = self._pil_to_tensor(background) if background is not None else self._blank_canvas_image(width, height)
+        canvas_image = self._create_canvas_image(width, height, boxes, background_image)
         masks = []
 
         for box in boxes:
@@ -204,19 +245,29 @@ class DrawAreaMask:
             mask[:, top:bottom, left:right] = 1.0
             masks.append(mask)
 
-        return tuple([canvas_image] + [masks[i] if i < len(masks) else blank_mask.clone() for i in range(self.MAX_OUTPUTS)])
+        return tuple(
+            [canvas_image, background_tensor]
+            + [masks[i] if i < len(masks) else blank_mask.clone() for i in range(self.MAX_OUTPUTS)]
+        )
 
     @classmethod
-    def IS_CHANGED(cls, width, height, boxes_state):
+    def IS_CHANGED(cls, width, height, boxes_state, background_image=""):
         hasher = hashlib.sha256()
         hasher.update(str(width).encode("utf-8"))
         hasher.update(str(height).encode("utf-8"))
         boxes = cls._load_boxes_from_state(boxes_state)
         hasher.update(json.dumps(boxes, sort_keys=True).encode("utf-8"))
+        hasher.update(str(background_image or "").encode("utf-8"))
+        if background_image:
+            image_path = folder_paths.get_annotated_filepath(background_image)
+            with open(image_path, "rb") as image_file:
+                hasher.update(image_file.read())
         return hasher.hexdigest()
 
     @classmethod
-    def VALIDATE_INPUTS(cls, width, height, boxes_state=None):
+    def VALIDATE_INPUTS(cls, width, height, boxes_state=None, background_image=""):
         if int(width) < 16 or int(height) < 16:
             return "Width and height must be at least 16."
+        if background_image and not folder_paths.exists_annotated_filepath(background_image):
+            return f"Invalid background image file: {background_image}"
         return True

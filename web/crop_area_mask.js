@@ -7,7 +7,7 @@ const HIDDEN_WIDGET_TYPE = "crop-area-mask-hidden";
 const IMAGE_WIDTH_PROPERTY = "crop_area_image_width";
 const IMAGE_HEIGHT_PROPERTY = "crop_area_image_height";
 const PREVIEW_MIN_HEIGHT = 220;
-const PREVIEW_MAX_HEIGHT = 560;
+const PREVIEW_MAX_HEIGHT = 1120;
 const PREVIEW_MARGIN = 10;
 const BOX_MIN_PIXELS = 6;
 const FALLBACK_ASPECT_RATIO = 1;
@@ -86,11 +86,11 @@ function updateOutputs(node) {
     node.outputs = [];
   }
 
-  while (node.outputs.length > 3) {
+  while (node.outputs.length > 4) {
     node.removeOutput(node.outputs.length - 1);
   }
 
-  while (node.outputs.length < 3) {
+  while (node.outputs.length < 4) {
     node.addOutput("crops", "IMAGE");
   }
 
@@ -107,6 +107,11 @@ function updateOutputs(node) {
   if (node.outputs[2]) {
     node.outputs[2].name = "source_image";
     node.outputs[2].type = "IMAGE";
+  }
+
+  if (node.outputs[3]) {
+    node.outputs[3].name = "canvas_image";
+    node.outputs[3].type = "IMAGE";
   }
 }
 
@@ -243,6 +248,8 @@ function loadPreviewImage(node, forceReload = false) {
     properties[IMAGE_WIDTH_PROPERTY] = image.naturalWidth;
     properties[IMAGE_HEIGHT_PROPERTY] = image.naturalHeight;
     hideDefaultImagePreview(node);
+    node.setSize?.(node.computeSize());
+    node.graph?.setDirtyCanvas?.(true, true);
     refreshPreview(node);
   };
 

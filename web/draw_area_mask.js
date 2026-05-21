@@ -3,8 +3,11 @@ import { app } from "../../scripts/app.js";
 const NODE_ID = "DrawAreaMask";
 const BOXES_PROPERTY = "draw_area_boxes";
 const BOXES_WIDGET_NAME = "boxes_state";
+const BACKGROUND_IMAGE_WIDGET_NAME = "background_image";
 const WIDTH_PROPERTY = "draw_area_width";
 const HEIGHT_PROPERTY = "draw_area_height";
+const BACKGROUND_IMAGE_WIDTH_PROPERTY = "draw_area_background_image_width";
+const BACKGROUND_IMAGE_HEIGHT_PROPERTY = "draw_area_background_image_height";
 const MAX_MASK_OUTPUTS = 32;
 const HIDDEN_WIDGET_TYPE = "draw-area-mask-hidden";
 const PREVIEW_MIN_HEIGHT = 220;
@@ -124,6 +127,20 @@ function getBoxesWidget(node) {
   return node.widgets?.find((widget) => widget.name === BOXES_WIDGET_NAME);
 }
 
+function getBackgroundImageWidget(node) {
+  return node.widgets?.find((widget) => widget.name === BACKGROUND_IMAGE_WIDGET_NAME);
+}
+
+function hideDefaultImagePreview(node) {
+  if (!node) {
+    return;
+  }
+
+  node.imgs = null;
+  node.preview = null;
+  node.imageIndex = null;
+}
+
 function syncBoxesWidget(node) {
   const boxesWidget = getBoxesWidget(node);
   if (!boxesWidget) {
@@ -163,7 +180,7 @@ function updateOutputs(node) {
   }
 
   const boxCount = getBoxes(node).length;
-  const totalOutputs = boxCount + 1;
+  const totalOutputs = boxCount + 2;
 
   while (node.outputs.length > totalOutputs) {
     node.removeOutput(node.outputs.length - 1);
@@ -172,8 +189,10 @@ function updateOutputs(node) {
   while (node.outputs.length < totalOutputs) {
     if (node.outputs.length === 0) {
       node.addOutput("canvas_image", "IMAGE");
+    } else if (node.outputs.length === 1) {
+      node.addOutput("background_image", "IMAGE");
     } else {
-      node.addOutput(`mask_${node.outputs.length - 1}`, "MASK");
+      node.addOutput(`mask_${node.outputs.length - 2}`, "MASK");
     }
   }
 
@@ -182,14 +201,29 @@ function updateOutputs(node) {
     node.outputs[0].type = "IMAGE";
   }
 
-  for (let i = 1; i < node.outputs.length; i += 1) {
-    node.outputs[i].name = `mask_${i - 1}`;
+  if (node.outputs[1]) {
+    node.outputs[1].name = "background_image";
+    node.outputs[1].type = "IMAGE";
+  }
+
+  for (let i = 2; i < node.outputs.length; i += 1) {
+    node.outputs[i].name = `mask_${i - 2}`;
     node.outputs[i].type = "MASK";
   }
 }
 
 function getNumericWidget(node, name) {
   return node.widgets?.find((widget) => widget.name === name);
+}
+
+function setNumericWidgetValue(node, name, value) {
+  const widget = getNumericWidget(node, name);
+  if (!widget) {
+    return;
+  }
+
+  widget.value = value;
+  widget.callback?.(value, null, node);
 }
 
 function syncSizeProperties(node) {
@@ -238,10 +272,90 @@ function getPreviewState(node) {
       editStartBox: null,
       editStartPoint: null,
       canvasRect: null,
+      backgroundImage: null,
+      backgroundImageValue: null,
+      backgroundImageError: "",
+      backgroundReloadToken: 0,
     };
   }
 
   return node.__drawAreaMaskState;
+}
+
+function buildImageUrl(imageValue, reloadToken) {
+  if (!imageValue) {
+    return "";
+  }
+
+  const params = new URLSearchParams();
+  params.set("filename", String(imageValue));
+  params.set("preview", "webp;90");
+  if (!String(imageValue).startsWith("blake3:")) {
+    params.set("type", "input");
+  }
+  params.set("v", String(reloadToken));
+  return `/view?${params.toString()}`;
+}
+
+function loadBackgroundImage(node, forceReload = false) {
+  const state = getPreviewState(node);
+  const imageWidget = getBackgroundImageWidget(node);
+  const imageValue = imageWidget?.value;
+  hideDefaultImagePreview(node);
+
+  if (!imageValue) {
+    state.backgroundImage = null;
+    state.backgroundImageValue = null;
+    state.backgroundImageError = "";
+    refreshPreview(node);
+    return;
+  }
+
+  if (!forceReload && state.backgroundImageValue === imageValue && state.backgroundImage) {
+    return;
+  }
+
+  if (forceReload || state.backgroundImageValue !== imageValue) {
+    state.backgroundReloadToken = Date.now();
+  }
+
+  state.backgroundImageValue = imageValue;
+  state.backgroundImageError = "";
+
+  const image = new Image();
+  const currentValue = imageValue;
+  const currentToken = state.backgroundReloadToken;
+
+  image.onload = () => {
+    const latestState = getPreviewState(node);
+    if (latestState.backgroundImageValue !== currentValue || latestState.backgroundReloadToken !== currentToken) {
+      return;
+    }
+
+    latestState.backgroundImage = image;
+    const properties = ensureNodeProperties(node);
+    properties[BACKGROUND_IMAGE_WIDTH_PROPERTY] = image.naturalWidth;
+    properties[BACKGROUND_IMAGE_HEIGHT_PROPERTY] = image.naturalHeight;
+    setNumericWidgetValue(node, "width", image.naturalWidth);
+    setNumericWidgetValue(node, "height", image.naturalHeight);
+    syncSizeProperties(node);
+    node.setSize?.(node.computeSize());
+    node.graph?.setDirtyCanvas?.(true, true);
+    refreshPreview(node);
+  };
+
+  image.onerror = () => {
+    const latestState = getPreviewState(node);
+    if (latestState.backgroundImageValue !== currentValue || latestState.backgroundReloadToken !== currentToken) {
+      return;
+    }
+
+    latestState.backgroundImage = null;
+    latestState.backgroundImageError = "Failed to load background image.";
+    refreshPreview(node);
+  };
+
+  image.src = buildImageUrl(imageValue, currentToken);
 }
 
 function getCanvasRect(canvas, node) {
@@ -314,6 +428,8 @@ function drawPreview(canvas, node) {
     canvas.height = pixelHeight;
   }
 
+  hideDefaultImagePreview(node);
+
   const ctx = canvas.getContext("2d");
   if (!ctx) {
     return;
@@ -331,6 +447,11 @@ function drawPreview(canvas, node) {
 
   ctx.fillStyle = background;
   ctx.fillRect(canvasRect.x, canvasRect.y, canvasRect.width, canvasRect.height);
+
+  if (state.backgroundImage) {
+    ctx.drawImage(state.backgroundImage, canvasRect.x, canvasRect.y, canvasRect.width, canvasRect.height);
+  }
+
   ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
   ctx.lineWidth = 1.5;
   ctx.strokeRect(canvasRect.x, canvasRect.y, canvasRect.width, canvasRect.height);
@@ -377,6 +498,16 @@ function drawPreview(canvas, node) {
     canvasRect.x + canvasRect.width / 2,
     canvasRect.y + canvasRect.height - 12
   );
+
+  if (!state.backgroundImage && state.backgroundImageError) {
+    ctx.fillStyle = "rgba(0, 0, 0, 0.72)";
+    ctx.fillRect(canvasRect.x, canvasRect.y, canvasRect.width, 28);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+    ctx.font = "12px Arial";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(state.backgroundImageError, canvasRect.x + canvasRect.width / 2, canvasRect.y + 14);
+  }
 }
 
 function refreshPreview(node) {
@@ -852,6 +983,23 @@ function hookSizeWidget(node, name) {
   };
 }
 
+function hookBackgroundImageWidget(node) {
+  const imageWidget = getBackgroundImageWidget(node);
+  if (!imageWidget || imageWidget.__drawAreaMaskHooked) {
+    return;
+  }
+
+  imageWidget.__drawAreaMaskHooked = true;
+  const originalCallback = imageWidget.callback;
+
+  imageWidget.callback = function (value, canvas, currentNode, pos, event) {
+    originalCallback?.call(this, value, canvas, currentNode, pos, event);
+    const targetNode = currentNode || node;
+    loadBackgroundImage(targetNode, true);
+    refreshPreview(targetNode);
+  };
+}
+
 app.registerExtension({
   name: "toyxyz.DrawAreaMask",
   async beforeRegisterNodeDef(nodeType, nodeData) {
@@ -864,11 +1012,13 @@ app.registerExtension({
       const result = await originalOnNodeCreated?.apply(this, arguments);
 
       ensureNodeProperties(this);
+      hideDefaultImagePreview(this);
       syncSizeProperties(this);
       hideBoxesWidget(this);
       syncBoxesWidget(this);
       hookSizeWidget(this, "width");
       hookSizeWidget(this, "height");
+      hookBackgroundImageWidget(this);
       updateOutputs(this);
       this.setSize?.(this.computeSize());
 
@@ -877,7 +1027,18 @@ app.registerExtension({
       });
       clearBoxButton.serialize = false;
 
+      const clearBackgroundButton = this.addWidget("button", "clear background image", null, () => {
+        const imageWidget = getBackgroundImageWidget(this);
+        if (imageWidget) {
+          imageWidget.value = "";
+          imageWidget.callback?.("", null, this);
+        }
+        loadBackgroundImage(this, true);
+      });
+      clearBackgroundButton.serialize = false;
+
       addPreviewWidget(this);
+      loadBackgroundImage(this, true);
       refreshPreview(this);
       return result;
     };
@@ -886,6 +1047,7 @@ app.registerExtension({
     nodeType.prototype.onConfigure = function () {
       originalOnConfigure?.apply(this, arguments);
       ensureNodeProperties(this);
+      hideDefaultImagePreview(this);
       hideBoxesWidget(this);
       syncSizeProperties(this);
 
@@ -896,15 +1058,24 @@ app.registerExtension({
 
       hookSizeWidget(this, "width");
       hookSizeWidget(this, "height");
+      hookBackgroundImageWidget(this);
       updateOutputs(this);
       this.setSize?.(this.computeSize());
+      loadBackgroundImage(this, false);
       refreshPreview(this);
     };
 
     const originalOnResize = nodeType.prototype.onResize;
     nodeType.prototype.onResize = function () {
       originalOnResize?.apply(this, arguments);
+      hideDefaultImagePreview(this);
       refreshPreview(this);
+    };
+
+    const originalOnDrawBackground = nodeType.prototype.onDrawBackground;
+    nodeType.prototype.onDrawBackground = function () {
+      hideDefaultImagePreview(this);
+      return originalOnDrawBackground?.apply(this, arguments);
     };
   },
 });

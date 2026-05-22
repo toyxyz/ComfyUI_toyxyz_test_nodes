@@ -485,6 +485,17 @@ class AnimaAttenMulti:
                     "step": 0.01,
                     "tooltip": "Interpolates from the base attention output to the weighted tag attention mix."
                 }),
+                "weight_power": ("FLOAT", {
+                    "default": 4.0,
+                    "min": 0.25,
+                    "max": 10.0,
+                    "step": 0.05,
+                    "tooltip": (
+                        "Applies effective_weight = weight ^ weight_power before mixing. "
+                        "1.0 keeps raw weights, 1.5 gently sharpens, 2.0 strongly sharpens, "
+                        "4.0+ makes high-weight tags dominate. Values below 1.0 flatten tag balance."
+                    )
+                }),
                 "debug": ("BOOLEAN", {
                     "default": False,
                     "tooltip": "Print diagnostic messages while sampling."
@@ -504,6 +515,7 @@ class AnimaAttenMulti:
         base_prompt: str,
         tag: str,
         mix_strength: float,
+        weight_power: float,
         debug: bool,
     ) -> Tuple[Any]:
         positive = CLIPTextEncode().encode(clip, str(base_prompt if base_prompt is not None else ""))[0]
@@ -517,17 +529,22 @@ class AnimaAttenMulti:
             if parsed is None:
                 continue
 
-            tag_name, weight = parsed
+            tag_name, raw_weight = parsed
+            effective_weight = self._effective_weight(raw_weight, weight_power)
             prompt = self._build_tag_prompt(tag_name, base_prompt)
             conditioning = CLIPTextEncode().encode(clip, prompt)[0]
             tags.append({
                 "tag": tag_name,
-                "weight": weight,
+                "raw_weight": raw_weight,
+                "weight": effective_weight,
                 "prompt": prompt,
                 "conditioning": conditioning,
             })
             if debug:
-                print(f"[Anima Atten multi] tag_{index}: tag='{tag_name}', weight={weight:g}")
+                print(
+                    f"[Anima Atten multi] tag_{index}: tag='{tag_name}', "
+                    f"weight={raw_weight:g}, effective={effective_weight:g}"
+                )
 
         if not tags:
             log_warning("Anima Atten multi has no active tag inputs; returning model unchanged")
@@ -599,6 +616,19 @@ class AnimaAttenMulti:
             return None
 
         return tag, weight
+
+    def _effective_weight(self, raw_weight: float, weight_power: float) -> float:
+        power = float(weight_power)
+        if not math.isfinite(power) or power <= 0.0:
+            raise ValueError(f"weight_power must be a positive finite number, got {weight_power}")
+
+        effective = float(raw_weight) ** power
+        if not math.isfinite(effective) or effective <= 0.0:
+            raise ValueError(
+                f"Effective tag weight must be positive and finite, got {effective} "
+                f"from weight={raw_weight} and weight_power={weight_power}"
+            )
+        return effective
 
     def _build_tag_prompt(self, tag: str, base_prompt: str) -> str:
         parts = [tag.strip(), str(base_prompt if base_prompt is not None else "").strip()]

@@ -6,6 +6,7 @@ With built-in Flux injection capability and Regional LoRA Hook support
 ✅ FIXED: Background now works with LoRA hooks
 ✅ FIXED: skip_positive now works correctly with/without LoRA hooks
 """
+import math
 import torch
 import comfy.hooks
 from typing import Dict, List, Tuple, Optional, Any
@@ -35,6 +36,7 @@ CHAIN_META_KEY = "__comfycouple_chain_meta__"
 CHAIN_BASE_PROMPT_TEXT_KEY = "base_prompt_text"
 CHAIN_BACKGROUND_PROMPT_TEXT_KEY = "background_prompt_text"
 CHAIN_BACKGROUND_PROMPT_MODE_KEY = "background_prompt_mode"
+CHAIN_ANIMA_TAG_MIXER_KEY = "anima_tag_mixer"
 BACKGROUND_MODE_REGION_AND_BACKGROUND = "region_and_background"
 BACKGROUND_MODE_BACKGROUND_ONLY = "background_only"
 
@@ -120,6 +122,80 @@ class ComfyCoupleBackgroundPrompt:
             CHAIN_META_KEY: {
                 CHAIN_BACKGROUND_PROMPT_TEXT_KEY: background_prompt_text,
                 CHAIN_BACKGROUND_PROMPT_MODE_KEY: mode,
+            }
+        })
+        return (region_list,)
+
+
+class ComfyCoupleAnimaTagMixer:
+    """Attach Anima tag attention mixer settings to the region chain."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "tag": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                    "dynamicPrompts": True,
+                    "tooltip": (
+                        "Comma-separated tags and weights. Positive weights add tag style; negative weights subtract it. "
+                        "Examples: (3d:1.0), (photorelistic:1.3), (sketch:-0.5)."
+                    )
+                }),
+                "mix_strength": ("FLOAT", {
+                    "default": 1.0,
+                    "min": 0.0,
+                    "max": 1.0,
+                    "step": 0.01,
+                    "tooltip": "Interpolates from the regional Anima attention output to the weighted tag attention mix."
+                }),
+                "weight_power": ("FLOAT", {
+                    "default": 4.0,
+                    "min": 0.25,
+                    "max": 10.0,
+                    "step": 0.05,
+                    "tooltip": (
+                        "Applies effective_weight = abs(weight) ^ weight_power before mixing positive and negative tags. "
+                        "1.0 keeps raw weights, 1.5 gently sharpens, 2.0 strongly sharpens, "
+                        "4.0+ makes high-weight tags dominate. Values below 1.0 flatten tag balance."
+                    )
+                }),
+                "debug": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Print diagnostic messages while ComfyCouple Mask samples Anima."
+                }),
+            },
+            "optional": {
+                "region": ("region", {"tooltip": "Optional existing ComfyCouple region chain"}),
+            }
+        }
+
+    RETURN_TYPES = ("region",)
+    FUNCTION = "process"
+    CATEGORY = "ToyxyzTestNodes"
+
+    def process(
+        self,
+        tag: str,
+        mix_strength: float,
+        weight_power: float,
+        debug: bool,
+        region: Optional[List[Dict[str, Any]]] = None,
+    ) -> Tuple[List[Dict[str, Any]]]:
+        region_list = list(region) if region is not None else []
+        tag_text = str(tag if tag is not None else "").strip()
+        if not tag_text:
+            return (region_list,)
+
+        region_list.append({
+            CHAIN_META_KEY: {
+                CHAIN_ANIMA_TAG_MIXER_KEY: {
+                    "tag": tag_text,
+                    "mix_strength": float(mix_strength),
+                    "weight_power": float(weight_power),
+                    "debug": bool(debug),
+                }
             }
         })
         return (region_list,)
@@ -640,6 +716,8 @@ class ComfyCoupleMask:
                     "mask": r["mask"],
                     "strength": r["strength"],
                     "is_background": False,
+                    "prompt_text": self._build_region_prompt_text(r, chain_metadata),
+                    "clip": r.get("clip"),
                 }
             )
             carrier_cond, has_lora = self._build_masked_output_conditioning(
@@ -668,6 +746,8 @@ class ComfyCoupleMask:
                     "mask": background_mask,
                     "strength": 1.0,
                     "is_background": True,
+                    "prompt_text": self._build_background_prompt_text(chain_metadata),
+                    "clip": next((r.get("clip") for r in prepared_regions if r.get("clip") is not None), None),
                 }
             )
             bg_carrier, _ = self._build_masked_output_conditioning(final_bg, background_mask, 1.0)
@@ -687,6 +767,7 @@ class ComfyCoupleMask:
                 "anima_region_mode",
                 AnimaAttentionPatcher.MODE_CROSS_ATTENTION,
             ),
+            tag_mixer=self._build_anima_tag_mixer(processed_regions, chain_metadata),
         )
         patched_model = patcher.patch()
 
@@ -861,6 +942,179 @@ class ComfyCoupleMask:
     def _merge_prompt_text(self, *prompt_parts: str) -> str:
         parts = [str(part).strip() for part in prompt_parts if str(part).strip()]
         return ", ".join(parts)
+
+    def _build_region_prompt_text(
+        self,
+        region: Dict[str, Any],
+        chain_metadata: Dict[str, Any],
+    ) -> str:
+        base_prompt_text = str(chain_metadata.get(CHAIN_BASE_PROMPT_TEXT_KEY, "") or "").strip()
+        background_prompt_text = str(chain_metadata.get(CHAIN_BACKGROUND_PROMPT_TEXT_KEY, "") or "").strip()
+        background_prompt_mode = chain_metadata.get(
+            CHAIN_BACKGROUND_PROMPT_MODE_KEY,
+            BACKGROUND_MODE_REGION_AND_BACKGROUND,
+        )
+        if background_prompt_mode != BACKGROUND_MODE_REGION_AND_BACKGROUND:
+            background_prompt_text = ""
+        return self._merge_prompt_text(region.get("prompt_text", ""), base_prompt_text, background_prompt_text)
+
+    def _build_background_prompt_text(self, chain_metadata: Dict[str, Any]) -> str:
+        return self._merge_prompt_text(
+            chain_metadata.get(CHAIN_BACKGROUND_PROMPT_TEXT_KEY, ""),
+            chain_metadata.get(CHAIN_BASE_PROMPT_TEXT_KEY, ""),
+        )
+
+    def _build_anima_tag_mixer(
+        self,
+        regions: List[Dict[str, Any]],
+        chain_metadata: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        config = chain_metadata.get(CHAIN_ANIMA_TAG_MIXER_KEY)
+        if not isinstance(config, dict):
+            return None
+
+        tag_text = str(config.get("tag", "") or "").strip()
+        mix_strength = max(0.0, min(float(config.get("mix_strength", 1.0)), 1.0))
+        if not tag_text or mix_strength <= 0.0:
+            return None
+
+        tag_regions = [
+            {
+                "prompt_text": str(r.get("prompt_text", "") or "").strip(),
+                "clip": r.get("clip"),
+            }
+            for r in regions
+            if r.get("clip") is not None
+        ]
+        if not tag_regions:
+            raise ValueError("ComfyCouple Anima Tag Mixer requires at least one region with a CLIP input")
+
+        weight_power = float(config.get("weight_power", 4.0))
+        if not math.isfinite(weight_power) or weight_power <= 0.0:
+            raise ValueError(f"weight_power must be a positive finite number, got {weight_power}")
+
+        debug = bool(config.get("debug", False))
+        tags = []
+        for index, item in enumerate(self._split_anima_tag_inputs(tag_text), start=1):
+            parsed = self._parse_anima_tag_input(item)
+            if parsed is None:
+                continue
+
+            tag_name, raw_weight = parsed
+            effective_weight = abs(float(raw_weight)) ** weight_power
+            if not math.isfinite(effective_weight) or effective_weight <= 0.0:
+                raise ValueError(
+                    f"Effective tag weight must be positive and finite, got {effective_weight} "
+                    f"from weight={raw_weight} and weight_power={weight_power}"
+                )
+
+            prompts = [
+                self._merge_prompt_text(tag_name, region_info["prompt_text"])
+                for region_info in tag_regions
+            ]
+            conditionings = [
+                CLIPTextEncode().encode(region_info["clip"], prompt)[0]
+                for region_info, prompt in zip(tag_regions, prompts)
+            ]
+            tags.append({
+                "tag": tag_name,
+                "raw_weight": float(raw_weight),
+                "weight": effective_weight,
+                "sign": -1 if raw_weight < 0.0 else 1,
+                "prompts": prompts,
+                "conditionings": conditionings,
+            })
+            if debug:
+                mode = "negative" if raw_weight < 0.0 else "positive"
+                print(
+                    f"[ComfyCouple Anima Tag Mixer] tag_{index}: tag='{tag_name}', "
+                    f"weight={raw_weight:g}, effective={effective_weight:g}, "
+                    f"mode={mode}, regions={len(conditionings)}"
+                )
+
+        if not tags:
+            log_warning("ComfyCouple Anima Tag Mixer has no active tag inputs")
+            return None
+
+        positive_total = sum(float(item["weight"]) for item in tags if int(item.get("sign", 1)) > 0)
+        negative_total = sum(float(item["weight"]) for item in tags if int(item.get("sign", 1)) < 0)
+        reference_total = positive_total if positive_total > 0.0 else 1.0
+        negative_scale = (
+            negative_total / max(reference_total + negative_total, 1e-12)
+            if negative_total > 0.0
+            else 0.0
+        )
+        if debug:
+            print(
+                "[ComfyCouple Anima Tag Mixer] effective totals: "
+                f"positive={positive_total:g}, negative={negative_total:g}, "
+                f"negative_scale={negative_scale:g}"
+            )
+
+        return {
+            "tags": tags,
+            "num_regions": len(tag_regions),
+            "mix_strength": mix_strength,
+            "debug": debug,
+        }
+
+    def _split_anima_tag_inputs(self, text: Any) -> List[str]:
+        raw = str(text if text is not None else "")
+        parts = []
+        current = []
+        depth = 0
+
+        for char in raw:
+            if char == "(":
+                depth += 1
+            elif char == ")" and depth > 0:
+                depth -= 1
+
+            if char == "," and depth == 0:
+                item = "".join(current).strip()
+                if item:
+                    parts.append(item)
+                current = []
+                continue
+
+            current.append(char)
+
+        item = "".join(current).strip()
+        if item:
+            parts.append(item)
+
+        return parts
+
+    def _parse_anima_tag_input(self, text: Any) -> Optional[Tuple[str, float]]:
+        raw = str(text if text is not None else "").strip()
+        if not raw:
+            return None
+
+        inner = raw
+        if inner.startswith("(") and inner.endswith(")") and len(inner) >= 2:
+            inner = inner[1:-1].strip()
+
+        if not inner:
+            return None
+
+        tag = inner
+        weight = 1.0
+        if ":" in inner:
+            maybe_tag, maybe_weight = inner.rsplit(":", 1)
+            maybe_tag = maybe_tag.strip()
+            maybe_weight = maybe_weight.strip()
+            if maybe_weight:
+                try:
+                    weight = float(maybe_weight)
+                except ValueError as e:
+                    raise ValueError(f"Invalid tag weight in '{raw}'") from e
+                tag = maybe_tag
+
+        tag = tag.strip()
+        if not tag or weight == 0.0:
+            return None
+
+        return tag, weight
 
     def _resolve_region_conditioning(
         self,

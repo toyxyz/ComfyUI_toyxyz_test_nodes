@@ -25,6 +25,7 @@ from .couple_utils import build_region_metadata, log_debug, log_warning, save_re
 class AnimaAttentionPatcher:
     WRAPPER_KEY = "ComfyCouple_AnimaDiffusionModel"
     PREENCODED_CONTEXTS_KEY = "comfycouple_anima_preencoded_contexts"
+    TAG_PREENCODED_CONTEXTS_KEY = "comfycouple_anima_tag_preencoded_contexts"
     MODE_CROSS_ATTENTION = "cross_attention"
     MODE_FULL_BLOCK = "full_block"
 
@@ -33,9 +34,11 @@ class AnimaAttentionPatcher:
         model: Any,
         regions: List[Dict[str, Any]],
         region_mode: str = MODE_CROSS_ATTENTION,
+        tag_mixer: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.model = model
         self.regions = regions
+        self.tag_mixer = tag_mixer if isinstance(tag_mixer, dict) else None
         self.region_mode = (
             region_mode
             if region_mode in {self.MODE_CROSS_ATTENTION, self.MODE_FULL_BLOCK}
@@ -44,6 +47,10 @@ class AnimaAttentionPatcher:
         self._region_bundle_cache: Dict[Tuple[Any, ...], Optional[Dict[str, Any]]] = {}
         self._logged_tiled_layout = False
         self._logged_tiled_full_block_fallback = False
+        self._logged_full_block_tag_mix = False
+        self._tag_mixed_call_count = 0
+        self._tag_mixed_chunk_count = 0
+        self._tag_active_context_count = 0
 
     def patch(self) -> Any:
         patched_model = self.model.clone()
@@ -110,10 +117,34 @@ class AnimaAttentionPatcher:
 
             converted_regions.append((index, converted[0]))
 
+        converted_tags = []
+        if self.tag_mixer:
+            for index, tag in enumerate(self.tag_mixer.get("tags", [])):
+                conditionings = tag.get("conditionings")
+                if conditionings is None and tag.get("conditioning") is not None:
+                    conditionings = [tag.get("conditioning")]
+                if not conditionings:
+                    continue
+
+                for region_index, conditioning in enumerate(conditionings):
+                    converted = comfy.sampler_helpers.convert_cond(conditioning)
+                    if not converted:
+                        continue
+
+                    if len(converted) > 1:
+                        log_warning("ComfyCouple Anima Tag Mixer uses the first conditioning item per tag region")
+
+                    converted_tags.append((index, region_index, converted[0]))
+
         def anima_sampler_wrapper(executor, *args, **kwargs):
-            if not converted_regions and not any(isinstance(ctx, torch.Tensor) for ctx in static_contexts):
+            if (
+                not converted_regions
+                and not converted_tags
+                and not any(isinstance(ctx, torch.Tensor) for ctx in static_contexts)
+            ):
                 return executor(*args, **kwargs)
 
+            self._reset_tag_debug_counters()
             try:
                 extra_options = args[2] if len(args) > 2 and isinstance(args[2], dict) else kwargs.get("extra_options")
                 if not isinstance(extra_options, dict):
@@ -125,9 +156,14 @@ class AnimaAttentionPatcher:
 
                 transformer_options = dict(model_options.get("transformer_options", {}))
                 preencoded_contexts: List[Optional[torch.Tensor]] = list(static_contexts)
+                preencoded_tag_contexts: List[List[Optional[torch.Tensor]]] = [
+                    [None] * int(self.tag_mixer.get("num_regions", 0))
+                    for _ in self.tag_mixer.get("tags", [])
+                ] if self.tag_mixer else []
                 processed_count = 0
+                processed_tag_count = 0
 
-                if converted_regions:
+                if converted_regions or converted_tags:
                     guider = args[0] if len(args) > 0 else kwargs.get("guider")
                     noise = args[4] if len(args) > 4 else kwargs.get("noise")
                     latent_image = args[5] if len(args) > 5 else kwargs.get("latent_image")
@@ -137,32 +173,65 @@ class AnimaAttentionPatcher:
                     if guider is None or noise is None or latent_image is None or seed is None:
                         raise ValueError("missing sampler inputs for Anima conditioning pre-encoding")
 
-                    processed = comfy.samplers.process_conds(
-                        guider.inner_model,
-                        noise,
-                        {"positive": [converted for _, converted in converted_regions]},
-                        noise.device,
-                        latent_image,
-                        denoise_mask,
-                        seed,
-                        latent_shapes=[latent_image.shape],
-                    ).get("positive", [])
+                    if converted_regions:
+                        processed = comfy.samplers.process_conds(
+                            guider.inner_model,
+                            noise,
+                            {"positive": [converted for _, converted in converted_regions]},
+                            noise.device,
+                            latent_image,
+                            denoise_mask,
+                            seed,
+                            latent_shapes=[latent_image.shape],
+                        ).get("positive", [])
 
-                    if len(processed) != len(converted_regions):
-                        log_warning(
-                            "Anima pre-encoding returned a different number of conditioning items; "
-                            "missing regions will use diffusion-time encoding"
-                        )
+                        if len(processed) != len(converted_regions):
+                            log_warning(
+                                "Anima pre-encoding returned a different number of conditioning items; "
+                                "missing regions will use diffusion-time encoding"
+                            )
 
-                    for (region_index, _), processed_item in zip(converted_regions, processed):
-                        model_conds = processed_item.get("model_conds", {})
-                        crossattn_cond = model_conds.get("c_crossattn")
-                        crossattn = getattr(crossattn_cond, "cond", None)
-                        if isinstance(crossattn, torch.Tensor):
-                            preencoded_contexts[region_index] = crossattn
-                            processed_count += 1
+                        for (region_index, _), processed_item in zip(converted_regions, processed):
+                            model_conds = processed_item.get("model_conds", {})
+                            crossattn_cond = model_conds.get("c_crossattn")
+                            crossattn = getattr(crossattn_cond, "cond", None)
+                            if isinstance(crossattn, torch.Tensor):
+                                preencoded_contexts[region_index] = crossattn
+                                processed_count += 1
+
+                    if converted_tags:
+                        processed_tags = comfy.samplers.process_conds(
+                            guider.inner_model,
+                            noise,
+                            {"positive": [converted for _, _, converted in converted_tags]},
+                            noise.device,
+                            latent_image,
+                            denoise_mask,
+                            seed,
+                            latent_shapes=[latent_image.shape],
+                        ).get("positive", [])
+
+                        if len(processed_tags) != len(converted_tags):
+                            log_warning(
+                                "ComfyCouple Anima Tag Mixer pre-encoding returned a different number of conditioning items; "
+                                "missing tags will use diffusion-time encoding"
+                            )
+
+                        for (tag_index, region_index, _), processed_item in zip(converted_tags, processed_tags):
+                            model_conds = processed_item.get("model_conds", {})
+                            crossattn_cond = model_conds.get("c_crossattn")
+                            crossattn = getattr(crossattn_cond, "cond", None)
+                            if (
+                                isinstance(crossattn, torch.Tensor)
+                                and tag_index < len(preencoded_tag_contexts)
+                                and region_index < len(preencoded_tag_contexts[tag_index])
+                            ):
+                                preencoded_tag_contexts[tag_index][region_index] = crossattn
+                                processed_tag_count += 1
 
                 transformer_options[self.PREENCODED_CONTEXTS_KEY] = preencoded_contexts
+                if self.tag_mixer:
+                    transformer_options[self.TAG_PREENCODED_CONTEXTS_KEY] = preencoded_tag_contexts
                 model_options["transformer_options"] = transformer_options
                 ready_count = sum(1 for ctx in preencoded_contexts if isinstance(ctx, torch.Tensor))
                 static_count = sum(1 for ctx in static_contexts if isinstance(ctx, torch.Tensor))
@@ -186,6 +255,11 @@ class AnimaAttentionPatcher:
                         "Anima static precomputed contexts: "
                         f"static={static_count}, ready={ready_count}, regions={len(self.regions)}"
                     )
+                if converted_tags and self._tag_debug_enabled():
+                    print(
+                        "[ComfyCouple Anima Tag Mixer] pre-encoded "
+                        f"{processed_tag_count}/{len(converted_tags)} tag conditioning(s)"
+                    )
 
             except Exception as e:
                 try:
@@ -197,11 +271,21 @@ class AnimaAttentionPatcher:
                         else {}
                     )
                     transformer_options.pop(self.PREENCODED_CONTEXTS_KEY, None)
+                    transformer_options.pop(self.TAG_PREENCODED_CONTEXTS_KEY, None)
                 except Exception:
                     pass
                 log_warning(f"Anima sampler pre-encoding failed; falling back to diffusion-time encoding: {e}")
 
-            return executor(*args, **kwargs)
+            try:
+                return executor(*args, **kwargs)
+            finally:
+                if self._tag_debug_enabled():
+                    print(
+                        "[ComfyCouple Anima Tag Mixer] "
+                        f"active tag context(s): {self._tag_active_context_count}; "
+                        f"attention mix applied {self._tag_mixed_call_count} time(s) "
+                        f"across {self._tag_mixed_chunk_count} condition chunk(s)"
+                    )
 
         return anima_sampler_wrapper
 
@@ -232,12 +316,25 @@ class AnimaAttentionPatcher:
             )
             if not region_bundle:
                 return executor(x, timesteps, context, fps, padding_mask, **kwargs)
+            tag_contexts = self._get_tag_contexts(
+                patched_model,
+                chunk_size,
+                x,
+                context,
+                int(region_bundle["num_regions"]),
+                transformer_options,
+            )
 
             original_forwards = []
             try:
                 blocks = self._get_anima_blocks(diffusion_model)
                 tiled_bboxes = transformer_options.get("tiled_diffusion_bboxes")
-                use_full_block = self.region_mode == self.MODE_FULL_BLOCK and blocks and not tiled_bboxes
+                tag_mixer_active = self._has_tag_mixer()
+                use_full_block = (
+                    self.region_mode == self.MODE_FULL_BLOCK
+                    and blocks
+                    and not tiled_bboxes
+                )
                 if (
                     self.region_mode == self.MODE_FULL_BLOCK
                     and blocks
@@ -249,6 +346,17 @@ class AnimaAttentionPatcher:
                         "using cross_attention mode for tiled batch alignment"
                     )
                     self._logged_tiled_full_block_fallback = True
+                if (
+                    self.region_mode == self.MODE_FULL_BLOCK
+                    and tag_mixer_active
+                    and not tiled_bboxes
+                    and not self._logged_full_block_tag_mix
+                ):
+                    print(
+                        "[ComfyCouple] Anima full_block mode with Tag Mixer: "
+                        "applying tag mix on all blocks"
+                    )
+                    self._logged_full_block_tag_mix = True
 
                 if use_full_block:
                     for block_index, block in enumerate(blocks):
@@ -259,6 +367,7 @@ class AnimaAttentionPatcher:
                                 region_bundle,
                                 base_batch_size=chunk_size,
                                 is_last_block=block_index == len(blocks) - 1,
+                                tag_contexts=tag_contexts,
                             ),
                             block,
                         )
@@ -269,7 +378,7 @@ class AnimaAttentionPatcher:
                     for attn in attn_modules:
                         original_forwards.append((attn, attn.forward))
                         attn.forward = types.MethodType(
-                            self._build_cross_attn_forward(attn.forward, region_bundle),
+                            self._build_cross_attn_forward(attn.forward, region_bundle, tag_contexts),
                             attn,
                         )
                 return executor(x, timesteps, context, fps, padding_mask, **kwargs)
@@ -510,7 +619,96 @@ class AnimaAttentionPatcher:
         repeats = int(math.ceil(batch_size / max(int(context.shape[0]), 1)))
         return context.repeat(repeats, 1, 1)[:batch_size]
 
-    def _build_cross_attn_forward(self, original_forward, region_bundle: Dict[str, Any]):
+    def _get_tag_contexts(
+        self,
+        patched_model: Any,
+        batch_size: int,
+        x: torch.Tensor,
+        context: torch.Tensor,
+        num_regions: int,
+        transformer_options: Optional[Dict[str, Any]],
+    ) -> List[Tuple[List[torch.Tensor], float, int]]:
+        if not self._has_tag_mixer():
+            return []
+
+        preencoded_contexts = (
+            transformer_options.get(self.TAG_PREENCODED_CONTEXTS_KEY)
+            if isinstance(transformer_options, dict)
+            else None
+        )
+        sample_x = x[:batch_size]
+        contexts: List[Tuple[List[torch.Tensor], float, int]] = []
+        for tag_index, tag in enumerate(self.tag_mixer.get("tags", [])):
+            weight = float(tag.get("weight", 1.0))
+            if weight <= 0.0:
+                continue
+
+            sign = int(tag.get("sign", 1))
+            if sign not in {-1, 1}:
+                sign = 1
+
+            conditionings = tag.get("conditionings")
+            if conditionings is None and tag.get("conditioning") is not None:
+                conditionings = [tag.get("conditioning")] * num_regions
+            if not conditionings:
+                continue
+
+            tag_region_contexts = []
+            for region_index in range(num_regions):
+                crossattn = None
+                if (
+                    isinstance(preencoded_contexts, list)
+                    and tag_index < len(preencoded_contexts)
+                    and isinstance(preencoded_contexts[tag_index], list)
+                    and region_index < len(preencoded_contexts[tag_index])
+                    and isinstance(preencoded_contexts[tag_index][region_index], torch.Tensor)
+                ):
+                    crossattn = preencoded_contexts[tag_index][region_index]
+
+                if crossattn is None:
+                    if region_index >= len(conditionings):
+                        break
+                    conditioning = conditionings[region_index]
+                    if not conditioning:
+                        break
+
+                    converted = comfy.sampler_helpers.convert_cond(conditioning)
+                    encoded = comfy.samplers.encode_model_conds(
+                        patched_model.model.extra_conds,
+                        converted,
+                        sample_x,
+                        sample_x.device,
+                        "positive",
+                    )
+                    if not encoded:
+                        break
+
+                    encoded_item = next(
+                        (item for item in encoded if item.get("model_conds", {}).get("c_crossattn") is not None),
+                        None,
+                    )
+                    if encoded_item is None:
+                        break
+
+                    crossattn_cond = encoded_item["model_conds"]["c_crossattn"]
+                    crossattn = crossattn_cond.process_cond(batch_size=batch_size, area=None).cond
+
+                crossattn = self._match_context_batch(crossattn, batch_size)
+                tag_region_contexts.append(crossattn.to(device=context.device, dtype=context.dtype))
+
+            if len(tag_region_contexts) == num_regions:
+                contexts.append((tag_region_contexts, weight, sign))
+
+        if contexts:
+            self._tag_active_context_count = max(self._tag_active_context_count, len(contexts))
+        return contexts
+
+    def _build_cross_attn_forward(
+        self,
+        original_forward,
+        region_bundle: Dict[str, Any],
+        tag_contexts: Optional[List[Tuple[List[torch.Tensor], float, int]]] = None,
+    ):
         def patched_cross_attn_forward(self_attn, x, context=None, rope_emb=None, transformer_options=None):
             if transformer_options is None:
                 transformer_options = {}
@@ -591,17 +789,27 @@ class AnimaAttentionPatcher:
 
             outputs = []
             pos = 0
-            for cond_flag in cond_or_uncond:
+            for idx, cond_flag in enumerate(cond_or_uncond):
                 if cond_flag == 1:
                     outputs.append(out[pos : pos + batch_size])
                     pos += batch_size
                 else:
                     chunk = out[pos : pos + region_bundle["num_regions"] * batch_size]
+                    region_merged = self._merge_region_outputs(
+                        chunk,
+                        region_bundle,
+                        batch_size,
+                        transformer_options,
+                    )
                     outputs.append(
-                        self._merge_region_outputs(
-                            chunk,
+                        self._apply_tag_mix_to_chunk(
+                            original_forward,
+                            x_chunks[idx],
+                            region_merged,
                             region_bundle,
-                            batch_size,
+                            tag_contexts or [],
+                            cond_flag,
+                            rope_emb,
                             transformer_options,
                         )
                     )
@@ -613,12 +821,218 @@ class AnimaAttentionPatcher:
 
         return patched_cross_attn_forward
 
+    def _apply_tag_mix_to_chunk(
+        self,
+        original_forward,
+        x_chunk: torch.Tensor,
+        base_chunk: torch.Tensor,
+        region_bundle: Dict[str, Any],
+        tag_contexts: List[Tuple[List[torch.Tensor], float, int]],
+        cond_flag: int,
+        rope_emb: Any,
+        transformer_options: Optional[Dict[str, Any]],
+    ) -> torch.Tensor:
+        if not tag_contexts or not self._has_tag_mixer():
+            return base_chunk
+
+        positive_accum = None
+        positive_weight = 0.0
+        negative_accum = None
+        negative_weight = 0.0
+        num_regions = int(region_bundle["num_regions"])
+        chunk_transformer_options = dict(transformer_options or {})
+        chunk_transformer_options["cond_or_uncond"] = [cond_flag] * num_regions
+
+        for tag_region_contexts, weight, sign in tag_contexts:
+            if len(tag_region_contexts) != num_regions:
+                continue
+            matched_context = torch.cat(
+                [
+                    self._match_context_batch(tag_context, x_chunk.shape[0])
+                    for tag_context in tag_region_contexts
+                ],
+                dim=0,
+            )
+            tag_out = original_forward(
+                x_chunk.repeat(num_regions, 1, 1),
+                context=matched_context,
+                rope_emb=rope_emb,
+                transformer_options=chunk_transformer_options,
+            )
+            tag_out = self._merge_region_outputs(
+                tag_out,
+                region_bundle,
+                x_chunk.shape[0],
+                transformer_options,
+            )
+            weighted = tag_out * float(weight)
+            if sign < 0:
+                negative_accum = weighted if negative_accum is None else negative_accum + weighted
+                negative_weight += float(weight)
+            else:
+                positive_accum = weighted if positive_accum is None else positive_accum + weighted
+                positive_weight += float(weight)
+
+        if (
+            (positive_accum is None or positive_weight <= 0.0)
+            and (negative_accum is None or negative_weight <= 0.0)
+        ):
+            return base_chunk
+
+        mix_strength = self._tag_mix_strength()
+        mixed = base_chunk
+        if positive_accum is not None and positive_weight > 0.0:
+            positive_mix = positive_accum / positive_weight
+            mixed = torch.lerp(base_chunk, positive_mix, mix_strength)
+        if negative_accum is not None and negative_weight > 0.0:
+            negative_mix = negative_accum / negative_weight
+            negative_scale = self._negative_tag_scale(positive_weight, negative_weight)
+            mixed = mixed - mix_strength * negative_scale * (negative_mix - base_chunk)
+
+        self._tag_mixed_chunk_count += 1
+        self._tag_mixed_call_count += 1
+        return mixed.to(device=base_chunk.device, dtype=base_chunk.dtype)
+
+    def _has_tag_mixer(self) -> bool:
+        return (
+            isinstance(self.tag_mixer, dict)
+            and self._tag_mix_strength() > 0.0
+            and bool(self.tag_mixer.get("tags"))
+        )
+
+    def _tag_mix_strength(self) -> float:
+        if not isinstance(self.tag_mixer, dict):
+            return 0.0
+        return max(0.0, min(float(self.tag_mixer.get("mix_strength", 1.0)), 1.0))
+
+    def _negative_tag_scale(self, positive_weight: float, negative_weight: float) -> float:
+        if negative_weight <= 0.0:
+            return 0.0
+
+        reference_weight = positive_weight if positive_weight > 0.0 else 1.0
+        return negative_weight / max(reference_weight + negative_weight, 1e-12)
+
+    def _tag_debug_enabled(self) -> bool:
+        return isinstance(self.tag_mixer, dict) and bool(self.tag_mixer.get("debug", False))
+
+    def _reset_tag_debug_counters(self) -> None:
+        self._tag_mixed_call_count = 0
+        self._tag_mixed_chunk_count = 0
+        self._tag_active_context_count = 0
+
+    def _apply_tag_mix_to_block_chunk(
+        self,
+        original_forward,
+        expanded_x_chunk: torch.Tensor,
+        expanded_emb_chunk: torch.Tensor,
+        base_chunk: torch.Tensor,
+        region_bundle: Dict[str, Any],
+        tag_contexts: List[Tuple[List[torch.Tensor], float, int]],
+        cond_flag: int,
+        args: Tuple[Any, ...],
+        patched_kwargs: Dict[str, Any],
+        expanded_pos: int,
+        expanded_size: int,
+        transformer_options: Optional[Dict[str, Any]],
+    ) -> torch.Tensor:
+        if not tag_contexts or not self._has_tag_mixer():
+            return base_chunk
+
+        num_regions = int(region_bundle["num_regions"])
+        if expanded_x_chunk.shape[0] != expanded_size or expanded_size % max(num_regions, 1) != 0:
+            return base_chunk
+        if base_chunk.shape[0] != expanded_size:
+            return base_chunk
+
+        positive_accum = None
+        positive_weight = 0.0
+        negative_accum = None
+        negative_weight = 0.0
+
+        for tag_region_contexts, weight, sign in tag_contexts:
+            if len(tag_region_contexts) != num_regions:
+                continue
+            target_tokens = self._lcm_for_list([int(ctx.shape[1]) for ctx in tag_region_contexts])
+
+            tag_context_tensor = torch.cat(
+                [
+                    self._expand_context_tokens(
+                        self._match_context_batch(tag_context, expanded_size // num_regions),
+                        target_tokens,
+                    )
+                    for tag_context in tag_region_contexts
+                ],
+                dim=0,
+            )
+            tag_kwargs = self._slice_block_tag_kwargs(
+                patched_kwargs,
+                expanded_pos,
+                expanded_size,
+                cond_flag,
+                num_regions,
+            )
+            tag_out = original_forward(
+                expanded_x_chunk,
+                expanded_emb_chunk,
+                tag_context_tensor,
+                *args,
+                **tag_kwargs,
+            )
+            weighted = tag_out * float(weight)
+            if sign < 0:
+                negative_accum = weighted if negative_accum is None else negative_accum + weighted
+                negative_weight += float(weight)
+            else:
+                positive_accum = weighted if positive_accum is None else positive_accum + weighted
+                positive_weight += float(weight)
+
+        if (
+            (positive_accum is None or positive_weight <= 0.0)
+            and (negative_accum is None or negative_weight <= 0.0)
+        ):
+            return base_chunk
+
+        mix_strength = self._tag_mix_strength()
+        mixed = base_chunk
+        if positive_accum is not None and positive_weight > 0.0:
+            positive_mix = positive_accum / positive_weight
+            mixed = torch.lerp(base_chunk, positive_mix, mix_strength)
+        if negative_accum is not None and negative_weight > 0.0:
+            negative_mix = negative_accum / negative_weight
+            negative_scale = self._negative_tag_scale(positive_weight, negative_weight)
+            mixed = mixed - mix_strength * negative_scale * (negative_mix - base_chunk)
+
+        self._tag_mixed_chunk_count += 1
+        self._tag_mixed_call_count += 1
+        return mixed.to(device=base_chunk.device, dtype=base_chunk.dtype)
+
+    def _slice_block_tag_kwargs(
+        self,
+        patched_kwargs: Dict[str, Any],
+        expanded_pos: int,
+        expanded_size: int,
+        cond_flag: int,
+        num_regions: int,
+    ) -> Dict[str, Any]:
+        tag_kwargs = dict(patched_kwargs)
+        transformer_options = dict(tag_kwargs.get("transformer_options", {}) or {})
+        transformer_options["cond_or_uncond"] = [cond_flag] * num_regions
+        tag_kwargs["transformer_options"] = transformer_options
+
+        for key in ("adaln_lora_B_T_3D", "extra_per_block_pos_emb"):
+            tensor = tag_kwargs.get(key)
+            if isinstance(tensor, torch.Tensor) and tensor.shape[0] >= expanded_pos + expanded_size:
+                tag_kwargs[key] = tensor[expanded_pos : expanded_pos + expanded_size]
+
+        return tag_kwargs
+
     def _build_block_forward(
         self,
         original_forward,
         region_bundle: Dict[str, Any],
         base_batch_size: int,
         is_last_block: bool,
+        tag_contexts: Optional[List[Tuple[List[torch.Tensor], float, int]]] = None,
     ):
         def patched_block_forward(
             self_block,
@@ -723,17 +1137,43 @@ class AnimaAttentionPatcher:
                 **patched_kwargs,
             )
 
-            if not is_last_block:
-                return out
-
-            outputs = []
+            mixed_chunks = []
             pos = 0
-            for cond_flag, expanded_size in zip(cond_or_uncond, expanded_sizes):
+            expanded_pos = 0
+            for chunk_index, (cond_flag, expanded_size) in enumerate(zip(cond_or_uncond, expanded_sizes)):
                 if cond_flag == 1:
-                    outputs.append(out[pos : pos + base_batch_size])
+                    mixed_chunks.append(out[pos : pos + base_batch_size])
                     pos += base_batch_size
+                    expanded_pos += expanded_size
                 else:
                     chunk = out[pos : pos + expanded_size]
+                    mixed_chunks.append(
+                        self._apply_tag_mix_to_block_chunk(
+                            original_forward,
+                            expanded_x[chunk_index],
+                            expanded_emb[chunk_index],
+                            chunk,
+                            region_bundle,
+                            tag_contexts or [],
+                            cond_flag,
+                            args,
+                            patched_kwargs,
+                            expanded_pos,
+                            expanded_size,
+                            transformer_options,
+                        )
+                    )
+                    pos += expanded_size
+                    expanded_pos += expanded_size
+
+            if not is_last_block:
+                return torch.cat(mixed_chunks, dim=0)
+
+            outputs = []
+            for cond_flag, chunk in zip(cond_or_uncond, mixed_chunks):
+                if cond_flag == 1:
+                    outputs.append(chunk)
+                else:
                     outputs.append(
                         self._merge_region_outputs(
                             chunk,
@@ -742,7 +1182,6 @@ class AnimaAttentionPatcher:
                             transformer_options,
                         )
                     )
-                    pos += expanded_size
 
             return torch.cat(outputs, dim=0)
 

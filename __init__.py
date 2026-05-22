@@ -1,4 +1,4 @@
-from .ComfyCouple.comfy_couple import ComfyCoupleBackgroundPrompt, ComfyCoupleBasePrompt, ComfyCoupleMask, ComfyCoupleRegion, ComfyCoupleRegionMulti
+from .ComfyCouple.comfy_couple import ComfyCoupleAnimaTagMixer, ComfyCoupleBackgroundPrompt, ComfyCoupleBasePrompt, ComfyCoupleMask, ComfyCoupleRegion, ComfyCoupleRegionMulti
 from .ComfyCouple.Extractor import ComfyCoupleRegionExtractor
 from .ComfyCouple.Visualizer import ComfyCoupleRegionVisualizer
 from .ComfyCouple.anima_atten_multi import AnimaAttenMulti
@@ -15,6 +15,7 @@ NODE_CLASS_MAPPINGS = {
     "ComfyCoupleMask": ComfyCoupleMask,
     "ComfyCoupleBackgroundPrompt": ComfyCoupleBackgroundPrompt,
     "ComfyCoupleBasePrompt": ComfyCoupleBasePrompt,
+    "ComfyCoupleAnimaTagMixer": ComfyCoupleAnimaTagMixer,
     "ComfyCoupleRegion": ComfyCoupleRegion,
     "ComfyCoupleRegionMulti": ComfyCoupleRegionMulti,
     "AnimaAttenMulti": AnimaAttenMulti,
@@ -46,6 +47,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ComfyCoupleMask": "ComfyCouple Mask",
     "ComfyCoupleBackgroundPrompt": "ComfyCouple Background Prompt",
     "ComfyCoupleBasePrompt": "ComfyCouple Base Prompt",
+    "ComfyCoupleAnimaTagMixer": "ComfyCouple Anima Tag Mixer",
     "ComfyCoupleRegion": "ComfyCouple Region",
     "ComfyCoupleRegionMulti": "ComfyCouple Region multi",
     "AnimaAttenMulti": "Anima Atten tag mixer",

@@ -505,7 +505,7 @@ class AnimaAttenMulti:
                     "dynamicPrompts": True,
                     "tooltip": (
                         "Comma-separated tags and weights. Positive weights add tag style; negative weights subtract it. "
-                        "Examples: (3d:1.0), (photorelistic:1.3), (@mossacannibalis:-0.5)."
+                        "Examples: (3d:1.0), (photorelistic:1.3), (sketch:-0.5)."
                     )
                 }),
                 "mix_strength": ("FLOAT", {

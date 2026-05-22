@@ -1,6 +1,7 @@
 from .ComfyCouple.comfy_couple import ComfyCoupleBackgroundPrompt, ComfyCoupleBasePrompt, ComfyCoupleMask, ComfyCoupleRegion, ComfyCoupleRegionMulti
 from .ComfyCouple.Extractor import ComfyCoupleRegionExtractor
 from .ComfyCouple.Visualizer import ComfyCoupleRegionVisualizer
+from .ComfyCouple.anima_atten_multi import AnimaAttenMulti
 from .nodes.crop_area_mask import CropAreaMask
 from .nodes.draw_area_mask import DrawAreaMask
 from .nodes.toyxyz_test_nodes import CaptureWebcam, LoadWebcamImage, LoadImageFromPath, SaveImagetoPath, LatentDelay, ImageResize_Padding, Direct_screenCap, Depth_to_normal, Remove_noise, Export_glb, Load_Random_Text_From_File
@@ -16,6 +17,7 @@ NODE_CLASS_MAPPINGS = {
     "ComfyCoupleBasePrompt": ComfyCoupleBasePrompt,
     "ComfyCoupleRegion": ComfyCoupleRegion,
     "ComfyCoupleRegionMulti": ComfyCoupleRegionMulti,
+    "AnimaAttenMulti": AnimaAttenMulti,
     "CropAreaMask": CropAreaMask,
     "DrawAreaMask": DrawAreaMask,
     "VisualAreaMask": VisualAreaMask,
@@ -46,6 +48,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ComfyCoupleBasePrompt": "ComfyCouple Base Prompt",
     "ComfyCoupleRegion": "ComfyCouple Region",
     "ComfyCoupleRegionMulti": "ComfyCouple Region multi",
+    "AnimaAttenMulti": "Anima Atten tag mixer",
     "CropAreaMask": "Crop area mask",
     "DrawAreaMask": "Draw area mask",
     "VisualAreaMask": "Visual Area Mask",

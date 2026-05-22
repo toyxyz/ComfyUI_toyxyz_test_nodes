@@ -245,15 +245,18 @@ class AnimatagAttentionMixer:
         x: torch.Tensor,
         context: torch.Tensor,
         transformer_options: Dict[str, Any],
-    ) -> List[Tuple[torch.Tensor, float]]:
+    ) -> List[Tuple[torch.Tensor, float, int]]:
         preencoded_contexts = transformer_options.get(self.PREENCODED_CONTEXTS_KEY)
-        contexts: List[Tuple[torch.Tensor, float]] = []
+        contexts: List[Tuple[torch.Tensor, float, int]] = []
         sample_x = x[:batch_size]
 
         for tag_index, tag in enumerate(self.tags):
             weight = float(tag.get("weight", 1.0))
             if weight <= 0.0:
                 continue
+            sign = int(tag.get("sign", 1))
+            if sign not in {-1, 1}:
+                sign = 1
 
             crossattn = None
             if (
@@ -290,14 +293,14 @@ class AnimatagAttentionMixer:
                 crossattn = crossattn_cond.process_cond(batch_size=batch_size, area=None).cond
 
             crossattn = self._match_context_batch(crossattn, batch_size)
-            contexts.append((crossattn.to(device=context.device, dtype=context.dtype), weight))
+            contexts.append((crossattn.to(device=context.device, dtype=context.dtype), weight, sign))
 
         return contexts
 
     def _build_cross_attn_forward(
         self,
         original_forward,
-        tag_contexts: List[Tuple[torch.Tensor, float]],
+        tag_contexts: List[Tuple[torch.Tensor, float, int]],
     ):
         def patched_cross_attn_forward(self_attn, x, context=None, rope_emb=None, transformer_options=None):
             if transformer_options is None:
@@ -343,12 +346,14 @@ class AnimatagAttentionMixer:
                     continue
 
                 x_chunk = x_chunks[idx]
-                tag_accum = None
-                total_weight = 0.0
+                positive_accum = None
+                positive_weight = 0.0
+                negative_accum = None
+                negative_weight = 0.0
                 chunk_transformer_options = dict(transformer_options)
                 chunk_transformer_options["cond_or_uncond"] = [cond_flag]
 
-                for tag_context, weight in tag_contexts:
+                for tag_context, weight, sign in tag_contexts:
                     tag_context = self._match_context_batch(tag_context, x_chunk.shape[0])
                     tag_out = original_forward(
                         x_chunk,
@@ -357,15 +362,30 @@ class AnimatagAttentionMixer:
                         transformer_options=chunk_transformer_options,
                     )
                     weighted = tag_out * float(weight)
-                    tag_accum = weighted if tag_accum is None else tag_accum + weighted
-                    total_weight += float(weight)
+                    if sign < 0:
+                        negative_accum = weighted if negative_accum is None else negative_accum + weighted
+                        negative_weight += float(weight)
+                    else:
+                        positive_accum = weighted if positive_accum is None else positive_accum + weighted
+                        positive_weight += float(weight)
 
-                if tag_accum is None or total_weight <= 0.0:
+                if (
+                    (positive_accum is None or positive_weight <= 0.0)
+                    and (negative_accum is None or negative_weight <= 0.0)
+                ):
                     outputs.append(base_chunk)
                     continue
 
-                tag_mix = tag_accum / total_weight
-                outputs.append(torch.lerp(base_chunk, tag_mix, self.mix_strength))
+                mixed = base_chunk
+                if positive_accum is not None and positive_weight > 0.0:
+                    positive_mix = positive_accum / positive_weight
+                    mixed = torch.lerp(base_chunk, positive_mix, self.mix_strength)
+                if negative_accum is not None and negative_weight > 0.0:
+                    negative_mix = negative_accum / negative_weight
+                    negative_scale = self._negative_scale(positive_weight, negative_weight)
+                    mixed = mixed - self.mix_strength * negative_scale * (negative_mix - base_chunk)
+
+                outputs.append(mixed.to(device=base_chunk.device, dtype=base_chunk.dtype))
                 self._mixed_chunk_count += 1
                 mixed_this_call += 1
 
@@ -377,6 +397,13 @@ class AnimatagAttentionMixer:
             return torch.cat(outputs, dim=0)
 
         return patched_cross_attn_forward
+
+    def _negative_scale(self, positive_weight: float, negative_weight: float) -> float:
+        if negative_weight <= 0.0:
+            return 0.0
+
+        reference_weight = positive_weight if positive_weight > 0.0 else 1.0
+        return negative_weight / max(reference_weight + negative_weight, 1e-12)
 
     def _match_context_batch(self, context: torch.Tensor, batch_size: int) -> torch.Tensor:
         if context.shape[0] == batch_size:
@@ -476,7 +503,10 @@ class AnimaAttenMulti:
                     "default": "",
                     "multiline": True,
                     "dynamicPrompts": True,
-                    "tooltip": "Comma-separated tags and weights, for example (3d:1.0), (photorelistic:1.3)."
+                    "tooltip": (
+                        "Comma-separated tags and weights. Positive weights add tag style; negative weights subtract it. "
+                        "Examples: (3d:1.0), (photorelistic:1.3), (@mossacannibalis:-0.5)."
+                    )
                 }),
                 "mix_strength": ("FLOAT", {
                     "default": 1.0,
@@ -491,7 +521,7 @@ class AnimaAttenMulti:
                     "max": 10.0,
                     "step": 0.05,
                     "tooltip": (
-                        "Applies effective_weight = weight ^ weight_power before mixing. "
+                        "Applies effective_weight = abs(weight) ^ weight_power before mixing positive and negative tags. "
                         "1.0 keeps raw weights, 1.5 gently sharpens, 2.0 strongly sharpens, "
                         "4.0+ makes high-weight tags dominate. Values below 1.0 flatten tag balance."
                     )
@@ -531,24 +561,42 @@ class AnimaAttenMulti:
 
             tag_name, raw_weight = parsed
             effective_weight = self._effective_weight(raw_weight, weight_power)
+            sign = -1 if raw_weight < 0.0 else 1
             prompt = self._build_tag_prompt(tag_name, base_prompt)
             conditioning = CLIPTextEncode().encode(clip, prompt)[0]
             tags.append({
                 "tag": tag_name,
                 "raw_weight": raw_weight,
                 "weight": effective_weight,
+                "sign": sign,
                 "prompt": prompt,
                 "conditioning": conditioning,
             })
             if debug:
+                mode = "negative" if sign < 0 else "positive"
                 print(
                     f"[Anima Atten multi] tag_{index}: tag='{tag_name}', "
-                    f"weight={raw_weight:g}, effective={effective_weight:g}"
+                    f"weight={raw_weight:g}, effective={effective_weight:g}, mode={mode}"
                 )
 
         if not tags:
             log_warning("Anima Atten multi has no active tag inputs; returning model unchanged")
             return (model, positive)
+
+        if debug:
+            positive_total = sum(float(item["weight"]) for item in tags if int(item.get("sign", 1)) > 0)
+            negative_total = sum(float(item["weight"]) for item in tags if int(item.get("sign", 1)) < 0)
+            reference_total = positive_total if positive_total > 0.0 else 1.0
+            negative_scale = (
+                negative_total / max(reference_total + negative_total, 1e-12)
+                if negative_total > 0.0
+                else 0.0
+            )
+            print(
+                "[Anima Atten multi] effective totals: "
+                f"positive={positive_total:g}, negative={negative_total:g}, "
+                f"negative_scale={negative_scale:g}"
+            )
 
         mixer = AnimatagAttentionMixer(
             model=model,
@@ -612,7 +660,7 @@ class AnimaAttenMulti:
                 tag = maybe_tag
 
         tag = tag.strip()
-        if not tag or weight <= 0.0:
+        if not tag or weight == 0.0:
             return None
 
         return tag, weight
@@ -622,7 +670,7 @@ class AnimaAttenMulti:
         if not math.isfinite(power) or power <= 0.0:
             raise ValueError(f"weight_power must be a positive finite number, got {weight_power}")
 
-        effective = float(raw_weight) ** power
+        effective = abs(float(raw_weight)) ** power
         if not math.isfinite(effective) or effective <= 0.0:
             raise ValueError(
                 f"Effective tag weight must be positive and finite, got {effective} "

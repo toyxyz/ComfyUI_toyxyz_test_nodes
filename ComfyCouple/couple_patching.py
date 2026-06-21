@@ -110,14 +110,44 @@ class AttentionPatcher:
             # 아키텍처에 맞는 차원 사용 (SD 1.5: 768, SDXL: 2048)
             return [False], [torch.zeros(1, 77, self.arch_info.dim, device=device, dtype=dtype)], [1.0]
 
-        masks = [c[1].get("mask", False) for c in conditions]
-        conds = [c[0].to(device, dtype=dtype) for c in conditions]
+        masks = [self._normalize_region_mask(c[1].get("mask", False), dtype, device) for c in conditions]
+        conds = [self._normalize_conditioning_tensor(c[0], dtype, device) for c in conditions]
         strengths = [c[1].get("mask_strength", 1.0) for c in conditions]
         
         # NOTE: Mask normalization already done in comfy_couple.py
         # No need to normalize again here
             
         return masks, conds, strengths
+
+    @staticmethod
+    def _normalize_conditioning_tensor(tensor: torch.Tensor, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
+        """Collapse batched conditioning to one context row per region."""
+        if not isinstance(tensor, torch.Tensor):
+            raise TypeError(f"Conditioning tensor must be torch.Tensor, got {type(tensor)}")
+
+        tensor = tensor.to(device=device, dtype=dtype)
+        if tensor.dim() == 2:
+            tensor = tensor.unsqueeze(0)
+        if tensor.dim() != 3:
+            raise ValueError(f"Conditioning tensor must be [B, T, C], got shape {tuple(tensor.shape)}")
+        if tensor.shape[0] < 1:
+            raise ValueError("Conditioning tensor batch dimension must be at least 1")
+        return tensor[:1]
+
+    @staticmethod
+    def _normalize_region_mask(mask: Any, dtype: torch.dtype, device: torch.device) -> Any:
+        """Collapse batched masks to one spatial mask per region."""
+        if not isinstance(mask, torch.Tensor):
+            return mask
+
+        mask = mask.to(device=device, dtype=dtype)
+        if mask.dim() == 4:
+            mask = mask[0, 0] if mask.shape[1] > 0 else mask[0]
+        elif mask.dim() == 3:
+            mask = mask[0]
+        elif mask.dim() != 2:
+            raise ValueError(f"Region mask must be 2D, 3D, or 4D, got shape {tuple(mask.shape)}")
+        return mask
 
     def _patch_model_blocks(self, model: Any) -> None:
         """Apply patches to attention blocks"""

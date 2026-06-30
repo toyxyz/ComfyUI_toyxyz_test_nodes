@@ -6,7 +6,7 @@ from typing import Any, Dict, List
 
 import numpy as np
 import torch
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageOps
 
 import folder_paths
 
@@ -196,39 +196,17 @@ class DrawAreaMask:
         width: int,
         height: int,
         boxes: List[Dict[str, float]],
-        background_image: str | None = None,
     ) -> torch.Tensor:
-        image = cls._load_background_image(background_image, width, height) or Image.new("RGB", (width, height), color="white")
-        overlay = Image.new("RGBA", (width, height), color=(255, 255, 255, 0))
-        draw = ImageDraw.Draw(overlay, "RGBA")
-
-        try:
-            font = ImageFont.truetype("arial.ttf", 22)
-        except Exception:
-            font = ImageFont.load_default()
+        image = Image.new("RGB", (width, height), color="white")
+        draw = ImageDraw.Draw(image)
 
         total_boxes = max(1, len(boxes))
         for index, box in enumerate(boxes):
             left, top, right, bottom = cls._box_to_pixels(box, width, height)
             hue = float(box.get("hue", ((index + 1) / total_boxes) * 360.0))
             r, g, b = cls._hsl_to_rgb(hue, 90, 65)
-            fill_color = (r, g, b, 72)
-            border_color = (r, g, b, 255)
-            draw.rectangle([left, top, right - 1, bottom - 1], fill=fill_color, outline=border_color, width=3)
+            draw.rectangle([left, top, right - 1, bottom - 1], fill=(r, g, b))
 
-            label = str(index)
-            bbox = draw.textbbox((0, 0), label, font=font)
-            text_width = bbox[2] - bbox[0]
-            text_height = bbox[3] - bbox[1]
-            text_x = left + (right - left - text_width) / 2
-            text_y = top + (bottom - top - text_height) / 2
-            draw.text((text_x - 1, text_y), label, fill=(0, 0, 0, 255), font=font)
-            draw.text((text_x + 1, text_y), label, fill=(0, 0, 0, 255), font=font)
-            draw.text((text_x, text_y - 1), label, fill=(0, 0, 0, 255), font=font)
-            draw.text((text_x, text_y + 1), label, fill=(0, 0, 0, 255), font=font)
-            draw.text((text_x, text_y), label, fill=(255, 255, 255, 255), font=font)
-
-        image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
         return cls._pil_to_tensor(image)
 
     def draw_masks(self, width, height, boxes_state, background_image=""):
@@ -236,7 +214,7 @@ class DrawAreaMask:
         blank_mask = self._blank_mask(width, height)
         background = self._load_background_image(background_image, width, height)
         background_tensor = self._pil_to_tensor(background) if background is not None else self._blank_canvas_image(width, height)
-        canvas_image = self._create_canvas_image(width, height, boxes, background_image)
+        canvas_image = self._create_canvas_image(width, height, boxes)
         masks = []
 
         for box in boxes:

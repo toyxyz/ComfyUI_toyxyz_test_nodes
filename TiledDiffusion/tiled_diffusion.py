@@ -170,6 +170,8 @@ def fibonacci_spacing(x):
 
 
 def find_nearest(a, b):
+    if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
+        a = a.to(device=b.device, dtype=b.dtype)
     diff = (a - b).abs()
     nearest_indices = diff.argmin()
     return b[nearest_indices]
@@ -372,7 +374,10 @@ class AbstractDiffusion:
                         cns = torch.mean(control.cond_hint, 1, keepdim=True)
                 elif control.__class__.__name__ == 'ControlLLLiteAdvanced':
                     if getattr(control, 'sub_idxs', None) is not None and control.cond_hint_original.shape[0] >= control.full_latent_length:
-                        cns = common_upscale(control.cond_hint_original[control.sub_idxs], PW, PH, control.upscale_algorithm, "center").to(dtype=dtype, device=device)
+                        sub_idxs = control.sub_idxs
+                        if isinstance(sub_idxs, torch.Tensor):
+                            sub_idxs = sub_idxs.to(device=control.cond_hint_original.device, dtype=torch.long)
+                        cns = common_upscale(control.cond_hint_original[sub_idxs], PW, PH, control.upscale_algorithm, "center").to(dtype=dtype, device=device)
                     else:
                         cns = common_upscale(control.cond_hint_original, PW, PH, control.upscale_algorithm, "center").to(dtype=dtype, device=device)
                 else:

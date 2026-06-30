@@ -26,6 +26,7 @@ class AnimaAttentionPatcher:
     WRAPPER_KEY = "ComfyCouple_AnimaDiffusionModel"
     PREENCODED_CONTEXTS_KEY = "comfycouple_anima_preencoded_contexts"
     TAG_PREENCODED_CONTEXTS_KEY = "comfycouple_anima_tag_preencoded_contexts"
+    PPM_NEGPIP_MASK_KEY = "ppm_negpip_mask"
     MODE_CROSS_ATTENTION = "cross_attention"
     MODE_FULL_BLOCK = "full_block"
 
@@ -780,6 +781,14 @@ class AnimaAttentionPatcher:
             context_in = torch.cat(new_context, dim=0)
             expanded_transformer_options = dict(transformer_options)
             expanded_transformer_options["cond_or_uncond"] = expanded_cond_or_uncond
+            self._expand_transformer_option_tensor(
+                expanded_transformer_options,
+                self.PPM_NEGPIP_MASK_KEY,
+                cond_or_uncond,
+                batch_size,
+                region_bundle["num_regions"],
+                target_tokens,
+            )
             out = original_forward(
                 x_in,
                 context=context_in,
@@ -809,6 +818,7 @@ class AnimaAttentionPatcher:
                             region_bundle,
                             tag_contexts or [],
                             cond_flag,
+                            idx,
                             rope_emb,
                             transformer_options,
                         )
@@ -829,6 +839,7 @@ class AnimaAttentionPatcher:
         region_bundle: Dict[str, Any],
         tag_contexts: List[Tuple[List[torch.Tensor], float, int]],
         cond_flag: int,
+        chunk_index: int,
         rope_emb: Any,
         transformer_options: Optional[Dict[str, Any]],
     ) -> torch.Tensor:
@@ -853,6 +864,19 @@ class AnimaAttentionPatcher:
                 ],
                 dim=0,
             )
+            chunk_transformer_options.pop(self.PPM_NEGPIP_MASK_KEY, None)
+            source_cond_or_uncond = (transformer_options or {}).get("cond_or_uncond")
+            if isinstance(source_cond_or_uncond, list):
+                self._set_repeated_transformer_option_chunk(
+                    chunk_transformer_options,
+                    self.PPM_NEGPIP_MASK_KEY,
+                    transformer_options,
+                    chunk_index,
+                    len(source_cond_or_uncond),
+                    x_chunk.shape[0],
+                    num_regions,
+                    int(matched_context.shape[1]),
+                )
             tag_out = original_forward(
                 x_chunk.repeat(num_regions, 1, 1),
                 context=matched_context,
@@ -970,6 +994,7 @@ class AnimaAttentionPatcher:
                 expanded_size,
                 cond_flag,
                 num_regions,
+                target_tokens,
             )
             tag_out = original_forward(
                 expanded_x_chunk,
@@ -1013,10 +1038,18 @@ class AnimaAttentionPatcher:
         expanded_size: int,
         cond_flag: int,
         num_regions: int,
+        target_tokens: int,
     ) -> Dict[str, Any]:
         tag_kwargs = dict(patched_kwargs)
         transformer_options = dict(tag_kwargs.get("transformer_options", {}) or {})
         transformer_options["cond_or_uncond"] = [cond_flag] * num_regions
+        self._slice_transformer_option_tensor(
+            transformer_options,
+            self.PPM_NEGPIP_MASK_KEY,
+            expanded_pos,
+            expanded_size,
+            target_tokens,
+        )
         tag_kwargs["transformer_options"] = transformer_options
 
         for key in ("adaln_lora_B_T_3D", "extra_per_block_pos_emb"):
@@ -1113,6 +1146,14 @@ class AnimaAttentionPatcher:
             patched_kwargs = dict(kwargs)
             expanded_transformer_options = dict(transformer_options)
             expanded_transformer_options["cond_or_uncond"] = expanded_cond_or_uncond
+            self._expand_transformer_option_tensor(
+                expanded_transformer_options,
+                self.PPM_NEGPIP_MASK_KEY,
+                cond_or_uncond,
+                base_batch_size,
+                region_bundle["num_regions"],
+                target_tokens,
+            )
             patched_kwargs["transformer_options"] = expanded_transformer_options
             self._expand_block_kwarg_tensor(
                 patched_kwargs,
@@ -1285,6 +1326,82 @@ class AnimaAttentionPatcher:
             else:
                 expanded.append(chunk.repeat(num_regions, *([1] * (chunk.dim() - 1))))
         kwargs[key] = torch.cat(expanded, dim=0)
+
+    def _expand_transformer_option_tensor(
+        self,
+        transformer_options: Dict[str, Any],
+        key: str,
+        cond_or_uncond: List[int],
+        batch_size: int,
+        num_regions: int,
+        target_tokens: Optional[int] = None,
+    ) -> None:
+        tensor = transformer_options.get(key)
+        if not isinstance(tensor, torch.Tensor):
+            return
+
+        total_batch = batch_size * len(cond_or_uncond)
+        if tensor.shape[0] != total_batch:
+            return
+
+        expanded = []
+        for chunk, cond_flag in zip(tensor.chunk(len(cond_or_uncond), dim=0), cond_or_uncond):
+            if target_tokens is not None and chunk.dim() >= 2:
+                chunk = self._expand_context_tokens(chunk, target_tokens)
+            if cond_flag == 1:
+                expanded.append(chunk)
+            else:
+                expanded.append(chunk.repeat(num_regions, *([1] * (chunk.dim() - 1))))
+
+        transformer_options[key] = torch.cat(expanded, dim=0)
+
+    def _set_repeated_transformer_option_chunk(
+        self,
+        transformer_options: Dict[str, Any],
+        key: str,
+        source_options: Optional[Dict[str, Any]],
+        chunk_index: int,
+        num_chunks: int,
+        batch_size: int,
+        num_regions: int,
+        target_tokens: Optional[int] = None,
+    ) -> None:
+        if not source_options or num_chunks <= 0 or chunk_index >= num_chunks:
+            return
+
+        tensor = source_options.get(key)
+        if not isinstance(tensor, torch.Tensor):
+            return
+
+        total_batch = batch_size * num_chunks
+        if tensor.shape[0] != total_batch:
+            return
+
+        chunk = tensor.chunk(num_chunks, dim=0)[chunk_index]
+        if target_tokens is not None and chunk.dim() >= 2:
+            chunk = self._expand_context_tokens(chunk, target_tokens)
+        transformer_options[key] = chunk.repeat(num_regions, *([1] * (chunk.dim() - 1)))
+
+    def _slice_transformer_option_tensor(
+        self,
+        transformer_options: Dict[str, Any],
+        key: str,
+        start: int,
+        size: int,
+        target_tokens: Optional[int] = None,
+    ) -> None:
+        tensor = transformer_options.get(key)
+        if not isinstance(tensor, torch.Tensor):
+            return
+
+        if start < 0 or size <= 0 or tensor.shape[0] < start + size:
+            transformer_options.pop(key, None)
+            return
+
+        sliced = tensor[start : start + size]
+        if target_tokens is not None and sliced.dim() >= 2:
+            sliced = self._expand_context_tokens(sliced, target_tokens)
+        transformer_options[key] = sliced
 
     def _merge_region_outputs(
         self,
@@ -1494,7 +1611,7 @@ class AnimaAttentionPatcher:
         if current_tokens == target_tokens:
             return context
 
-        repeats = max(target_tokens // max(current_tokens, 1), 1)
+        repeats = max(math.ceil(target_tokens / max(current_tokens, 1)), 1)
         expanded = context.repeat(1, repeats, 1)
         return expanded[:, :target_tokens, :]
 

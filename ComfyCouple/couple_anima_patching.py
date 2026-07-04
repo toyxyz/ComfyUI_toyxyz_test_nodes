@@ -8,6 +8,7 @@ This implementation mirrors the sd-forge-couple Anima approach closely:
 - merge attention outputs with normalized region masks
 """
 
+import functools
 import math
 import types
 from typing import Any, Dict, List, Optional, Tuple
@@ -52,9 +53,13 @@ class AnimaAttentionPatcher:
         self._tag_mixed_call_count = 0
         self._tag_mixed_chunk_count = 0
         self._tag_active_context_count = 0
+        self._ppm_cosmos_attention_patch_active = False
+        self._active_ppm_cosmos_attention_rebound = False
 
     def patch(self) -> Any:
         patched_model = self.model.clone()
+        self._patch_ppm_negpip_extra_conds_device_mismatch(patched_model)
+        self._ppm_cosmos_attention_patch_active = self._patch_ppm_cosmos_attention_bound_modules(patched_model)
         transformer_options = patched_model.model_options.setdefault("transformer_options", {})
         save_region_metadata(
             transformer_options,
@@ -94,6 +99,133 @@ class AnimaAttentionPatcher:
             self._build_diffusion_wrapper(patched_model),
         )
         return patched_model
+
+    def _patch_ppm_cosmos_attention_bound_modules(self, patched_model: Any) -> bool:
+        object_patches = getattr(patched_model, "object_patches", None)
+        if not isinstance(object_patches, dict):
+            return False
+
+        detected_count = 0
+        rebound_count = 0
+        for patch_name, patch in list(object_patches.items()):
+            if not isinstance(patch_name, str) or not patch_name.endswith(".forward"):
+                continue
+            if not self._is_ppm_cosmos_attention_forward_patch(patch):
+                continue
+            detected_count += 1
+
+            module_name = patch_name[:-len(".forward")]
+            try:
+                current_module = patched_model.get_model_object(module_name)
+            except Exception as e:
+                log_warning(f"Could not rebind PPM Anima attention patch '{patch_name}': {e}")
+                continue
+
+            patch_args = tuple(getattr(patch, "args", ()) or ())
+            patched_model.add_object_patch(
+                patch_name,
+                functools.partial(
+                    patch.func,
+                    current_module,
+                    *patch_args[1:],
+                    **(getattr(patch, "keywords", None) or {}),
+                ),
+            )
+            rebound_count += 1
+
+        if rebound_count > 0:
+            log_debug(f"Rebound {rebound_count} PPM Anima attention patch(es) to the ComfyCouple model clone")
+        return detected_count > 0
+
+    @staticmethod
+    def _is_ppm_cosmos_attention_forward_patch(patch: Any) -> bool:
+        patch_func = getattr(patch, "func", None)
+        if not callable(patch_func):
+            return False
+
+        return (
+            getattr(patch_func, "__name__", "") == "_forward_patched"
+            and "dit_patches.cosmos_attention" in getattr(patch_func, "__module__", "")
+        )
+
+    def _patch_ppm_negpip_extra_conds_device_mismatch(self, patched_model: Any) -> None:
+        object_patches = getattr(patched_model, "object_patches", None)
+        if not isinstance(object_patches, dict):
+            return
+
+        extra_conds_patch = object_patches.get("extra_conds")
+        if not self._is_ppm_anima_negpip_extra_conds_patch(extra_conds_patch):
+            return
+
+        patch_args = tuple(getattr(extra_conds_patch, "args", ()) or ())
+        if not patch_args or not callable(patch_args[0]):
+            return
+
+        original_extra_conds = self._get_current_model_extra_conds(patched_model, patch_args[0])
+        wrapped_extra_conds = self._wrap_extra_conds_with_anima_llm_adapter_device(original_extra_conds)
+        patched_model.add_object_patch(
+            "extra_conds",
+            functools.partial(
+                extra_conds_patch.func,
+                wrapped_extra_conds,
+                *patch_args[1:],
+                **(getattr(extra_conds_patch, "keywords", None) or {}),
+            ),
+        )
+        log_debug("Applied ComfyCouple compatibility wrapper for PPM Anima NegPip extra_conds")
+
+    def _get_current_model_extra_conds(self, patched_model: Any, fallback_extra_conds: Any) -> Any:
+        current_extra_conds = getattr(getattr(patched_model, "model", None), "extra_conds", None)
+        if callable(current_extra_conds) and not self._is_ppm_anima_negpip_extra_conds_patch(current_extra_conds):
+            return current_extra_conds
+        return fallback_extra_conds
+
+    @staticmethod
+    def _is_ppm_anima_negpip_extra_conds_patch(extra_conds_patch: Any) -> bool:
+        patch_func = getattr(extra_conds_patch, "func", None)
+        if not callable(patch_func):
+            return False
+
+        return (
+            getattr(patch_func, "__name__", "") == "anima_extra_conds_negpip"
+            and "negpip.anima_negpip" in getattr(patch_func, "__module__", "")
+        )
+
+    @staticmethod
+    def _wrap_extra_conds_with_anima_llm_adapter_device(extra_conds: Any):
+        def wrapped_extra_conds(**kwargs):
+            AnimaAttentionPatcher._ensure_anima_llm_adapter_device(extra_conds, kwargs)
+            return extra_conds(**kwargs)
+
+        return wrapped_extra_conds
+
+    @staticmethod
+    def _ensure_anima_llm_adapter_device(extra_conds: Any, kwargs: Dict[str, Any]) -> None:
+        device = kwargs.get("device")
+        if device is None:
+            return
+
+        model = getattr(extra_conds, "__self__", None)
+        diffusion_model = getattr(model, "diffusion_model", None)
+        llm_adapter = getattr(diffusion_model, "llm_adapter", None)
+        if llm_adapter is None:
+            return
+
+        try:
+            first_param = next(llm_adapter.parameters())
+        except StopIteration:
+            return
+        except Exception as e:
+            log_warning(f"Could not inspect Anima llm_adapter device for PPM NegPip compatibility: {e}")
+            return
+
+        if getattr(first_param, "device", None) == device:
+            return
+
+        try:
+            llm_adapter.to(device=device)
+        except Exception as e:
+            log_warning(f"Could not move Anima llm_adapter to {device} for PPM NegPip compatibility: {e}")
 
     def _build_sampler_wrapper(self):
         converted_regions = []
@@ -293,6 +425,10 @@ class AnimaAttentionPatcher:
     def _build_diffusion_wrapper(self, patched_model: Any):
         def anima_diffusion_wrapper(executor, x, timesteps, context, fps=None, padding_mask=None, **kwargs):
             diffusion_model = executor.class_obj
+            if self._ppm_cosmos_attention_patch_active and not self._active_ppm_cosmos_attention_rebound:
+                self._active_ppm_cosmos_attention_rebound = self._rebind_active_ppm_cosmos_attention_forwards(
+                    diffusion_model
+                )
             patch_spatial = int(max(getattr(diffusion_model, "patch_spatial", 1), 1))
             transformer_options = dict(kwargs.get("transformer_options", {}) or {})
             transformer_options["activations_shape"] = self._get_activations_shape(x, patch_spatial)
@@ -388,6 +524,38 @@ class AnimaAttentionPatcher:
                     module.forward = original_forward
 
         return anima_diffusion_wrapper
+
+    def _rebind_active_ppm_cosmos_attention_forwards(self, diffusion_model: Any) -> bool:
+        named_modules = getattr(diffusion_model, "named_modules", None)
+        if not callable(named_modules):
+            return False
+
+        detected_count = 0
+        rebound_count = 0
+        for _, module in named_modules():
+            forward = getattr(module, "forward", None)
+            if not self._is_ppm_cosmos_attention_forward_patch(forward):
+                continue
+            detected_count += 1
+
+            patch_args = tuple(getattr(forward, "args", ()) or ())
+            if patch_args and patch_args[0] is module:
+                continue
+
+            try:
+                module.forward = functools.partial(
+                    forward.func,
+                    module,
+                    *patch_args[1:],
+                    **(getattr(forward, "keywords", None) or {}),
+                )
+                rebound_count += 1
+            except Exception as e:
+                log_warning(f"Could not rebind active PPM Anima attention forward: {e}")
+
+        if rebound_count > 0:
+            log_debug(f"Rebound {rebound_count} active PPM Anima attention forward(s)")
+        return detected_count > 0
 
     def _get_activations_shape(self, x: torch.Tensor, patch_spatial: int) -> List[int]:
         activations_shape = list(x.shape)

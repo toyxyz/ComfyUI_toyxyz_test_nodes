@@ -8,6 +8,8 @@ https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8536e96a-514a
 
 Update 
 
+2026/08/25 Add Minimax-H3-prompter node
+
 2026/04/18 Add Draw area mask, ComfyCouple Region multi, Crop area mask node
 
 2026/04/16 - Add Anima support to ComfyCouple Region node
@@ -59,6 +61,9 @@ Direct Webcam capture workflow (without webcam app)
 (Workflow embedded)
 
 ## Minimax-H3-prompter
+
+<img width="2190" height="1624" alt="image" src="https://github.com/user-attachments/assets/fc97abbe-d8ee-498b-8b5c-f248663cb749" />
+
 
 Builds MiniMax H3 audiovisual prompts from an editable shot timeline and optional image, video, and
 audio references. Supported modes are `Auto`, `T2VA`, `I2VA`, `FL2VA`, `L2VA`, and `REF2VA`.

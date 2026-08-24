@@ -60,8 +60,15 @@ Direct Webcam capture workflow (without webcam app)
 
 ## Minimax-H3-prompter
 
-Builds structured MiniMax H3 audiovisual prompts from a shot timeline and optional image, video,
-and audio references. It supports `Auto`, `T2VA`, `I2VA`, `FL2VA`, `L2VA`, and `REF2VA`.
+Builds MiniMax H3 audiovisual prompts from an editable shot timeline and optional image, video, and
+audio references. Supported modes are `Auto`, `T2VA`, `I2VA`, `FL2VA`, `L2VA`, and `REF2VA`.
+`Auto` selects a mode from the active reference layout.
+
+- `T2VA`: text-only generation
+- `I2VA`: exact first-frame continuation
+- `FL2VA`: continuous interpolation between exact first and last frames
+- `L2VA`: generation that converges on an exact final frame
+- `REF2VA` (`R2V`): subject, frame, video, and audio reference generation or editing
 
 ### Quick start
 
@@ -70,16 +77,27 @@ and audio references. It supports `Auto`, `T2VA`, `I2VA`, `FL2VA`, `L2VA`, and `
    visible text, sound, and music.
 3. Add assets with **+ Image**, **+ Video**, or **+ Audio**. Enter aliases as plain words, then
    type `@` in Prompt to insert one from the alias menu.
-4. Arrange and resize shots on the timeline. The total always remains equal to the target duration.
-5. Press **Generate Prompt**. Press it again while it displays **Stop** to cancel generation.
+4. Arrange and resize shots on the timeline. Shot badges show the actual time range and inclusive frame
+   range. Cuts and transitions are created only at shot boundaries; an image anchor inside a shot is a
+   continuous in-shot state, not a cut.
+5. Edit reference placement on the tracks below the shot timeline:
+   - First/last images are fixed to the first/final output frame. A `Frame` image can be dragged to an
+     exact zero-based output frame. The track uses a solid anchor line, with a small preview beside its
+     frame/time label. Subject images remain untimed.
+   - Drag a video clip to move it and drag either edge to trim it. Clips may extend past the fixed lane;
+     only the visible intersection is analyzed and output. Filmstrip thumbnails show the selected source
+     interval. The minimum visible trim is 10 frames.
+   - Timeline rulers, shot badges, image anchors, and clip overlays use the H3-aligned duration and
+     `length`, for example `5.17s / 124f` for a requested 5.00 seconds.
+6. Press **Generate Prompt**. Press it again while it displays **Stop** to cancel generation.
 
 The last successful prompt remains available while inputs are edited and is replaced only after a
 new generation succeeds.
 
 ### Models
 
-- **Qwen3.8 Q4_K_M + Vision F16:** supports all modes, including `REF2VA`, and analyzes image
-  references plus duration-limited video frames.
+- **JonathanColetti/Qwen3.8-27B-Uncensored-GGUF · Q4_K_M + Vision F16:** supports every mode,
+  including `REF2VA`, and analyzes image references and selected video intervals.
 - **LightX2V MiniMax-H3 Prompt Rewriter 8B Q8_0 + Vision F16:** supports `T2VA`, `I2VA`,
   `FL2VA`, and `L2VA`; it does not support `REF2VA/R2V`.
 
@@ -89,11 +107,14 @@ expansion behavior.
 
 ### References
 
-- **Image:** choose `First frame`, `Last frame`, or `Subject`. Subject preservation can be `Weak`,
-  `Normal`, or `Strong`; Strong also retains the source visual medium/style.
-- **Video:** preserve video editing, continuation, motion/action timing, camera movement, or cuts and
-  temporal structure. Analysis uses only the configured leading duration.
-- **Audio:** guide the target with a source signal, voice, music, rhythm, ambience, or timing.
+- **Image:** choose `First frame`, `Last frame`, `Frame`, or `Subject`. Subject preservation can be
+  `Weak`, `Normal`, or `Strong`; Strong also retains that subject's source visual medium/style.
+- **Video:** choose `None`, editing, continuation, motion/action timing, camera movement, or
+  cuts/rhythm/temporal structure. Analysis and VIDEO output use only the interval visible on the video timeline.
+  Prompt generation also emits a locked video timeline plan: placed clips apply only inside their visible
+  intervals, while uncovered intervals execute the corresponding shot prompt instead of freezing a clip.
+- **Audio:** choose `None`, full/partial signal copy, voice and delivery, dialogue/lyrics, sound and
+  ambience, or music/rhythm. Audio is not inferred beyond the selected role and supplied metadata.
 
 References are numbered independently as `<Picture N>`, `<Video N>`, and `<Audio N>`. Their order in
 the node must match the downstream H3 reference-slot order.
@@ -102,10 +123,11 @@ the node must match the downstream H3 reference-slot order.
 
 - `generated_prompt` — latest successfully generated H3 prompt
 - `length` — H3-aligned frame count on the 24fps `17k+5` grid
-- `image_N` — uploaded image references in slot order
-- `video_N` — ComfyUI VIDEO references resampled to 24fps and trimmed to `length`; shorter videos
-  return only their available duration
-- `audio_N` — uploaded audio references trimmed to the target duration
+- `image_N` — uploaded image references in downstream slot order
+- `frame_N` — exact zero-based timeline frame for each movable `Frame` image
+- `video_N` — the visible selected interval as a ComfyUI VIDEO object containing 24fps images,
+  synchronized trimmed audio when available, and video metadata; output does not exceed `length`
+- `audio_N` — uploaded audio reference trimmed to the aligned target duration
 
 ## Visual area mask
 

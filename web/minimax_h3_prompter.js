@@ -17,11 +17,14 @@ const LIGHTX2V_MODEL = "hf:indhic-ai/MiniMax_H3-Prompt_Rewriter-8B-LORA-Merged-G
 // Includes the model selector/enhancement controls without forcing the whole
 // editor into a nested scrollbar. Long reference lists and prompt previews
 // retain their own scoped scroll areas.
-const UI_HEIGHT = 770;
+const UI_HEIGHT = 900;
 const UI_WIDTH = 1380;
 const NODE_HEIGHT = UI_HEIGHT + 95;
 const MIN_SHOT_DURATION = 0.25;
-const CURRENT_PROJECT_VERSION = 20;
+const VIDEO_OUTPUT_FPS = 24;
+const MIN_VIDEO_CLIP_FRAMES = 10;
+const MIN_VIDEO_CLIP_DURATION = MIN_VIDEO_CLIP_FRAMES / VIDEO_OUTPUT_FPS;
+const CURRENT_PROJECT_VERSION = 22;
 const MAX_REFERENCES = { picture: 9, video: 3, audio: 3, total: 12 };
 const SHOT_SNAP_SECONDS = 0.05;
 const MODES = ["AUTO", "T2VA", "I2VA", "FL2VA", "L2VA", "REF2VA"];
@@ -30,7 +33,7 @@ const LEGACY_DIALOGUE_LANGUAGES = [
   "Japanese", "Korean", "Portuguese", "Russian", "Spanish",
 ];
 const REFERENCE_ROLES = {
-  picture: ["first_frame", "last_frame", "subject_identity"],
+  picture: ["first_frame", "last_frame", "frame", "subject_identity"],
   video: ["none", "video_editing", "video_continuation", "motion", "camera", "cuts_rhythm"],
   audio: [
     "none", "full_signal_copy", "partial_signal_copy", "voice_delivery",
@@ -43,6 +46,7 @@ const SUBJECT_STRENGTH_LABELS = { weak: "Weak", normal: "Normal", strong: "Stron
 const REFERENCE_ROLE_LABELS = {
   first_frame: "First frame",
   last_frame: "Last frame",
+  frame: "Frame",
   subject_identity: "Subject",
   none: "None",
   video_editing: "Video editing",
@@ -60,6 +64,7 @@ const REFERENCE_ROLE_LABELS = {
 const REFERENCE_ROLE_HELP = {
   first_frame: "The picture strictly anchors the opening frame.",
   last_frame: "The picture strictly anchors the final frame.",
+  frame: "The picture anchors an exact movable frame on the target timeline.",
   subject_identity: "Use the image as a Subject; choose Weak, Normal, or Strong preservation separately.",
   none: "No preset relationship. Describe the intended use freely below.",
   video_editing: "Directly edit the source video while preserving the source elements specified below.",
@@ -153,6 +158,12 @@ function fitShotDurations(shots, requestedDuration) {
     const share = weightTotal > 0 ? weights[index] / weightTotal : 1 / shots.length;
     shot.duration = MIN_SHOT_DURATION + distributable * share;
   });
+}
+
+function alignedFrameCount(seconds) {
+  let frames = Math.max(5, Math.round(Number(seconds || 0) * VIDEO_OUTPUT_FPS));
+  while (frames % 17 !== 5) frames += 1;
+  return frames;
 }
 
 function migrateLegacyShotContent(shot, index = 0) {
@@ -254,7 +265,7 @@ function normalizeProject(value) {
       } else if (suppliedRole === "subject_identity") {
         role = "subject_identity";
         strength = SUBJECT_STRENGTHS.includes(strength) ? strength : "strong";
-      } else if (!["first_frame", "last_frame"].includes(suppliedRole)) {
+      } else if (!["first_frame", "last_frame", "frame"].includes(suppliedRole)) {
         role = "subject_identity";
         strength = SUBJECT_STRENGTHS.includes(strength) ? strength : "normal";
       } else {
@@ -285,6 +296,10 @@ function normalizeProject(value) {
       // persisted it here, which made Raw Prompt change after enhancement.
       description: type === "picture" ? "" : String(ref?.description || ""),
       duration: clampNumber(ref?.duration, 0, 0, 60),
+      source_duration: clampNumber(ref?.source_duration, clampNumber(ref?.duration, 0, 0, 60), 0, 36000),
+      trim_start: clampNumber(ref?.trim_start, 0, 0, 36000),
+      timeline_start: clampNumber(ref?.timeline_start, 0, -36000, 36000),
+      frame_index: Math.round(clampNumber(ref?.frame_index, 0, 0, 1000000)),
       image_filename: String(ref?.image_filename || ""),
       image_subfolder: String(ref?.image_subfolder || "").replaceAll("\\", "/").replace(/^\/+|\/+$/g, ""),
       image_type: "input",
@@ -307,6 +322,18 @@ function normalizeProject(value) {
     fitShotDurations(project.shots, requestedDuration);
   }
   project.requested_duration = requestedDuration;
+  project.references.filter(ref => ref.type === "video").forEach(ref => {
+    const sourceDuration = Math.max(ref.source_duration || ref.duration || 0, ref.duration || 0);
+    ref.source_duration = sourceDuration;
+    ref.trim_start = Math.min(Math.max(0, ref.trim_start || 0), Math.max(0, sourceDuration - MIN_SHOT_DURATION));
+    const available = Math.max(0, sourceDuration - ref.trim_start);
+    ref.duration = Math.min(Math.max(0, ref.duration || Math.min(15, available)), available, 15);
+    const minimumVisible = Math.min(MIN_VIDEO_CLIP_DURATION, ref.duration);
+    ref.timeline_start = Math.min(
+      Math.max(-ref.duration + minimumVisible, ref.timeline_start || 0),
+      requestedDuration - minimumVisible,
+    );
+  });
   return project;
 }
 
@@ -354,13 +381,54 @@ function installStyles() {
     .mmh3p-shot-title { font-weight:700; color:#d9efff; white-space:nowrap; }
     .mmh3p-shot-summary { color:#aeb8c4; font-size:10px; overflow:hidden; line-height:1.25; }
     .mmh3p-shot-duration { margin-left:auto; padding:2px 6px; border-radius:10px; color:#a9d8ff;
-      background:#111a21; border:1px solid #364653; font:10px ui-monospace,Consolas,monospace; }
+      background:#111a21; border:1px solid #364653; font:9px ui-monospace,Consolas,monospace;
+      white-space:nowrap; flex:0 0 auto; }
     .mmh3p-resize-handle { position:absolute; z-index:5; top:0; right:0; width:11px; height:100%;
       cursor:col-resize; touch-action:none; }
     .mmh3p-resize-handle::after { content:""; position:absolute; top:8px; bottom:8px; left:5px;
       width:2px; border-radius:2px; background:#65b9ff; opacity:.45; }
     .mmh3p-resize-handle:hover::after,.mmh3p-resize-handle.active::after { opacity:1; width:3px; }
     .mmh3p.resizing,.mmh3p.resizing * { cursor:col-resize !important; user-select:none !important; }
+    .mmh3p-video-timeline { display:flex; flex-direction:column; gap:4px; margin-top:6px; }
+    .mmh3p-video-timeline[hidden] { display:none; }
+    .mmh3p-image-track { height:96px; position:relative; width:100%; }
+    .mmh3p-image-lane { height:92px; position:relative; width:100%; overflow:hidden; border:1px solid #3d4651;
+      border-radius:4px; background:repeating-linear-gradient(90deg,#171b20 0,#171b20 calc(10% - 1px),#2b323a 10%); }
+    .mmh3p-image-anchor { position:absolute; top:1px; bottom:1px; min-width:2px; display:flex;
+      align-items:stretch; overflow:visible; border:1px solid #d8b5ff; background:#9a58d1; }
+    .mmh3p-image-anchor.first { left:1px; } .mmh3p-image-anchor.last { right:1px; }
+    .mmh3p-image-anchor.frame { transform:translateX(-50%); cursor:grab; touch-action:none; }
+    .mmh3p-image-anchor.frame:active { cursor:grabbing; }
+    .mmh3p-image-anchor.frame::after { content:""; position:absolute; z-index:3; top:0; bottom:0; left:-5px; right:-5px; }
+    .mmh3p-image-anchor-label { position:absolute; z-index:2; left:calc(100% + 5px); top:50%; display:flex;
+      flex-direction:column; align-items:flex-start; gap:3px; padding:3px 5px; white-space:nowrap;
+      border-radius:3px; transform:translateY(-50%);
+      color:#f0ddff; background:rgba(12,10,18,.78); font:9px ui-monospace,Consolas,monospace; pointer-events:none; }
+    .mmh3p-image-anchor-label.before { left:auto; right:calc(100% + 5px); }
+    .mmh3p-image-anchor-preview { width:64px !important; height:44px !important; object-fit:contain !important; object-position:center;
+      border:1px solid rgba(197,140,255,.65); border-radius:2px; background:#0b0f14; }
+    .mmh3p-video-track { height:56px; position:relative; width:100%; }
+    .mmh3p-video-track-label { position:absolute; z-index:6; left:6px; top:6px; max-width:68px; padding:2px 5px;
+      color:#d9efff; background:rgba(10,18,24,.78); border-radius:3px; font:10px ui-monospace,Consolas,monospace;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis; pointer-events:none; }
+    .mmh3p-video-lane { height:52px; position:relative; width:100%; overflow:hidden; border:1px solid #3d4651;
+      border-radius:4px; background:repeating-linear-gradient(90deg,#171b20 0,#171b20 calc(10% - 1px),#2b323a 10%); }
+    .mmh3p-video-canvas { position:relative; height:100%; min-width:100%; }
+    .mmh3p-video-filmstrip { position:absolute; inset:0; z-index:0; display:flex; overflow:hidden; pointer-events:none;
+      border-radius:2px; background:#111820; opacity:.9; }
+    .mmh3p-video-thumb { height:100%; min-width:0; flex:1 1 0; object-fit:contain; object-position:center;
+      background:#0b0f14; border-right:1px solid rgba(255,255,255,.16); }
+    .mmh3p-video-filmstrip-loading { width:100%; display:flex; align-items:center; justify-content:center;
+      color:#8e9aa7; font:9px ui-monospace,Consolas,monospace; }
+    .mmh3p-video-clip { position:absolute; z-index:3; top:1px; bottom:1px; min-width:8px; border:2px solid #65b9ff;
+      border-radius:3px; background:#214765; color:#fff; cursor:grab; user-select:none;
+      display:flex; align-items:center; justify-content:center; padding:0 10px; font:9px ui-monospace,Consolas,monospace; white-space:nowrap; }
+    .mmh3p-video-clip > span { position:absolute; top:50%; z-index:4; padding:2px 5px; border-radius:3px;
+      background:rgba(8,14,19,.68); pointer-events:none; transform:translate(-50%,-50%); }
+    .mmh3p-video-clip:active { cursor:grabbing; }
+    .mmh3p-video-trim { position:absolute; z-index:5; top:0; bottom:0; width:8px; cursor:col-resize; background:#78c5ff; opacity:.75; }
+    .mmh3p-video-trim.left { left:0; } .mmh3p-video-trim.right { right:0; }
+    .mmh3p-video-trim:hover { opacity:1; }
     .mmh3p-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; min-height:0;
       align-items:stretch; overflow:hidden; }
     .mmh3p-grid > .mmh3p-panel { min-height:0; height:100%; overflow:hidden; }
@@ -399,7 +467,7 @@ function installStyles() {
     .mmh3p-reference-head { margin-bottom:8px; display:flex; flex-wrap:wrap; align-items:flex-start; justify-content:space-between; gap:7px 10px; }
     .mmh3p-reference-title { min-width:0; }
     .mmh3p-enhance-actions { margin-left:auto; display:flex; align-items:center; gap:7px; }
-    .mmh3p-enhance-actions [data-action="enhance"] {
+    .mmh3p-enhance-button {
       box-sizing:border-box; width:112px; min-width:112px; max-width:112px; flex:0 0 112px;
       white-space:nowrap; text-align:center;
     }
@@ -477,6 +545,7 @@ class PrompterUI {
     this.compileController = null;
     this.enhanceController = null;
     this.enhanceJobId = "";
+    this.videoThumbnailCache = new Map();
     this.modelBundles = [];
     this.compileSequence = 0;
     this.mentionSelectionIndex = 0;
@@ -509,7 +578,8 @@ class PrompterUI {
           <div class="mmh3p-row"><button data-action="add-shot">+ Shot</button><button data-action="delete-shot">Delete Shot</button></div>
         </div>
         <div class="mmh3p-label" style="margin-top:6px">Drag a shot boundary to resize adjacent shots · double-click to split them evenly</div>
-        <div class="mmh3p-timeline" data-el="timeline"><div class="mmh3p-ruler"><span>0s</span><span data-el="ruler-end">5.00s</span></div></div>
+        <div class="mmh3p-timeline" data-el="timeline"><div class="mmh3p-ruler"><span>0.00s · 0f</span><span data-el="ruler-end">5.00s</span></div></div>
+        <div class="mmh3p-video-timeline" data-el="video-timeline" hidden></div>
       </div>
       <div class="mmh3p-grid">
         <div class="mmh3p-panel mmh3p-editor">
@@ -530,7 +600,7 @@ class PrompterUI {
               <label class="mmh3p-auto-run" title="Use richer Qwen3.8 interpretation and expansion while preserving the requested events">
                 <input data-el="enhance" type="checkbox"><span>Enhance</span>
               </label>
-              <button data-action="enhance" type="button">Generate Prompt</button>
+              <button class="mmh3p-enhance-button" data-action="enhance" type="button">Generate Prompt</button>
               <label class="mmh3p-auto-run" title="Generate the prompt as part of the ComfyUI queue when this node executes">
                 <input data-el="auto-run" type="checkbox"><span>Auto Run</span>
               </label>
@@ -822,6 +892,29 @@ class PrompterUI {
   }
 
   totalDuration() { return this.project.shots.reduce((sum, shot) => sum + Number(shot.duration || 0), 0); }
+  timelineFrameCount() { return alignedFrameCount(this.totalDuration()); }
+  timelineDuration() { return this.timelineFrameCount() / VIDEO_OUTPUT_FPS; }
+  shotTimelineDuration(shot) {
+    return Number(shot.duration || 0) * this.timelineDuration() / Math.max(0.1, this.totalDuration());
+  }
+  shotTimelineRange(index) {
+    const requestedTotal = Math.max(0.1, this.totalDuration());
+    const requestedStart = this.project.shots.slice(0, index)
+      .reduce((sum, shot) => sum + Number(shot.duration || 0), 0);
+    const requestedEnd = requestedStart + Number(this.project.shots[index]?.duration || 0);
+    const startSeconds = requestedStart / requestedTotal * this.timelineDuration();
+    const endSeconds = requestedEnd / requestedTotal * this.timelineDuration();
+    const startFrame = Math.max(0, Math.min(this.timelineFrameCount() - 1, Math.round(startSeconds * VIDEO_OUTPUT_FPS)));
+    const nextStartFrame = index === this.project.shots.length - 1
+      ? this.timelineFrameCount()
+      : Math.max(startFrame + 1, Math.round(endSeconds * VIDEO_OUTPUT_FPS));
+    const endFrame = Math.max(startFrame, Math.min(this.timelineFrameCount() - 1, nextStartFrame - 1));
+    return { startSeconds, endSeconds, startFrame, endFrame };
+  }
+  shotTimelineLabel(index) {
+    const range = this.shotTimelineRange(index);
+    return `${range.startSeconds.toFixed(3)}–${range.endSeconds.toFixed(3)}s · F${range.startFrame}–${range.endFrame}`;
+  }
   selectedShot() { return this.project.shots.find(shot => shot.id === this.selectedShotId) || this.project.shots[0]; }
 
   addShot() {
@@ -853,11 +946,13 @@ class PrompterUI {
     if (typeCount >= MAX_REFERENCES[type] || this.project.references.length >= MAX_REFERENCES.total) return;
     this.project.references.push({
       id: uid("ref"), type, role: REFERENCE_ROLES[type][0], strength: "normal", alias: "", description: "", duration: 0,
+      source_duration: 0, trim_start: 0, timeline_start: 0,
+      frame_index: 0,
       image_filename: "", image_subfolder: "", image_type: "input",
       video_filename: "", video_subfolder: "", video_type: "input",
       audio_filename: "", audio_subfolder: "", audio_type: "input",
     });
-    this.commit(); this.renderReferences(); this.renderHeader();
+    this.commit(); this.renderReferences(); this.renderHeader(); this.renderTimeline();
   }
 
   commit(refresh = true) {
@@ -1162,7 +1257,7 @@ class PrompterUI {
     this.els.path.textContent = this.project.mode === "AUTO"
       ? `auto → ${resolvedMode.toLowerCase()}`
       : resolvedMode.toLowerCase();
-    this.els["ruler-end"].textContent = `${this.totalDuration().toFixed(2)}s`;
+    this.els["ruler-end"].textContent = `${this.timelineDuration().toFixed(2)}s · ${this.timelineFrameCount()}f`;
     this.root.querySelector('[data-action="add-shot"]').disabled =
       !this.selectedShot() || this.selectedShot().duration < MIN_SHOT_DURATION * 2;
     this.root.querySelectorAll('[data-action="add-ref"]').forEach(button => {
@@ -1179,17 +1274,17 @@ class PrompterUI {
 
   renderTimeline() {
     this.els.timeline.querySelectorAll(".mmh3p-shot").forEach(el => el.remove());
-    const total = Math.max(0.1, this.totalDuration());
+    const total = Math.max(0.1, this.timelineDuration());
     this.project.shots.forEach((shot, index) => {
       const card = document.createElement("div");
       card.className = `mmh3p-shot${shot.id === this.selectedShotId ? " selected" : ""}`;
       card.dataset.shotId = shot.id;
       card.draggable = true;
-      card.style.flex = `${Math.max(0.1, shot.duration) / total} 1 0`;
+      card.style.flex = `${Math.max(0.1, shot.duration) / Math.max(0.1, this.totalDuration())} 1 0`;
       const head = document.createElement("div"); head.className = "mmh3p-row";
       const title = document.createElement("span"); title.className = "mmh3p-shot-title"; title.textContent = `Shot ${index + 1}`;
       const duration = document.createElement("span"); duration.className = "mmh3p-shot-duration";
-      duration.textContent = `${shot.duration.toFixed(2)}s`;
+      duration.textContent = this.shotTimelineLabel(index);
       head.append(title, duration);
       const summary = document.createElement("div"); summary.className = "mmh3p-shot-summary";
       summary.textContent = shot.visual_action || "Click to describe this shot.";
@@ -1227,6 +1322,269 @@ class PrompterUI {
       }
       this.els.timeline.appendChild(card);
     });
+    this.renderVideoTimeline();
+  }
+
+  normalizeVideoClip(ref) {
+    const targetDuration = Math.max(0.1, this.timelineDuration());
+    const sourceDuration = Math.max(0, Number(ref.source_duration || ref.duration || 0));
+    ref.source_duration = sourceDuration;
+    ref.trim_start = Math.min(Math.max(0, Number(ref.trim_start || 0)), Math.max(0, sourceDuration - MIN_SHOT_DURATION));
+    const available = Math.max(0, sourceDuration - ref.trim_start);
+    ref.duration = Math.min(Math.max(0, Number(ref.duration || 0)), available, 15);
+    const minimumVisible = Math.min(MIN_VIDEO_CLIP_DURATION, ref.duration);
+    ref.timeline_start = Math.min(
+      Math.max(-ref.duration + minimumVisible, Number(ref.timeline_start || 0)),
+      targetDuration - minimumVisible,
+    );
+  }
+
+  renderVideoTimeline() {
+    const container = this.els["video-timeline"];
+    if (!container) return;
+    const videos = this.project.references.filter(ref => ref.type === "video");
+    let pictureNumber = 0;
+    const imageAnchors = this.project.references.flatMap(ref => {
+      if (ref.type !== "picture") return [];
+      pictureNumber += 1;
+      return ["first_frame", "last_frame", "frame"].includes(ref.role)
+        ? [{ ref, number: pictureNumber }]
+        : [];
+    });
+    container.hidden = videos.length === 0 && imageAnchors.length === 0;
+    container.replaceChildren();
+    if (!videos.length && !imageAnchors.length) return;
+    if (imageAnchors.length) {
+      const imageHelp = document.createElement("div");
+      imageHelp.className = "mmh3p-label";
+      imageHelp.textContent = "Image anchors · first/last frames are fixed · drag Frame images to an exact output frame";
+      const track = document.createElement("div"); track.className = "mmh3p-image-track";
+      const lane = document.createElement("div"); lane.className = "mmh3p-image-lane";
+      imageAnchors.forEach(({ ref, number }) => {
+        const isFirst = ref.role === "first_frame";
+        const isLast = ref.role === "last_frame";
+        const isMovable = ref.role === "frame";
+        const marker = document.createElement("div");
+        marker.className = `mmh3p-image-anchor ${isFirst ? "first" : isLast ? "last" : "frame"}`;
+        const label = document.createElement("div"); label.className = "mmh3p-image-anchor-label";
+        const labelText = document.createElement("span"); label.appendChild(labelText);
+        if (ref.image_filename) {
+          const previewImage = document.createElement("img"); previewImage.className = "mmh3p-image-anchor-preview";
+          previewImage.alt = ""; previewImage.draggable = false;
+          previewImage.src = api.apiURL(`/view?${new URLSearchParams({
+            filename: ref.image_filename, subfolder: ref.image_subfolder || "", type: "input",
+          }).toString()}`);
+          label.appendChild(previewImage);
+        }
+        const updateAnchor = () => {
+          const frameCount = this.timelineFrameCount();
+          const laneWidth = Math.max(1, lane.clientWidth || this.els.timeline.clientWidth || 1000);
+          const frameWidth = Math.max(2, laneWidth / Math.max(1, frameCount));
+          marker.style.width = `${frameWidth}px`;
+          if (isFirst) {
+            label.classList.remove("before");
+            labelText.textContent = `Image ${number} · First · Frame 0`;
+            marker.title = `<Image ${number}> exact first frame 0 at 0.00s`;
+          } else if (isLast) {
+            label.classList.add("before");
+            labelText.textContent = `Image ${number} · Last · Frame ${frameCount - 1}`;
+            marker.title = `<Image ${number}> exact last frame ${frameCount - 1} at ${this.timelineDuration().toFixed(2)}s`;
+          } else {
+            ref.frame_index = Math.max(0, Math.min(frameCount - 1, Math.round(Number(ref.frame_index || 0))));
+            const rawCenter = frameCount > 1 ? ref.frame_index / (frameCount - 1) * laneWidth : 0;
+            const center = Math.max(frameWidth / 2 + 1, Math.min(laneWidth - frameWidth / 2 - 1, rawCenter));
+            marker.style.left = `${center}px`;
+            label.classList.toggle("before", ref.frame_index >= frameCount / 2);
+            labelText.textContent = `Image ${number} · Frame ${ref.frame_index} · ${(ref.frame_index / VIDEO_OUTPUT_FPS).toFixed(3)}s`;
+            marker.title = `<Image ${number}> exact frame ${ref.frame_index}`;
+          }
+        };
+        if (isMovable) {
+          marker.addEventListener("pointerdown", event => {
+            event.preventDefault(); event.stopPropagation(); marker.setPointerCapture?.(event.pointerId);
+            const move = moveEvent => {
+              const rect = lane.getBoundingClientRect();
+              const ratio = Math.max(0, Math.min(1, (moveEvent.clientX - rect.left) / Math.max(1, rect.width)));
+              ref.frame_index = Math.round(ratio * Math.max(0, this.timelineFrameCount() - 1));
+              updateAnchor();
+            };
+            const end = upEvent => {
+              marker.releasePointerCapture?.(upEvent.pointerId);
+              marker.removeEventListener("pointermove", move);
+              marker.removeEventListener("pointerup", end);
+              marker.removeEventListener("pointercancel", end);
+              this.commit(); this.renderTimeline();
+            };
+            marker.addEventListener("pointermove", move);
+            marker.addEventListener("pointerup", end);
+            marker.addEventListener("pointercancel", end);
+          });
+        }
+        marker.appendChild(label); lane.appendChild(marker);
+        updateAnchor();
+      });
+      track.appendChild(lane); container.append(imageHelp, track);
+    }
+    if (!videos.length) return;
+    const help = document.createElement("div");
+    help.className = "mmh3p-label";
+    help.textContent = "Video clips · drag a clip to move · drag either edge to trim";
+    container.appendChild(help);
+    videos.forEach((ref, index) => {
+      this.normalizeVideoClip(ref);
+      const track = document.createElement("div"); track.className = "mmh3p-video-track";
+      const label = document.createElement("div"); label.className = "mmh3p-video-track-label";
+      label.textContent = `Video ${index + 1}`;
+      const lane = document.createElement("div"); lane.className = "mmh3p-video-lane";
+      if (ref.video_filename && ref.duration > 0) {
+        const canvas = document.createElement("div"); canvas.className = "mmh3p-video-canvas";
+        const clip = document.createElement("div"); clip.className = "mmh3p-video-clip";
+        const filmstrip = document.createElement("div"); filmstrip.className = "mmh3p-video-filmstrip";
+        const loading = document.createElement("div"); loading.className = "mmh3p-video-filmstrip-loading";
+        loading.textContent = "Loading video frames…"; filmstrip.appendChild(loading);
+        const left = document.createElement("div"); left.className = "mmh3p-video-trim left";
+        const right = document.createElement("div"); right.className = "mmh3p-video-trim right";
+        const text = document.createElement("span");
+        const updateClip = () => {
+          const total = Math.max(0.1, this.timelineDuration());
+          clip.style.left = `${ref.timeline_start / total * 100}%`;
+          clip.style.width = `${ref.duration / total * 100}%`;
+          const visibleStart = Math.max(0, ref.timeline_start);
+          const visibleEnd = Math.min(total, ref.timeline_start + ref.duration);
+          const visibleDuration = Math.max(0, visibleEnd - visibleStart);
+          const visibleFrames = Math.max(0, Math.round(visibleDuration * VIDEO_OUTPUT_FPS));
+          const visibleCenter = (visibleStart + visibleEnd) / 2;
+          const labelPosition = (visibleCenter - ref.timeline_start) / Math.max(0.001, ref.duration) * 100;
+          text.style.left = `${labelPosition}%`;
+          text.textContent = `${visibleDuration.toFixed(2)}s · ${visibleFrames} frames`;
+          clip.title = `Target ${visibleStart.toFixed(2)}–${visibleEnd.toFixed(2)}s · Source ${ref.trim_start.toFixed(2)}–${(ref.trim_start + ref.duration).toFixed(2)}s`;
+        };
+        const beginEdit = (event, operation) => {
+          event.preventDefault(); event.stopPropagation();
+          const startX = event.clientX;
+          const startTimeline = ref.timeline_start;
+          const startTrim = ref.trim_start;
+          const startDuration = ref.duration;
+          const secondsPerPixel = this.timelineDuration() / Math.max(1, lane.getBoundingClientRect().width);
+          const captureTarget = clip;
+          captureTarget.setPointerCapture?.(event.pointerId);
+          const onMove = moveEvent => {
+            let delta = Math.round(((moveEvent.clientX - startX) * secondsPerPixel) / SHOT_SNAP_SECONDS) * SHOT_SNAP_SECONDS;
+            if (operation === "move") {
+              const minimumVisible = Math.min(MIN_VIDEO_CLIP_DURATION, startDuration);
+              ref.timeline_start = Math.max(
+                -startDuration + minimumVisible,
+                Math.min(this.timelineDuration() - minimumVisible, startTimeline + delta),
+              );
+            } else if (operation === "left") {
+              const minimumDuration = Math.min(MIN_VIDEO_CLIP_DURATION, startDuration);
+              delta = Math.max(-startTrim, Math.min(startDuration - minimumDuration, delta));
+              ref.timeline_start = startTimeline + delta;
+              ref.trim_start = startTrim + delta;
+              ref.duration = startDuration - delta;
+            } else {
+              const maxGrowth = Math.min(
+                ref.source_duration - startTrim - startDuration,
+                15 - startDuration,
+              );
+              const minimumDuration = Math.min(MIN_VIDEO_CLIP_DURATION, startDuration);
+              delta = Math.max(minimumDuration - startDuration, Math.min(maxGrowth, delta));
+              ref.duration = startDuration + delta;
+            }
+            updateClip();
+          };
+          const onUp = upEvent => {
+            captureTarget.releasePointerCapture?.(upEvent.pointerId);
+            captureTarget.removeEventListener("pointermove", onMove);
+            captureTarget.removeEventListener("pointerup", onUp);
+            captureTarget.removeEventListener("pointercancel", onUp);
+            this.normalizeVideoClip(ref);
+            this.commit(); this.renderReferences(); this.renderVideoTimeline();
+          };
+          captureTarget.addEventListener("pointermove", onMove);
+          captureTarget.addEventListener("pointerup", onUp);
+          captureTarget.addEventListener("pointercancel", onUp);
+        };
+        clip.addEventListener("pointerdown", event => beginEdit(event, "move"));
+        left.addEventListener("pointerdown", event => beginEdit(event, "left"));
+        right.addEventListener("pointerdown", event => beginEdit(event, "right"));
+        clip.append(filmstrip, left, text, right);
+        canvas.appendChild(clip); lane.appendChild(canvas);
+        track.append(label, lane); container.appendChild(track);
+        updateClip();
+        this.populateVideoFilmstrip(ref, filmstrip);
+        return;
+      } else {
+        const empty = document.createElement("div"); empty.className = "mmh3p-video-filmstrip-loading";
+        empty.style.padding = "8px"; empty.textContent = "Upload a video to edit its clip";
+        lane.appendChild(empty);
+      }
+      track.append(label, lane); container.appendChild(track);
+    });
+  }
+
+  async populateVideoFilmstrip(ref, filmstrip) {
+    const key = [
+      `${ref.video_subfolder || ""}/${ref.video_filename}`,
+      Number(ref.source_duration || 0).toFixed(3),
+      Number(ref.trim_start || 0).toFixed(3),
+      Number(ref.duration || 0).toFixed(3),
+    ].join("|");
+    let pending = this.videoThumbnailCache.get(key);
+    if (!pending) {
+      pending = (async () => {
+        const video = document.createElement("video");
+        video.muted = true; video.preload = "auto"; video.playsInline = true;
+        video.src = api.apiURL(`${VIDEO_VIEW_ENDPOINT}?${new URLSearchParams({
+          filename: ref.video_filename, subfolder: ref.video_subfolder || "",
+        }).toString()}`);
+        const waitFor = (eventName, timeout = 12000) => new Promise((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error(`Video ${eventName} timed out`)), timeout);
+          video.addEventListener(eventName, () => { clearTimeout(timer); resolve(); }, { once: true });
+          video.addEventListener("error", () => { clearTimeout(timer); reject(new Error("Video preview failed")); }, { once: true });
+        });
+        if (video.readyState < 1) { video.load(); await waitFor("loadedmetadata"); }
+        if (video.readyState < 2) await waitFor("loadeddata");
+        const sourceDuration = Math.max(0.01, Math.min(Number(ref.source_duration || video.duration || 0), video.duration || Infinity));
+        const start = Math.min(Math.max(0, Number(ref.trim_start || 0)), Math.max(0, sourceDuration - 0.01));
+        const duration = Math.max(0.01, Math.min(Number(ref.duration || 0), sourceDuration - start));
+        const frameCount = Math.min(20, Math.max(4, Math.ceil(duration * 2.5)));
+        const canvas = document.createElement("canvas");
+        canvas.width = 160;
+        canvas.height = Math.max(72, Math.round(160 * (video.videoHeight || 90) / Math.max(1, video.videoWidth || 160)));
+        const context = canvas.getContext("2d", { alpha: false });
+        const frames = [];
+        for (let index = 0; index < frameCount; index += 1) {
+          const selectedOffset = index / Math.max(1, frameCount - 1) * Math.max(0, duration - 0.03);
+          const time = Math.min(sourceDuration - 0.01, start + selectedOffset);
+          if (Math.abs(video.currentTime - time) > 0.01 || video.readyState < 2) {
+            const seeked = waitFor("seeked");
+            video.currentTime = time;
+            await seeked;
+          }
+          context.drawImage(video, 0, 0, canvas.width, canvas.height);
+          frames.push(canvas.toDataURL("image/jpeg", 0.78));
+        }
+        video.removeAttribute("src"); video.load();
+        return frames;
+      })();
+      this.videoThumbnailCache.set(key, pending);
+    }
+    try {
+      const frames = await pending;
+      if (!filmstrip.isConnected) return;
+      filmstrip.replaceChildren(...frames.map(source => {
+        const image = document.createElement("img");
+        image.className = "mmh3p-video-thumb"; image.src = source; image.alt = ""; image.draggable = false;
+        return image;
+      }));
+      filmstrip.title = "Frames sampled from the selected source interval";
+    } catch (error) {
+      this.videoThumbnailCache.delete(key);
+      if (!filmstrip.isConnected) return;
+      const unavailable = document.createElement("div"); unavailable.className = "mmh3p-video-filmstrip-loading";
+      unavailable.textContent = "Frame preview unavailable"; filmstrip.replaceChildren(unavailable);
+    }
   }
 
   beginShotResize(event, index, handle) {
@@ -1254,8 +1612,8 @@ class PrompterUI {
       if (leftCard && rightCard) {
         leftCard.style.flex = `${leftShot.duration / this.totalDuration()} 1 0`;
         rightCard.style.flex = `${rightShot.duration / this.totalDuration()} 1 0`;
-        leftCard.querySelector(".mmh3p-shot-duration").textContent = `${leftShot.duration.toFixed(2)}s`;
-        rightCard.querySelector(".mmh3p-shot-duration").textContent = `${rightShot.duration.toFixed(2)}s`;
+        leftCard.querySelector(".mmh3p-shot-duration").textContent = this.shotTimelineLabel(index);
+        rightCard.querySelector(".mmh3p-shot-duration").textContent = this.shotTimelineLabel(index + 1);
       }
     };
     const onUp = upEvent => {
@@ -1405,7 +1763,7 @@ class PrompterUI {
           if (ref.role === "subject_identity" && !SUBJECT_STRENGTHS.includes(ref.strength)) ref.strength = "normal";
           role.title = REFERENCE_ROLE_HELP[ref.role] || "How this reference should influence the generated video";
           if (ref.type === "picture") ref.description = "";
-          this.commit(); this.renderReferences(); this.renderHeader();
+          this.commit(); this.renderReferences(); this.renderHeader(); this.renderTimeline();
         });
       }
       strength.addEventListener("change", () => {
@@ -1417,7 +1775,7 @@ class PrompterUI {
       }
       del.addEventListener("click", () => {
         this.project.references = this.project.references.filter(item => item.id !== ref.id);
-        this.commit(); this.renderReferences(); this.renderHeader();
+        this.commit(); this.renderReferences(); this.renderHeader(); this.renderTimeline();
       });
       row.addEventListener("dragstart", event => { event.dataTransfer.setData("text/plain", ref.id); row.classList.add("dragging"); });
       row.addEventListener("dragend", () => row.classList.remove("dragging"));
@@ -1430,7 +1788,7 @@ class PrompterUI {
         if (from >= 0 && to >= 0 && from !== to) {
           const [moved] = this.project.references.splice(from, 1);
           this.project.references.splice(to, 0, moved);
-          this.commit(); this.renderReferences(); this.renderHeader();
+          this.commit(); this.renderReferences(); this.renderHeader(); this.renderTimeline();
         }
       });
       alias.addEventListener("input", () => {
@@ -1456,10 +1814,9 @@ class PrompterUI {
 
   syncReferenceOutputs() {
     const fixedOutputCount = 2;
-    const pictureCount = Math.min(
-      MAX_REFERENCES.picture,
-      this.project.references.filter(ref => ref.type === "picture").length,
-    );
+    const pictures = this.project.references.filter(ref => ref.type === "picture").slice(0, MAX_REFERENCES.picture);
+    const pictureCount = pictures.length;
+    const frameOutputCount = pictures.filter(ref => ref.role === "frame").length;
     const videoCount = Math.min(
       MAX_REFERENCES.video,
       this.project.references.filter(ref => ref.type === "video").length,
@@ -1468,19 +1825,14 @@ class PrompterUI {
       MAX_REFERENCES.audio,
       this.project.references.filter(ref => ref.type === "audio").length,
     );
-    const targetOutputCount = fixedOutputCount + pictureCount + videoCount + audioCount;
+    const targetOutputCount = fixedOutputCount + pictureCount + frameOutputCount + videoCount + audioCount;
     this.node.outputs ||= [];
     while (this.node.outputs.length > targetOutputCount) {
       this.node.removeOutput(this.node.outputs.length - 1);
     }
     while (this.node.outputs.length < targetOutputCount) {
       const mediaIndex = this.node.outputs.length - fixedOutputCount;
-      if (mediaIndex < pictureCount) this.node.addOutput(`image_${mediaIndex + 1}`, "IMAGE");
-      else if (mediaIndex < pictureCount + videoCount) {
-        this.node.addOutput(`video_${mediaIndex - pictureCount + 1}`, "VIDEO");
-      } else {
-        this.node.addOutput(`audio_${mediaIndex - pictureCount - videoCount + 1}`, "AUDIO");
-      }
+      this.node.addOutput(`media_${mediaIndex + 1}`, "*");
     }
     if (this.node.outputs[0]) {
       this.node.outputs[0].name = "generated_prompt";
@@ -1490,17 +1842,25 @@ class PrompterUI {
       this.node.outputs[1].name = "length";
       this.node.outputs[1].type = "INT";
     }
-    for (let index = 0; index < pictureCount; index += 1) {
-      this.node.outputs[fixedOutputCount + index].name = `image_${index + 1}`;
-      this.node.outputs[fixedOutputCount + index].type = "IMAGE";
-    }
+    let outputIndex = fixedOutputCount;
+    pictures.forEach((ref, index) => {
+      this.node.outputs[outputIndex].name = `image_${index + 1}`;
+      this.node.outputs[outputIndex].type = "IMAGE";
+      outputIndex += 1;
+      if (ref.role === "frame") {
+        this.node.outputs[outputIndex].name = `frame_${index + 1}`;
+        this.node.outputs[outputIndex].type = "INT";
+        outputIndex += 1;
+      }
+    });
     for (let index = 0; index < videoCount; index += 1) {
-      const output = this.node.outputs[fixedOutputCount + pictureCount + index];
+      const output = this.node.outputs[outputIndex + index];
       output.name = `video_${index + 1}`;
       output.type = "VIDEO";
     }
+    outputIndex += videoCount;
     for (let index = 0; index < audioCount; index += 1) {
-      const output = this.node.outputs[fixedOutputCount + pictureCount + videoCount + index];
+      const output = this.node.outputs[outputIndex + index];
       output.name = `audio_${index + 1}`;
       output.type = "AUDIO";
     }
@@ -1523,7 +1883,7 @@ class PrompterUI {
       ref.image_subfolder = data.subfolder || "toyxyz_h3_references";
       ref.image_type = "input";
       ref.description = "";
-      this.commit(); this.renderReferences();
+      this.commit(); this.renderReferences(); this.renderTimeline();
       this.appendLog(`Reference image uploaded: ${data.name}`, `upload-${ref.id}`);
     } catch (error) {
       this.appendLog(`Image upload failed: ${error.message || error}`, `upload-${ref.id}`, "error");
@@ -1570,10 +1930,13 @@ class PrompterUI {
       ref.video_subfolder = data.subfolder || "toyxyz_h3_references";
       ref.video_type = "input";
       const actualDuration = Number(data.duration || 0);
+      ref.source_duration = actualDuration > 0 ? actualDuration : 0;
+      ref.trim_start = 0;
+      ref.timeline_start = 0;
       ref.duration = actualDuration > 0 ? Math.min(15, actualDuration) : 0;
-      this.commit(); this.renderReferences();
+      this.commit(); this.renderReferences(); this.renderTimeline();
       const analysisSuffix = ref.duration > 0
-        ? `; analyzing the first ${Number(ref.duration).toFixed(2)} seconds`
+        ? `; selected source interval 0.00–${Number(ref.duration).toFixed(2)} seconds`
         : "";
       this.appendLog(`Reference video uploaded: ${data.name}${analysisSuffix}`, `upload-${ref.id}`);
     } catch (error) {

@@ -22,7 +22,7 @@ from typing import Any
 
 MODEL_FPS = 24
 MIN_SHOT_DURATION = 0.25
-CURRENT_PROJECT_VERSION = 20
+CURRENT_PROJECT_VERSION = 22
 SUPPORTED_MODES = ("AUTO", "T2VA", "I2VA", "FL2VA", "L2VA", "REF2VA")
 SUPPORTED_DIALOGUE_MODES = ("spoken", "voiceover", "singing")
 SUPPORTED_TRANSITIONS = ("cut", "cross-dissolve", "fade", "wipe")
@@ -31,7 +31,7 @@ SUPPORTED_LANGUAGES = (
     "Japanese", "Korean", "Portuguese", "Russian", "Spanish",
 )
 REFERENCE_ROLES = {
-    "picture": ("first_frame", "last_frame", "subject_identity"),
+    "picture": ("first_frame", "last_frame", "frame", "subject_identity"),
     "video": ("none", "video_editing", "video_continuation", "motion", "camera", "cuts_rhythm"),
     "audio": (
         "none", "full_signal_copy", "partial_signal_copy", "voice_delivery",
@@ -43,7 +43,7 @@ MAX_REF_IMAGES = 9
 MAX_REF_VIDEOS = 3
 MAX_REF_AUDIOS = 3
 MAX_REF_FILES = 12
-REF_VIDEO_MIN_SECONDS = 2.0
+REF_VIDEO_MIN_SECONDS = 10 / MODEL_FPS
 REF_VIDEO_MAX_SECONDS = 15.0
 REF_VIDEO_TOTAL_SECONDS = 15.0
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".mkv", ".avi", ".m4v"}
@@ -688,7 +688,7 @@ def _normalize_reference(raw: Any, index: int) -> dict[str, Any]:
         elif role == "subject_identity":
             # Version 9 and earlier used Subject as an implicit strong role.
             strength = strength if strength in SUBJECT_STRENGTHS else "strong"
-        elif role not in {"first_frame", "last_frame"}:
+        elif role not in {"first_frame", "last_frame", "frame"}:
             role = "subject_identity"
             strength = strength if strength in SUBJECT_STRENGTHS else "normal"
         else:
@@ -723,6 +723,10 @@ def _normalize_reference(raw: Any, index: int) -> dict[str, Any]:
         "alias": _normalize_alias(raw.get("alias")),
         "description": description,
         "duration": max(0.0, _number(raw.get("duration"), 0.0)),
+        "source_duration": max(0.0, _number(raw.get("source_duration"), _number(raw.get("duration"), 0.0))),
+        "trim_start": max(0.0, _number(raw.get("trim_start"), 0.0)),
+        "timeline_start": _number(raw.get("timeline_start"), 0.0),
+        "frame_index": max(0, int(round(_number(raw.get("frame_index"), 0.0)))),
         "image_filename": os.path.basename(_clean_text(raw.get("image_filename"))),
         "image_subfolder": _clean_text(raw.get("image_subfolder")).replace("\\", "/").strip("/"),
         "image_type": "input" if _clean_text(raw.get("image_type")).lower() != "input" else "input",
@@ -766,7 +770,7 @@ def normalize_project(project_data: Any) -> tuple[dict[str, Any], list[str]]:
     raw_version = raw.get("version")
     # Version 8 is a lossless cleanup migration from version 7: cached picture
     # analysis text is discarded. Do not report that expected upgrade as a warning.
-    if raw_version is not None and raw_version != CURRENT_PROJECT_VERSION and raw_version not in {7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19}:
+    if raw_version is not None and raw_version != CURRENT_PROJECT_VERSION and raw_version not in {7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21}:
         relation = "newer than" if isinstance(raw_version, (int, float)) and raw_version > CURRENT_PROJECT_VERSION else "different from"
         parse_warnings.append(
             f"Project version {raw_version!r} is {relation} supported version {CURRENT_PROJECT_VERSION}; known fields were normalized."
@@ -831,12 +835,30 @@ def normalize_project(project_data: Any) -> tuple[dict[str, Any], list[str]]:
             share = weights[index] / weight_total if weight_total else 1.0 / len(project["shots"])
             shot["duration"] = MIN_SHOT_DURATION + distributable * share
     project["requested_duration"] = round(requested_duration, 3)
+    effective_duration = align_frame_count(requested_duration) / MODEL_FPS
+    effective_frames = align_frame_count(requested_duration)
+    for ref in project["references"]:
+        if ref["type"] == "picture" and ref["role"] == "frame":
+            ref["frame_index"] = min(ref["frame_index"], effective_frames - 1)
     raw_refs = raw.get("references")
     project["references"] = (
         [_normalize_reference(item, i) for i, item in enumerate(raw_refs)]
         if isinstance(raw_refs, list)
         else []
     )
+    for ref in project["references"]:
+        if ref["type"] != "video":
+            continue
+        source_duration = max(ref["source_duration"], ref["duration"])
+        ref["source_duration"] = source_duration
+        ref["trim_start"] = min(ref["trim_start"], max(0.0, source_duration - MIN_SHOT_DURATION))
+        available = max(0.0, source_duration - ref["trim_start"])
+        ref["duration"] = min(ref["duration"], available, REF_VIDEO_MAX_SECONDS)
+        minimum_visible = min(REF_VIDEO_MIN_SECONDS, ref["duration"])
+        ref["timeline_start"] = min(
+            max(-ref["duration"] + minimum_visible, ref["timeline_start"]),
+            effective_duration - minimum_visible,
+        )
     if isinstance(raw_refs, list):
         for index, (raw_ref, ref) in enumerate(zip(raw_refs, project["references"]), 1):
             supplied = _clean_text(raw_ref.get("role")) if isinstance(raw_ref, dict) else ""
@@ -1069,6 +1091,8 @@ def _reference_model(project: dict[str, Any]) -> dict[str, Any]:
             definition = f"{source_label} is the first frame of [Shot 1]"
         elif ref["type"] == "picture" and ref["role"] == "last_frame":
             definition = f"{source_label} is the final frame of [Shot {final_shot}]"
+        elif ref["type"] == "picture" and ref["role"] == "frame":
+            definition = f"{source_label} is the exact target frame at output frame {ref.get('frame_index', 0)}"
         elif ref["type"] == "video" and ref["role"] == "video_editing":
             definition = f"{source_label} is the source video for the target video edit"
         elif ref["type"] == "video" and ref["role"] == "video_continuation":
@@ -1098,7 +1122,7 @@ def _reference_model(project: dict[str, Any]) -> dict[str, Any]:
         definitions.append(definition + ".")
 
         if ref["type"] == "picture":
-            if ref["role"] in ("first_frame", "last_frame"):
+            if ref["role"] in ("first_frame", "last_frame", "frame"):
                 marker = "fully_preserved"
                 add_task("keyframe completion")
             else:
@@ -1959,15 +1983,29 @@ def _qwen_reference_plan(project: dict[str, Any], effective_seconds: float,
                 lines.append(f"user_metadata: {ref['description']}")
             if ref.get("type") == "picture":
                 lines.append(f"visual_evidence: {evidence_for(source)}")
+                if ref.get("role") == "frame":
+                    frame_index = min(
+                        max(0, int(ref.get("frame_index", 0))),
+                        max(0, align_frame_count(project["requested_duration"]) - 1),
+                    )
+                    lines.extend((
+                        "anchor: exact whole frame at the assigned timeline position",
+                        f"anchor_frame_index: {frame_index}",
+                        f"anchor_time_seconds: {frame_index / MODEL_FPS:.3f}",
+                        "anchor_contract: reach this complete image state exactly at this frame through continuous in-shot motion, then continue chronologically; this anchor never creates a cut or transition",
+                    ))
             elif ref.get("type") == "video":
                 lines.append(f"temporal_visual_evidence: {evidence_for(source)}")
             if ref.get("duration"):
                 duration_key = (
-                    "analysis_leading_duration_seconds"
+                    "selected_source_duration_seconds"
                     if ref.get("type") == "video"
                     else "source_duration_seconds"
                 )
                 lines.append(f"{duration_key}: {ref['duration']:.2f}")
+                if ref.get("type") == "video":
+                    lines.append(f"source_trim_start_seconds: {ref.get('trim_start', 0.0):.2f}")
+                    lines.append(f"target_timeline_start_seconds: {ref.get('timeline_start', 0.0):.2f}")
             blocks.append("\n".join(lines))
         return (
             "REFERENCE_PLAN:\n"
@@ -1981,6 +2019,17 @@ def _qwen_reference_plan(project: dict[str, Any], effective_seconds: float,
             lines.extend(("anchor: exact opening frame", "anchor_time_seconds: 0.00"))
         elif ref["role"] == "last_frame":
             lines.extend(("anchor: exact final frame", f"anchor_time_seconds: {effective_seconds:.2f}"))
+        elif ref["role"] == "frame":
+            frame_index = min(
+                max(0, int(ref.get("frame_index", 0))),
+                max(0, align_frame_count(project["requested_duration"]) - 1),
+            )
+            lines.extend((
+                "anchor: exact whole frame at the assigned timeline position",
+                f"anchor_frame_index: {frame_index}",
+                f"anchor_time_seconds: {frame_index / MODEL_FPS:.3f}",
+                "anchor_contract: reach this complete image state exactly at this frame through continuous in-shot motion, then continue chronologically; this anchor never creates a cut or transition",
+            ))
         if ref["description"]:
             lines.append(f"user_metadata: {ref['description']}")
         if ref["type"] == "picture":
@@ -1989,11 +2038,14 @@ def _qwen_reference_plan(project: dict[str, Any], effective_seconds: float,
             lines.append(f"temporal_visual_evidence: {evidence_for(ref['label'])}")
         if ref["duration"]:
             duration_key = (
-                "analysis_leading_duration_seconds"
+                "selected_source_duration_seconds"
                 if ref["type"] == "video"
                 else "source_duration_seconds"
             )
             lines.append(f"{duration_key}: {ref['duration']:.2f}")
+            if ref["type"] == "video":
+                lines.append(f"source_trim_start_seconds: {ref.get('trim_start', 0.0):.2f}")
+                lines.append(f"target_timeline_start_seconds: {ref.get('timeline_start', 0.0):.2f}")
         blocks.append("\n".join(lines))
     plan = "REFERENCE_PLAN:\n" + "\n\n".join(blocks)
     if project["mode"] == "FL2VA":
@@ -2013,6 +2065,58 @@ def _qwen_reference_plan(project: dict[str, Any], effective_seconds: float,
             "entity without an explicit morph or transform request."
         )
     return plan
+
+
+def _qwen_video_timeline_plan(project: dict[str, Any], effective_seconds: float) -> str:
+    labeled = _reference_labels(project.get("references", []))
+    videos = [ref for ref in labeled if ref.get("type") == "video" and ref.get("duration")]
+    if not videos:
+        return "VIDEO_TIMELINE_PLAN:\nnone"
+
+    placements: list[tuple[float, float, str]] = []
+    lines = [
+        "VIDEO_TIMELINE_PLAN:",
+        f"target_range_seconds: 0.000-{effective_seconds:.3f}",
+    ]
+    for ref in videos:
+        source_start, visible_duration, target_start = _visible_video_selection(ref, effective_seconds)
+        if visible_duration <= 0:
+            continue
+        target_end = target_start + visible_duration
+        source_end = source_start + visible_duration
+        placements.append((target_start, target_end, ref["label"]))
+        lines.append(
+            f"{ref['label']}: target {target_start:.3f}-{target_end:.3f}; "
+            f"selected source {source_start:.3f}-{source_end:.3f}; preset {ref.get('role', 'none')}"
+        )
+
+    merged: list[list[float]] = []
+    for start, end, _label in sorted(placements):
+        if not merged or start > merged[-1][1] + 1e-6:
+            merged.append([start, end])
+        else:
+            merged[-1][1] = max(merged[-1][1], end)
+    gaps: list[tuple[float, float]] = []
+    cursor = 0.0
+    for start, end in merged:
+        if start > cursor + 1e-6:
+            gaps.append((cursor, start))
+        cursor = max(cursor, end)
+    if cursor < effective_seconds - 1e-6:
+        gaps.append((cursor, effective_seconds))
+    lines.append(
+        "uncovered_target_intervals: "
+        + (", ".join(f"{start:.3f}-{end:.3f}" for start, end in gaps) if gaps else "none")
+    )
+    lines.extend((
+        "timeline_contract:",
+        "- Apply each <Video N> only inside its target interval; never stretch, freeze, loop, or hold it across an uncovered interval.",
+        "- In every uncovered interval, execute the applicable SHOT_PLAN action and bridge only the adjacent boundary states needed for continuity.",
+        "- A later video interval begins from that video's selected-source opening state, not its ending state.",
+        "- Do not infer that people in different videos are the same person unless TARGET_REQUEST explicitly links them.",
+        "- Do not invent a cut at a video boundary unless requested or required by an actual discontinuity; otherwise use a coherent continuous bridge.",
+    ))
+    return "\n".join(lines)
 
 
 def _qwen_shot_plan(project: dict[str, Any], effective_seconds: float,
@@ -2151,6 +2255,7 @@ def build_video_prompt(project: dict[str, Any], effective_seconds: float,
         "per_shot: choose framing that contains the largest required visible action and final state; use a static shot only when all required events remain inside the opening crop, otherwise use one motivated reframe\n"
         "expression: write camera behavior as natural English; add amplitude and speed only when meaningful\n"
         "shot_boundaries: each configured shot after Shot 1 is an ordinary cut at its time-range start; use cross-dissolve, fade, or wipe only when explicitly requested\n"
+        "frame_anchor_editing: Picture anchor times never create cuts or transitions; interpolate continuously between anchors inside each configured shot\n"
         "restraint: do not invent decorative motion or a new cut when a static camera or a small continuous camera move presents the action clearly",
     ]
     if user_request:
@@ -2202,6 +2307,7 @@ def build_video_prompt(project: dict[str, Any], effective_seconds: float,
         sections.append(_enhanced_output_budget(effective_seconds, len(project["shots"])))
     sections.extend((
         _qwen_reference_plan(project, effective_seconds, visual_evidence),
+        _qwen_video_timeline_plan(project, effective_seconds),
         _qwen_shot_plan(project, effective_seconds, aliases),
         "AUDIO_POLICY:\n"
         "source: infer audio intent only from TARGET_REQUEST, SHOT_PLAN visual_action, and locked audio relationships in REFERENCE_PLAN\n"
@@ -2852,15 +2958,17 @@ def _probe_video_duration(video_path: str) -> float | None:
     return duration if math.isfinite(duration) and duration > 0 else None
 
 
-def _extract_video_analysis_frames(video_path: str, duration: float, output_dir: str) -> tuple[list[str], list[float]]:
+def _extract_video_analysis_frames(video_path: str, duration: float, output_dir: str,
+                                   start_time: float = 0.0) -> tuple[list[str], list[float]]:
     duration = min(REF_VIDEO_MAX_SECONDS, max(REF_VIDEO_MIN_SECONDS, float(duration)))
+    start_time = max(0.0, float(start_time))
     frame_count = min(VIDEO_ANALYSIS_MAX_FRAMES, max(4, int(math.ceil(duration * 1.5)) + 1))
     sampled_span = max(0.001, duration - min(0.05, duration / 100.0))
     sample_fps = (frame_count - 1) / sampled_span
     output_pattern = os.path.join(output_dir, "frame-%03d.jpg")
     video_filter = f"fps={sample_fps:.8f},scale='min(768,iw)':-2"
     command = [
-        _find_ffmpeg(), "-hide_banner", "-loglevel", "error", "-ss", "0", "-t", f"{duration:.3f}",
+        _find_ffmpeg(), "-hide_banner", "-loglevel", "error", "-ss", f"{start_time:.3f}", "-t", f"{duration:.3f}",
         "-i", video_path, "-an", "-vf", video_filter, "-frames:v", str(frame_count),
         "-q:v", "3", "-y", output_pattern,
     ]
@@ -2881,7 +2989,7 @@ def _extract_video_analysis_frames(video_path: str, duration: float, output_dir:
     if timestamps[-1] < endpoint_time - 0.05:
         endpoint_temp = os.path.join(output_dir, "endpoint-final.jpg")
         endpoint_command = [
-            _find_ffmpeg(), "-hide_banner", "-loglevel", "error", "-ss", f"{endpoint_time:.3f}",
+            _find_ffmpeg(), "-hide_banner", "-loglevel", "error", "-ss", f"{start_time + endpoint_time:.3f}",
             "-i", video_path, "-an", "-vf", "scale='min(768,iw)':-2", "-frames:v", "1",
             "-q:v", "3", "-y", endpoint_temp,
         ]
@@ -2902,7 +3010,8 @@ def _extract_video_analysis_frames(video_path: str, duration: float, output_dir:
     return frame_paths, timestamps
 
 
-def _video_analysis_prompt(role: str, duration: float, timestamps: list[float]) -> str:
+def _video_analysis_prompt(role: str, duration: float, timestamps: list[float],
+                           start_time: float = 0.0) -> str:
     role = role if role in REFERENCE_ROLES["video"] else "none"
     role_focus = {
         "none": "Describe the observable video content neutrally so the user-written relationship can be applied without guessing.",
@@ -2913,8 +3022,8 @@ def _video_analysis_prompt(role: str, duration: float, timestamps: list[float]) 
         "cuts_rhythm": "Prioritize shot boundaries, cut times, viewpoint changes, pacing, event rhythm, and temporal structure.",
     }[role]
     timestamp_text = ", ".join(f"{value:.3f}s" for value in timestamps)
-    return f"""Analyze the supplied images as chronologically ordered samples from the first {duration:.3f} seconds of one reference video.
-Sample timestamps in image order: {timestamp_text}.
+    return f"""Analyze the supplied images as chronologically ordered samples from the selected source interval {start_time:.3f}-{start_time + duration:.3f} seconds of one reference video.
+Sample timestamps are relative to the selected interval, in image order: {timestamp_text}.
 {role_focus}
 Infer change only when supported by adjacent samples. Never treat the samples as unrelated images, invent events between them, infer audio, or claim that an unseen detail exists.
 Return exactly the eight labeled sections below as compact English evidence. Use explicit time ranges where supported.
@@ -2980,22 +3089,27 @@ def _reference_system_modules(project: dict[str, Any]) -> str:
 
 def analyze_reference_video(video: dict[str, Any], role: str, duration: float,
                             image_model_id: str = DEFAULT_IMAGE_MODEL_ID,
-                            session: _LlamaServerSession | None = None, progress=None) -> dict[str, str]:
+                            session: _LlamaServerSession | None = None, progress=None,
+                            start_time: float = 0.0) -> dict[str, str]:
     video_path = _resolve_uploaded_video(video)
     actual_duration = _probe_video_duration(video_path)
-    analysis_duration = min(float(duration), actual_duration) if actual_duration else float(duration)
+    start_time = max(0.0, float(start_time))
+    available_duration = max(0.0, actual_duration - start_time) if actual_duration else float(duration)
+    analysis_duration = min(float(duration), available_duration)
     if analysis_duration <= 0:
         raise ValueError("Set a positive video duration before analysis.")
     if progress:
         progress(
             stage="reference_analysis",
-            message=(f"Sampling the first {analysis_duration:.2f}s of reference video "
+            message=(f"Sampling source interval {start_time:.2f}-{start_time + analysis_duration:.2f}s of reference video "
                      f"for role '{role}': {os.path.basename(video_path)}"),
         )
     with tempfile.TemporaryDirectory(prefix="toyxyz-h3-video-") as frame_dir:
-        frame_paths, timestamps = _extract_video_analysis_frames(video_path, analysis_duration, frame_dir)
+        frame_paths, timestamps = _extract_video_analysis_frames(
+            video_path, analysis_duration, frame_dir, start_time=start_time,
+        )
         captions = [f"Frame {index + 1} at {timestamp:.3f} seconds." for index, timestamp in enumerate(timestamps)]
-        prompt = _video_analysis_prompt(role, analysis_duration, timestamps)
+        prompt = _video_analysis_prompt(role, analysis_duration, timestamps, start_time=start_time)
         if progress:
             progress(
                 stage="reference_analysis",
@@ -3031,7 +3145,9 @@ def analyze_reference_video(video: dict[str, Any], role: str, duration: float,
         raise RuntimeError("The vision model returned an empty video analysis.")
     return {
         "analysis": analysis, "model_path": model_path, "mmproj_path": mmproj_path,
-        "analyzed_duration": f"{analysis_duration:.3f}", "frame_count": str(len(frame_paths)),
+        "analyzed_duration": f"{analysis_duration:.3f}",
+        "analyzed_start": f"{start_time:.3f}",
+        "frame_count": str(len(frame_paths)),
     }
 
 
@@ -3089,6 +3205,7 @@ def _reference_analysis_prompt(role: str) -> str:
     role_focus = {
         "first_frame": "Treat it as an opening-frame anchor. Prioritize the exact style, composition, pose, support, contact, scene layout, and action-relevant objects that must continue forward.",
         "last_frame": "Treat it as a final-frame anchor. Prioritize the exact style, pose, object state, support, contact, composition, viewpoint, and lighting on which motion must land.",
+        "frame": "Treat it as an exact intermediate-frame anchor. Prioritize the complete scene state, composition, subjects, pose, objects, contacts, viewpoint, lighting, and continuity that must occur at its assigned output frame.",
         "subject_identity": "Prioritize stable identity features, hair, face, body silhouette, clothing, accessories, colors, distinctive objects, and the source medium or rendering style required by the assigned strength.",
     }[role]
     return f"""Analyze the supplied image as visual reference metadata for a MiniMax H3 video prompt.
@@ -3252,8 +3369,10 @@ def _lightx2v_messages(prompt: str, task: str, resolution: str, duration: int,
         f"original_prompt: {prompt.strip()}"
     )
     content.append({"type": "text", "text": ("\n" if content else "") + request})
+    timeline_editing_lock = _clean_text(config.get("timeline_editing_lock"))
+    system_prompt = config["system"] + (f"\n\n{timeline_editing_lock}" if timeline_editing_lock else "")
     return [
-        {"role": "system", "content": config["system"]},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": content},
     ]
 
@@ -3434,6 +3553,10 @@ def enhance_project(project_data: Any, model_id: str, image_model_id: str = DEFA
                         })
                     for video_index, ref in enumerate(videos_to_analyze, len(pictures_to_analyze) + 1):
                         check_cancelled()
+                        source_start, selected_duration, target_start = _visible_video_selection(
+                            ref,
+                            align_frame_count(float(project.get("requested_duration") or ref["duration"])) / MODEL_FPS,
+                        )
                         video_payload = {
                             "filename": ref["video_filename"],
                             "subfolder": ref["video_subfolder"],
@@ -3442,18 +3565,22 @@ def enhance_project(project_data: Any, model_id: str, image_model_id: str = DEFA
                             "_analysis_total": total_assets,
                         }
                         analyzed = analyze_reference_video(
-                            video_payload, ref["role"], ref["duration"], image_model_id,
-                            session=session, progress=progress,
+                            video_payload, ref["role"], selected_duration, image_model_id,
+                            session=session, progress=progress, start_time=source_start,
                         )
                         label = video_labels[ref["id"]]
                         analysis = analyzed["analysis"]
                         analysis_lines.append(
-                            f"{label} [role={ref['role']}, analyzed_first_seconds={analyzed['analyzed_duration']}]: {analysis}"
+                            f"{label} [role={ref['role']}, source_start_seconds={analyzed['analyzed_start']}, "
+                            f"selected_duration_seconds={analyzed['analyzed_duration']}, "
+                            f"target_start_seconds={target_start:.3f}]: {analysis}"
                         )
                         reference_analyses.append({
                             "id": ref["id"], "label": label, "type": "video",
                             "role": ref["role"], "filename": ref["video_filename"],
                             "analysis": analysis, "analyzed_duration": analyzed["analyzed_duration"],
+                            "analyzed_start": analyzed["analyzed_start"],
+                            "timeline_start": f"{target_start:.3f}",
                             "frame_count": analyzed["frame_count"],
                         })
 
@@ -3740,6 +3867,21 @@ def _trim_audio_value(audio: Any, target_duration: float):
     return {**audio, "waveform": waveform[..., :end_sample]}
 
 
+def _visible_video_selection(reference: dict[str, Any], target_duration: float) -> tuple[float, float, float]:
+    """Return source start, visible duration, and target start for the lane intersection."""
+    clip_duration = max(0.0, float(reference.get("duration") or target_duration))
+    timeline_start = float(reference.get("timeline_start") or 0.0)
+    source_start = max(0.0, float(reference.get("trim_start") or 0.0))
+    clipped_leading = max(0.0, -timeline_start)
+    target_start = max(0.0, timeline_start)
+    source_start += clipped_leading
+    visible_duration = min(
+        max(0.0, clip_duration - clipped_leading),
+        max(0.0, target_duration - target_start),
+    )
+    return source_start, visible_duration, target_start
+
+
 def _load_reference_video(reference: dict[str, Any], target_frame_count: int):
     from fractions import Fraction
     import torch
@@ -3751,8 +3893,11 @@ def _load_reference_video(reference: dict[str, Any], target_frame_count: int):
     })
     target_frame_count = max(1, int(target_frame_count))
     target_duration = target_frame_count / MODEL_FPS
+    trim_start, visible_duration, _target_start = _visible_video_selection(reference, target_duration)
+    selected_duration = min(target_duration, max(1.0 / MODEL_FPS, visible_duration))
+    selected_frame_count = max(1, min(target_frame_count, int(round(selected_duration * MODEL_FPS))))
     video = InputImpl.VideoFromFile(video_path)
-    trimmed = video.as_trimmed(0.0, target_duration, strict_duration=False)
+    trimmed = video.as_trimmed(trim_start, trim_start + selected_duration, strict_duration=False)
     if trimmed is None:
         raise ValueError("The reference video could not be trimmed to the target duration.")
     components = trimmed.get_components()
@@ -3761,7 +3906,16 @@ def _load_reference_video(reference: dict[str, Any], target_frame_count: int):
     if source_count <= 0 or not math.isfinite(source_fps) or source_fps <= 0:
         raise ValueError("The reference video contains no decodable frames or valid frame rate.")
     available_target_count = max(1, int(round(source_count * MODEL_FPS / source_fps)))
-    output_count = min(target_frame_count, available_target_count)
+    # Source decoders commonly exclude the exact trim-end frame. When that
+    # creates only a one-frame rounding deficit, preserve the requested 24fps
+    # interval count and let the clamped index repeat the final decoded frame.
+    # Larger deficits still mean the source is genuinely shorter and are not
+    # padded.
+    output_count = (
+        selected_frame_count
+        if selected_frame_count <= available_target_count + 1
+        else available_target_count
+    )
     source_indices = torch.round(
         torch.arange(output_count, dtype=torch.float64) * source_fps / MODEL_FPS
     ).to(dtype=torch.long).clamp_(0, source_count - 1)
@@ -3819,11 +3973,16 @@ def _reference_media_outputs(project: dict[str, Any], target_frame_count: int) -
     for reference in pictures[:MAX_REF_IMAGES]:
         if not reference.get("image_filename"):
             outputs.append(blank.clone())
-            continue
-        try:
-            outputs.append(_load_reference_image_tensor(reference))
-        except (FileNotFoundError, OSError, ValueError):
-            outputs.append(blank.clone())
+        else:
+            try:
+                outputs.append(_load_reference_image_tensor(reference))
+            except (FileNotFoundError, OSError, ValueError):
+                outputs.append(blank.clone())
+        if reference.get("role") == "frame":
+            outputs.append(min(
+                max(0, int(reference.get("frame_index", 0))),
+                max(0, target_frame_count - 1),
+            ))
     for reference in videos[:MAX_REF_VIDEOS]:
         if not reference.get("video_filename"):
             outputs.append(_blank_reference_video())
@@ -3840,7 +3999,7 @@ def _reference_media_outputs(project: dict[str, Any], target_frame_count: int) -
             outputs.append(_load_reference_audio(reference, target_duration))
         except (FileNotFoundError, OSError, RuntimeError, ValueError):
             outputs.append(_blank_reference_audio())
-    total_media_outputs = MAX_REF_IMAGES + MAX_REF_VIDEOS + MAX_REF_AUDIOS
+    total_media_outputs = MAX_REF_IMAGES * 2 + MAX_REF_VIDEOS + MAX_REF_AUDIOS
     outputs.extend(blank.clone() for _ in range(total_media_outputs - len(outputs)))
     return tuple(outputs)
 
@@ -3866,12 +4025,16 @@ class MinimaxH3Prompter:
         }
 
     RETURN_TYPES = ("STRING", "INT") + (FLEXIBLE_MEDIA_TYPE,) * (
-        MAX_REF_IMAGES + MAX_REF_VIDEOS + MAX_REF_AUDIOS
+        MAX_REF_IMAGES * 2 + MAX_REF_VIDEOS + MAX_REF_AUDIOS
     )
     RETURN_NAMES = (
         "generated_prompt",
         "length",
-    ) + tuple(f"image_{index}" for index in range(1, MAX_REF_IMAGES + 1)) + tuple(
+    ) + tuple(
+        name
+        for index in range(1, MAX_REF_IMAGES + 1)
+        for name in (f"image_{index}", f"frame_{index}")
+    ) + tuple(
         f"video_{index}" for index in range(1, MAX_REF_VIDEOS + 1)
     ) + tuple(f"audio_{index}" for index in range(1, MAX_REF_AUDIOS + 1))
     FUNCTION = "compile"

@@ -571,7 +571,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertNotIn('data-el="new-ref-type"', source)
         self.assertNotIn('>+ Reference</button>', source)
         self.assertIn(
-            'picture: ["first_frame", "last_frame", "subject_identity"]', source,
+            'picture: ["first_frame", "last_frame", "frame", "subject_identity"]', source,
         )
         self.assertNotIn('reference: "Reference (weak)"', source)
         self.assertIn('const SUBJECT_STRENGTHS = ["weak", "normal", "strong"]', source)
@@ -589,6 +589,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertIn('voice_delivery: "Voice / delivery"', source)
         self.assertIn('controls.classList.add("video-metadata")', source)
         self.assertNotIn('duration.placeholder = "seconds"', source)
+        self.assertIn('ref.source_duration = actualDuration > 0 ? actualDuration : 0', source)
         self.assertIn('ref.duration = actualDuration > 0 ? Math.min(15, actualDuration) : 0', source)
         self.assertIn('const VIDEO_UPLOAD_ENDPOINT = "/toyxyz/minimax_h3_prompter/upload-video"', source)
         self.assertIn('const VIDEO_VIEW_ENDPOINT = "/toyxyz/minimax_h3_prompter/video"', source)
@@ -600,6 +601,27 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertIn('audio_filename: String(ref?.audio_filename || "")', source)
         self.assertIn('body: file.slice(start, end)', source)
         self.assertIn('"Content-Type": "application/octet-stream"', source)
+        self.assertIn('data-el="video-timeline"', source)
+        self.assertIn('renderVideoTimeline()', source)
+        self.assertIn('populateVideoFilmstrip(ref, filmstrip)', source)
+        self.assertIn('className = "mmh3p-video-filmstrip"', source)
+        self.assertIn('mmh3p-video-lane { height:52px; position:relative; width:100%; overflow:hidden', source)
+        self.assertIn('help.textContent = "Video clips · drag a clip to move · drag either edge to trim"', source)
+        self.assertIn('const MIN_VIDEO_CLIP_FRAMES = 10', source)
+        self.assertIn('`${visibleDuration.toFixed(2)}s · ${visibleFrames} frames`', source)
+        self.assertIn('const labelPosition = (visibleCenter - ref.timeline_start)', source)
+        self.assertIn('object-fit:contain; object-position:center', source)
+        self.assertIn('imageHelp.textContent = "Image anchors · first/last frames are fixed · drag Frame images to an exact output frame"', source)
+        self.assertIn('marker.className = `mmh3p-image-anchor ${isFirst ? "first" : isLast ? "last" : "frame"}`', source)
+        self.assertIn('Image ${number} · Last · Frame ${frameCount - 1}', source)
+        self.assertIn('ref.frame_index = Math.round(ratio * Math.max(0, this.timelineFrameCount() - 1))', source)
+        self.assertIn('const frameWidth = Math.max(2, laneWidth / Math.max(1, frameCount))', source)
+        self.assertIn('label.classList.toggle("before", ref.frame_index >= frameCount / 2)', source)
+        self.assertIn('previewImage.className = "mmh3p-image-anchor-preview"', source)
+        self.assertIn('timelineFrameCount() { return alignedFrameCount(this.totalDuration()); }', source)
+        self.assertIn('this.timelineFrameCount()}f`', source)
+        self.assertIn('shotTimelineRange(index)', source)
+        self.assertIn('F${range.startFrame}–${range.endFrame}', source)
         self.assertIn('else controls.append(role, del)', source)
         self.assertNotIn('controls.append(role, strength, alias, del)', source)
         self.assertIn(
@@ -882,12 +904,12 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertEqual(
             MODULE.MinimaxH3Prompter.RETURN_NAMES,
             ("generated_prompt", "length")
-            + tuple(f"image_{index}" for index in range(1, 10))
+            + tuple(name for index in range(1, 10) for name in (f"image_{index}", f"frame_{index}"))
             + tuple(f"video_{index}" for index in range(1, 4))
             + tuple(f"audio_{index}" for index in range(1, 4)),
         )
         self.assertEqual(MODULE.MinimaxH3Prompter.RETURN_TYPES[:2], ("STRING", "INT"))
-        self.assertEqual(len(MODULE.MinimaxH3Prompter.RETURN_TYPES), 17)
+        self.assertEqual(len(MODULE.MinimaxH3Prompter.RETURN_TYPES), 26)
 
     def test_node_first_output_is_only_the_saved_enhanced_prompt(self):
         node = MODULE.MinimaxH3Prompter()
@@ -899,14 +921,14 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         outputs = node.compile(json.dumps(project))
         self.assertEqual(outputs[0], "enhanced result only")
         self.assertIsInstance(outputs[1], int)
-        self.assertEqual(len(outputs), 17)
+        self.assertEqual(len(outputs), 26)
         self.assertEqual(tuple(outputs[2].shape), (1, 64, 64, 3))
         node = MODULE.MinimaxH3Prompter()
         output = node.compile(json.dumps({
             "mode": "T2VA",
             "shots": [{"duration": 5, "visual_action": "A static establishing shot"}],
         }))
-        self.assertEqual(len(output), 17)
+        self.assertEqual(len(output), 26)
         self.assertEqual(output[0], "")
         self.assertIsInstance(output[1], int)
 
@@ -982,13 +1004,31 @@ class MinimaxH3PrompterTests(unittest.TestCase):
     def test_frontend_shows_one_image_slot_per_picture_reference(self):
         source = (MODULE_PATH.parent.parent / "web" / "minimax_h3_prompter.js").read_text(encoding="utf-8")
         self.assertIn("syncReferenceOutputs()", source)
-        self.assertIn('this.project.references.filter(ref => ref.type === "picture").length', source)
+        self.assertIn('const frameOutputCount = pictures.filter(ref => ref.role === "frame").length', source)
         self.assertIn('this.project.references.filter(ref => ref.type === "video").length', source)
         self.assertIn('this.project.references.filter(ref => ref.type === "audio").length', source)
-        self.assertIn('this.node.addOutput(`image_${mediaIndex + 1}`, "IMAGE")', source)
-        self.assertIn('this.node.addOutput(`video_${mediaIndex - pictureCount + 1}`, "VIDEO")', source)
-        self.assertIn('this.node.addOutput(`audio_${mediaIndex - pictureCount - videoCount + 1}`, "AUDIO")', source)
+        self.assertIn('this.node.outputs[outputIndex].name = `frame_${index + 1}`', source)
         self.assertIn("this.node.removeOutput(this.node.outputs.length - 1)", source)
+
+    def test_frame_picture_emits_image_then_frame_index(self):
+        project = {
+            "mode": "REF2VA",
+            "shots": [{"duration": 5, "visual_action": "Reach the reference frame."}],
+            "references": [{
+                "type": "picture", "role": "frame", "frame_index": 62,
+                "image_filename": "frame.png",
+            }],
+        }
+        marker = object()
+        with mock.patch.object(MODULE, "_load_reference_image_tensor", return_value=marker):
+            outputs = MODULE.MinimaxH3Prompter().compile(json.dumps(project))
+        self.assertIs(outputs[2], marker)
+        self.assertEqual(outputs[3], 62)
+        compiled = MODULE.compile_project(json.dumps(project))["draft_video_prompt"]
+        self.assertIn("anchor_frame_index: 62", compiled)
+        self.assertIn("anchor_time_seconds: 2.583", compiled)
+        self.assertIn("this anchor never creates a cut or transition", compiled)
+        self.assertIn("Picture anchor times never create cuts or transitions", compiled)
 
     def test_llm_prompt_uses_mode_specific_english_system_prompt(self):
         expected_phrases = {
@@ -1153,6 +1193,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertIn("Zmlyc3Q=", images[0])
         self.assertIn("bGFzdA==", images[1])
         self.assertIn("task: fl2av", user_content[-1]["text"])
+        self.assertIn("Cuts and transitions may occur only at supplied shot boundaries", messages[0]["content"])
 
     def test_lightx2v_rejects_ref2va_before_model_download(self):
         with self.assertRaisesRegex(ValueError, "does not support R2V/REF2VA"):
@@ -1257,7 +1298,8 @@ class MinimaxH3PrompterTests(unittest.TestCase):
             "mode": "REF2VA",
             "shots": [{"duration": 5, "visual_action": "Edit @clip."}],
             "references": [{
-                "type": "video", "role": "video_editing", "alias": "clip", "duration": 5,
+                "type": "video", "role": "video_editing", "alias": "clip", "duration": 3,
+                "source_duration": 10, "trim_start": 2, "timeline_start": 1,
                 "video_filename": "source.mp4", "video_subfolder": "toyxyz_h3_references",
             }],
         })
@@ -1265,8 +1307,17 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertEqual(ref["video_filename"], "source.mp4")
         self.assertEqual(ref["video_subfolder"], "toyxyz_h3_references")
         self.assertIn("pending duration-limited ordered-frame analysis", result["draft_video_prompt"])
-        self.assertIn("analysis_leading_duration_seconds: 5.00", result["draft_video_prompt"])
-        self.assertNotIn("source_duration_seconds: 5.00", result["draft_video_prompt"])
+        self.assertEqual(ref["source_duration"], 10)
+        self.assertEqual(ref["trim_start"], 2)
+        self.assertEqual(ref["timeline_start"], 1)
+        self.assertIn("selected_source_duration_seconds: 3.00", result["draft_video_prompt"])
+        self.assertIn("source_trim_start_seconds: 2.00", result["draft_video_prompt"])
+        self.assertIn("target_timeline_start_seconds: 1.00", result["draft_video_prompt"])
+        self.assertIn("VIDEO_TIMELINE_PLAN:", result["draft_video_prompt"])
+        self.assertIn("<Video 1>: target 1.000-4.000", result["draft_video_prompt"])
+        self.assertIn("uncovered_target_intervals: 0.000-1.000, 4.000-5.167", result["draft_video_prompt"])
+        self.assertIn("never stretch, freeze, loop, or hold it across an uncovered interval", result["draft_video_prompt"])
+        self.assertNotIn("\nsource_duration_seconds: 5.00", result["draft_video_prompt"])
 
     def test_reference_audio_upload_metadata_is_preserved(self):
         result = self.compile({
@@ -1366,8 +1417,9 @@ class MinimaxH3PrompterTests(unittest.TestCase):
                 calls["prompt"] = prompt
                 return "<VIDEO_ANALYSIS>ordered temporal evidence</VIDEO_ANALYSIS>"
 
-        def fake_extract(_video_path, duration, output_dir):
+        def fake_extract(_video_path, duration, output_dir, start_time=0.0):
             calls["duration"] = duration
+            calls["start_time"] = start_time
             paths = []
             for index in range(3):
                 path = Path(output_dir, f"frame-{index:03d}.jpg")
@@ -1387,7 +1439,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertEqual(calls["duration"], 3.0)
         self.assertEqual(calls["captions"][0], "Frame 1 at 0.000 seconds.")
         self.assertEqual(calls["captions"][-1], "Frame 3 at 2.950 seconds.")
-        self.assertIn("chronologically ordered samples from the first 3.000 seconds", calls["prompt"])
+        self.assertIn("selected source interval 0.000-3.000 seconds", calls["prompt"])
         self.assertIn("scoped edit", calls["prompt"])
         self.assertEqual(result["analysis"], "ordered temporal evidence")
         self.assertEqual(result["analyzed_duration"], "3.000")
@@ -1466,6 +1518,103 @@ class MinimaxH3PrompterTests(unittest.TestCase):
                 {"video_filename": "short.mp4", "video_subfolder": ""}, 124,
             )
         self.assertEqual(captured["components"].images.shape[0], 48)
+        self.assertEqual(captured["components"].frame_rate, Fraction(24))
+
+    def test_video_output_uses_selected_source_interval(self):
+        from fractions import Fraction
+        import torch
+
+        source_video = mock.Mock()
+        trimmed_video = mock.Mock()
+        trimmed_video.get_components.return_value = SimpleNamespace(
+            images=torch.arange(60, dtype=torch.float32).reshape(60, 1, 1, 1),
+            audio=None,
+            frame_rate=Fraction(30),
+        )
+        trimmed_video.get_bit_depth.return_value = 8
+        source_video.as_trimmed.return_value = trimmed_video
+        captured = {}
+
+        def create_video(output_components, bit_depth=8):
+            captured["components"] = output_components
+            return object()
+
+        with (
+            mock.patch.object(MODULE, "_resolve_uploaded_video", return_value="source.mp4"),
+            mock.patch("comfy_api.latest.InputImpl.VideoFromFile", return_value=source_video),
+            mock.patch("comfy_api.latest.InputImpl.VideoFromComponents", side_effect=create_video),
+        ):
+            MODULE._load_reference_video({
+                "video_filename": "source.mp4", "video_subfolder": "",
+                "trim_start": 1.25, "duration": 2.0,
+            }, 124)
+        source_video.as_trimmed.assert_called_once_with(1.25, 3.25, strict_duration=False)
+        self.assertEqual(captured["components"].images.shape[0], 48)
+        self.assertEqual(captured["components"].frame_rate, Fraction(24))
+
+    def test_video_output_uses_only_timeline_visible_intersection(self):
+        from fractions import Fraction
+        import torch
+
+        source_video = mock.Mock()
+        trimmed_video = mock.Mock()
+        trimmed_video.get_components.return_value = SimpleNamespace(
+            images=torch.arange(120, dtype=torch.float32).reshape(120, 1, 1, 1),
+            audio=None,
+            frame_rate=Fraction(30),
+        )
+        trimmed_video.get_bit_depth.return_value = 8
+        source_video.as_trimmed.return_value = trimmed_video
+        captured = {}
+
+        def create_video(output_components, bit_depth=8):
+            captured["components"] = output_components
+            return object()
+
+        with (
+            mock.patch.object(MODULE, "_resolve_uploaded_video", return_value="source.mp4"),
+            mock.patch("comfy_api.latest.InputImpl.VideoFromFile", return_value=source_video),
+            mock.patch("comfy_api.latest.InputImpl.VideoFromComponents", side_effect=create_video),
+        ):
+            MODULE._load_reference_video({
+                "video_filename": "source.mp4", "video_subfolder": "",
+                "trim_start": 1.0, "duration": 6.0, "timeline_start": -2.0,
+            }, 124)
+
+        source_video.as_trimmed.assert_called_once_with(3.0, 7.0, strict_duration=False)
+        self.assertEqual(captured["components"].images.shape[0], 96)
+        self.assertEqual(captured["components"].frame_rate, Fraction(24))
+
+    def test_video_output_keeps_one_frame_trim_boundary_rounding(self):
+        from fractions import Fraction
+        import torch
+
+        source_video = mock.Mock()
+        trimmed_video = mock.Mock()
+        trimmed_video.get_components.return_value = SimpleNamespace(
+            images=torch.arange(26, dtype=torch.float32).reshape(26, 1, 1, 1),
+            audio=None,
+            frame_rate=Fraction(30),
+        )
+        trimmed_video.get_bit_depth.return_value = 8
+        source_video.as_trimmed.return_value = trimmed_video
+        captured = {}
+
+        def create_video(output_components, bit_depth=8):
+            captured["components"] = output_components
+            return object()
+
+        with (
+            mock.patch.object(MODULE, "_resolve_uploaded_video", return_value="source.mp4"),
+            mock.patch("comfy_api.latest.InputImpl.VideoFromFile", return_value=source_video),
+            mock.patch("comfy_api.latest.InputImpl.VideoFromComponents", side_effect=create_video),
+        ):
+            MODULE._load_reference_video({
+                "video_filename": "source.mp4", "video_subfolder": "",
+                "trim_start": 0.0, "duration": 22 / 24,
+            }, 124)
+
+        self.assertEqual(captured["components"].images.shape[0], 22)
         self.assertEqual(captured["components"].frame_rate, Fraction(24))
 
     def test_prompt_generation_job_cancel_sets_event_and_calls_active_stopper(self):
@@ -2451,6 +2600,8 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertIn("never translate, paraphrase, duplicate, or add words", llm_prompt)
         self.assertIn("Visible text uses exact double-quoted characters", llm_prompt)
         self.assertIn("must be correct in the final output", llm_prompt)
+        self.assertIn("Picture anchors are in-shot states, never cuts", llm_prompt)
+        self.assertIn("Only SHOT_PLAN boundaries create cuts or transitions", llm_prompt)
 
     def test_ref_llm_system_prompt_includes_reference_guide_rules(self):
         result = self.compile({
@@ -2471,6 +2622,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertIn("ACTIVE MODE: REF2VA FULL-REFERENCE", llm_prompt)
         self.assertIn("FINAL MODE LOCK — REF2VA", llm_prompt)
         self.assertIn("never use `integrated_multimodal_description:`", llm_prompt)
+        self.assertIn("Picture anchors are in-shot states, never cuts", llm_prompt)
 
     def test_base_mode_system_prompts_include_guide_transition_sequences(self):
         cases = {

@@ -58,6 +58,54 @@ Direct Webcam capture workflow (without webcam app)
 ![workflow (40)](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/cac4b89b-c2a1-4007-8906-fb8de9e26213)
 (Workflow embedded)
 
+## Minimax-H3-prompter
+
+Builds structured MiniMax H3 audiovisual prompts from a shot timeline and optional image, video,
+and audio references. It supports `Auto`, `T2VA`, `I2VA`, `FL2VA`, `L2VA`, and `REF2VA`.
+
+### Quick start
+
+1. Select a mode, duration, and model. `Auto` chooses a mode from the reference layout.
+2. Describe each shot naturally in **Prompt**, including actions, camera direction, dialogue,
+   visible text, sound, and music.
+3. Add assets with **+ Image**, **+ Video**, or **+ Audio**. Enter aliases as plain words, then
+   type `@` in Prompt to insert one from the alias menu.
+4. Arrange and resize shots on the timeline. The total always remains equal to the target duration.
+5. Press **Generate Prompt**. Press it again while it displays **Stop** to cancel generation.
+
+The last successful prompt remains available while inputs are edited and is replaced only after a
+new generation succeeds.
+
+### Models
+
+- **Qwen3.8 Q4_K_M + Vision F16:** supports all modes, including `REF2VA`, and analyzes image
+  references plus duration-limited video frames.
+- **LightX2V MiniMax-H3 Prompt Rewriter 8B Q8_0 + Vision F16:** supports `T2VA`, `I2VA`,
+  `FL2VA`, and `L2VA`; it does not support `REF2VA/R2V`.
+
+Missing model files download only after confirmation. With Qwen3.8, enable **Enhance** for a richer
+single-pass expansion or disable it for a shorter, fidelity-first result. LightX2V uses its own
+expansion behavior.
+
+### References
+
+- **Image:** choose `First frame`, `Last frame`, or `Subject`. Subject preservation can be `Weak`,
+  `Normal`, or `Strong`; Strong also retains the source visual medium/style.
+- **Video:** preserve video editing, continuation, motion/action timing, camera movement, or cuts and
+  temporal structure. Analysis uses only the configured leading duration.
+- **Audio:** guide the target with a source signal, voice, music, rhythm, ambience, or timing.
+
+References are numbered independently as `<Picture N>`, `<Video N>`, and `<Audio N>`. Their order in
+the node must match the downstream H3 reference-slot order.
+
+### Outputs
+
+- `generated_prompt` — latest successfully generated H3 prompt
+- `length` — H3-aligned frame count on the 24fps `17k+5` grid
+- `image_N` — uploaded image references in slot order
+- `video_N` — ComfyUI VIDEO references resampled to 24fps and trimmed to `length`; shorter videos
+  return only their available duration
+- `audio_N` — uploaded audio references trimmed to the target duration
 
 ## Visual area mask
 

@@ -7,6 +7,8 @@ from .nodes.draw_area_mask import DrawAreaMask
 from .nodes.toyxyz_test_nodes import CaptureWebcam, LoadWebcamImage, LoadImageFromPath, SaveImagetoPath, LatentDelay, ImageResize_Padding, Direct_screenCap, Depth_to_normal, Remove_noise, Export_glb, Load_Random_Text_From_File
 from .nodes.visual_area_mask import VisualAreaMask
 from .nodes.minimax_h3_prompter import MinimaxH3Prompter
+from .nodes.cut_video import CutVideo
+from .nodes.connect_video import ConnectVideo
 from .openposeeditor.openpose_editor_nodes import OpenposeEditorNode, PoseToMaskNode
 from .openposeeditor.poseinter import Pose_Inter, PoseKeypointToCoordStr, JoinPose
 from .TiledDiffusion import NODE_CLASS_MAPPINGS as TD_NCM, NODE_DISPLAY_NAME_MAPPINGS as TD_NDNM
@@ -24,6 +26,8 @@ NODE_CLASS_MAPPINGS = {
     "DrawAreaMask": DrawAreaMask,
     "VisualAreaMask": VisualAreaMask,
     "MinimaxH3Prompter": MinimaxH3Prompter,
+    "CutVideo": CutVideo,
+    "ConnectVideo": ConnectVideo,
     "CaptureWebcam": CaptureWebcam,
     "LoadWebcamImage": LoadWebcamImage,
     "LoadImageFromPath": LoadImageFromPath,
@@ -57,6 +61,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "DrawAreaMask": "Draw area mask",
     "VisualAreaMask": "Visual Area Mask",
     "MinimaxH3Prompter": "Minimax-H3-prompter",
+    "CutVideo": "Cut Video",
+    "ConnectVideo": "Connect Video",
     "CaptureWebcam": "Capture Webcam",
     "LoadWebcamImage": "Load Webcam Image",
     "LoadImageFromPath": "Load Image From Path",

@@ -12,8 +12,11 @@ const VIDEO_VIEW_ENDPOINT = "/toyxyz/minimax_h3_prompter/video";
 const VIDEO_UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
 const DEFAULT_ENHANCE_MODEL = "hf:JonathanColetti/Qwen3.8-27B-Uncensored-GGUF/Qwen3.8-27B-Uncensored-Q4_K_M.gguf";
 const DEFAULT_MODEL_BUNDLE = "hf:JonathanColetti/Qwen3.8-27B-Uncensored-GGUF/Q4_K_M+vision-f16";
-const LEGACY_LIGHTX2V_MODEL = "hf:lightx2v/MiniMax-H3-Prompt-Rewriter-LoRA-8B";
-const LIGHTX2V_MODEL = "hf:indhic-ai/MiniMax_H3-Prompt_Rewriter-8B-LORA-Merged-GGUF/Q8_0+vision-f16";
+const REMOVED_LIGHTX2V_MODELS = new Set([
+  "hf:lightx2v/MiniMax-H3-Prompt-Rewriter-LoRA-8B",
+  "hf:indhic-ai/MiniMax_H3-Prompt_Rewriter-8B-LORA-Merged-GGUF/Q8_0+vision-f16",
+]);
+const OMNI_MODEL = "hf:pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-Omni-GGUF/Q8_0+Qwen2.5-Omni-7B-Q4_K_M";
 // Includes the model selector/enhancement controls without forcing the whole
 // editor into a nested scrollbar. Long reference lists and prompt previews
 // retain their own scoped scroll areas.
@@ -24,9 +27,12 @@ const MIN_SHOT_DURATION = 0.25;
 const VIDEO_OUTPUT_FPS = 24;
 const MIN_VIDEO_CLIP_FRAMES = 10;
 const MIN_VIDEO_CLIP_DURATION = MIN_VIDEO_CLIP_FRAMES / VIDEO_OUTPUT_FPS;
-const CURRENT_PROJECT_VERSION = 22;
+const CURRENT_PROJECT_VERSION = 26;
+const ENHANCE_LEVELS = { none: "None", normal: "Normal", strong: "Strong" };
 const MAX_REFERENCES = { picture: 9, video: 3, audio: 3, total: 12 };
-const SHOT_SNAP_SECONDS = 0.05;
+// All timeline edits snap to exactly one output frame. Using a decimal time
+// step (previously 0.05s) could skip frames at the 24 FPS timeline rate.
+const SHOT_SNAP_SECONDS = 1 / VIDEO_OUTPUT_FPS;
 const MODES = ["AUTO", "T2VA", "I2VA", "FL2VA", "L2VA", "REF2VA"];
 const LEGACY_DIALOGUE_LANGUAGES = [
   "Arabic", "Chinese", "English", "French", "German", "Italian",
@@ -43,6 +49,156 @@ const REFERENCE_ROLES = {
 const REFERENCE_TYPE_LABELS = { picture: "Image", video: "Video", audio: "Audio" };
 const SUBJECT_STRENGTHS = ["weak", "normal", "strong"];
 const SUBJECT_STRENGTH_LABELS = { weak: "Weak", normal: "Normal", strong: "Strong" };
+const CAMERA_ANGLE_PRESETS = {
+  none: "None", eye_level: "Eye level", low_angle: "Low angle", high_angle: "High angle",
+  overhead: "Overhead", top_down: "Top-down", birds_eye: "Bird's-eye view",
+  worms_eye: "Worm's-eye view", ground_level: "Ground-level", aerial: "Aerial",
+  dutch_angle: "Dutch angle", over_shoulder: "Over-the-shoulder", pov: "Point of view",
+  three_quarter: "Three-quarter", profile: "Profile / side", rear: "Rear / from behind",
+};
+const CAMERA_MOTION_PRESETS = {
+  none: "None", static: "Static shot", zoom_in: "Zoom in", zoom_out: "Zoom out",
+  push_in: "Push in", pull_out: "Pull out", pan_left: "Pan left", pan_right: "Pan right",
+  truck_left: "Truck left", truck_right: "Truck right", tilt_up: "Tilt up", tilt_down: "Tilt down",
+  pedestal_up: "Pedestal up", pedestal_down: "Pedestal down", arc: "Arc shot",
+  dolly_left: "Dolly left", dolly_right: "Dolly right",
+  dolly_zoom_in: "Dolly zoom in", dolly_zoom_out: "Dolly zoom out",
+  crane_up: "Crane up", crane_down: "Crane down",
+  orbit_left: "Orbit left", orbit_right: "Orbit right",
+  tracking: "Tracking shot", follow: "Follow shot", handheld: "Handheld",
+  shake_slightly: "Shake slightly", shake_strongly: "Shake strongly",
+  pov: "POV movement", roll_clockwise: "Roll clockwise", roll_counterclockwise: "Roll counterclockwise",
+};
+const CAMERA_SHOT_PRESETS = {
+  none: "None", extreme_close_up: "Extreme close-up (ECU)", close_up: "Close-up (CU)",
+  medium_close_up: "Medium close-up (MCU)", medium_shot: "Medium shot (MS)",
+  medium_wide_shot: "Medium wide shot (MWS)", cowboy_shot: "Cowboy shot (CS)",
+  medium_full_shot: "Medium full shot (MFS)",
+  full_shot: "Full shot (FS)", wide_shot: "Wide shot (WS)",
+  extreme_wide_shot: "Extreme wide shot (EWS)",
+  establishing_shot: "Establishing shot (ES)", insert_shot: "Insert shot",
+  detail_shot: "Detail shot", two_shot: "Two shot", three_shot: "Three shot",
+  group_shot: "Group shot",
+};
+const CAMERA_AMPLITUDE_PRESETS = { none: "None", small: "Small amplitude", large: "Large amplitude" };
+const CAMERA_SPEED_PRESETS = { none: "None", slow: "Slow speed", fast: "Fast speed" };
+const STYLE_PRESETS = {
+  none: "None", animation_2d: "2D animation", animation_3d: "3D animation",
+  figurine_animation: "Figurine animation",
+  cinematic_live_action: "Cinematic live-action", smartphone_video: "Smartphone footage",
+  photoreal_live_action: "Photorealistic live-action", documentary: "Documentary footage",
+  stop_motion: "Stop-motion animation",
+  anime_1990s: "1990s Japanese hand-drawn anime",
+  retro_anime_motion_graphics: "Retro anime motion graphics",
+  retro_anime_noir_jazz: "Retro anime opening · noir / jazz",
+  contemporary_anime: "Contemporary Japanese anime / PV",
+  contemporary_action_anime: "Contemporary Japanese action anime",
+  western_cartoon: "Western 2D cartoon",
+  vhs_analog: "VHS / analog retro live-action",
+  vhs_rental_movie: "1980s VHS rental movie",
+  cyberpunk_live_action: "Live-action cyberpunk",
+  epic_dark_fantasy: "Epic dark fantasy trailer",
+  dark_medieval_fantasy: "Dark medieval fantasy film",
+  high_saturation_commercial: "High-saturation commercial",
+  photoreal_graphic_hybrid: "Photoreal character + graphic background",
+  phone_ugc_ad: "Phone-shot UGC advertisement",
+  authentic_smartphone_vlog: "Authentic smartphone vlog",
+  sprite_16bit: "16-bit retro game sprite animation",
+  sketch_anime: "Hand-drawn sketch anime",
+  lineart_anime: "Lineart anime",
+  anamorphic_cinema: "Anamorphic cinema",
+  cinematic_35mm: "35mm cinematic live action",
+  film_noir: "Film noir",
+  neo_noir: "Neo-noir",
+  horror_cinema: "Horror cinema",
+  analog_horror_1990s: "1990s analog horror",
+  scifi_mystery: "Sci-fi mystery teaser",
+  retro_futuristic_scifi: "Retro-futuristic sci-fi",
+  premium_product_film: "Premium product film",
+  japanese_commercial: "Japanese product commercial",
+  food_commercial: "Food commercial",
+  music_video: "Music video",
+  anime_music_video: "Anime music video / AMV",
+  graphic_poster_animation: "Graphic poster animation",
+  minimalist_motion_design: "Minimalist motion design",
+  game_cinematic: "Game cinematic",
+  dark_retro_fantasy: "Dark retro fantasy film",
+  modern_cinematic_live_action: "Modern cinematic live action",
+  prestige_drama: "Prestige drama",
+  intimate_relationship_drama: "Intimate relationship drama",
+  short_form_microdrama: "Short-form microdrama",
+  golden_hour_road_movie: "Golden-hour road movie",
+  natural_light_indie_film: "Natural-light indie film",
+  mountain_adventure_cinema: "Mountain adventure cinema",
+  survival_expedition_film: "Survival / expedition film",
+  blue_hour_urban_cinema: "Blue-hour urban cinema",
+  rainy_city_one_take: "Rainy city one-take",
+  urban_editorial: "Urban editorial",
+  night_city_timelapse: "Night city timelapse",
+  modern_neo_noir: "Modern neo-noir",
+  classic_film_noir: "Classic film noir",
+  crime_thriller: "Crime thriller",
+  thriller_1990s: "1990s thriller",
+  cinematic_horror_live_action: "Cinematic horror",
+  found_footage_horror: "Found-footage horror",
+  consumer_camcorder_horror: "Consumer camcorder horror",
+  observational_documentary: "Observational documentary",
+  workplace_mockumentary: "Workplace mockumentary",
+  reality_tv_documentary: "Reality-TV documentary",
+  grounded_martial_arts_cinema: "Grounded martial-arts cinema",
+  gritty_close_quarters_action: "Gritty close-quarters action",
+  dark_fantasy_live_action: "Dark fantasy live action",
+  neon_cyberpunk_cinema: "Neon cyberpunk cinema",
+  dark_dystopian_scifi: "Dark dystopian sci-fi",
+  prestige_scifi_drama: "Prestige sci-fi drama",
+  high_fashion_editorial: "High-fashion editorial film",
+  korean_fashion_campaign: "Korean fashion campaign",
+  streetwear_fashion_film: "Streetwear fashion film",
+  minimalist_premium_product: "Minimalist premium product film",
+  luxury_automotive_commercial: "Luxury automotive commercial",
+  performance_car_commercial: "Performance car commercial",
+  food_macro_commercial: "Food macro commercial",
+  dark_surreal_commercial: "Dark / surreal commercial",
+  ultra_realistic_pov: "Ultra-realistic POV",
+  smartphone_ugc: "Smartphone UGC",
+  film_1970s: "1970s film",
+  cinema_1980s: "1980s cinema",
+  cinema_1990s: "1990s cinema",
+  early_2000s_digital_cinema: "Early-2000s digital cinema",
+  modern_digital_cinema: "Modern digital cinema",
+};
+const STYLE_PRESET_GROUPS = [
+  ["General cinema / drama", ["modern_cinematic_live_action", "prestige_drama", "intimate_relationship_drama", "short_form_microdrama", "cinematic_live_action", "cinematic_35mm", "photoreal_live_action", "anamorphic_cinema"]],
+  ["Natural light / outdoor cinema", ["golden_hour_road_movie", "natural_light_indie_film", "mountain_adventure_cinema", "survival_expedition_film"]],
+  ["Urban cinema", ["blue_hour_urban_cinema", "rainy_city_one_take", "urban_editorial", "night_city_timelapse"]],
+  ["Noir / thriller", ["modern_neo_noir", "classic_film_noir", "crime_thriller", "thriller_1990s", "neo_noir", "film_noir"]],
+  ["Horror / found footage", ["cinematic_horror_live_action", "found_footage_horror", "consumer_camcorder_horror", "analog_horror_1990s", "horror_cinema"]],
+  ["Documentary / reality", ["observational_documentary", "workplace_mockumentary", "reality_tv_documentary", "documentary"]],
+  ["Action / fantasy", ["grounded_martial_arts_cinema", "gritty_close_quarters_action", "dark_fantasy_live_action", "epic_dark_fantasy", "dark_medieval_fantasy", "dark_retro_fantasy"]],
+  ["Science fiction", ["neon_cyberpunk_cinema", "dark_dystopian_scifi", "prestige_scifi_drama", "cyberpunk_live_action", "scifi_mystery", "retro_futuristic_scifi"]],
+  ["Fashion / editorial", ["high_fashion_editorial", "korean_fashion_campaign", "streetwear_fashion_film"]],
+  ["Commercial / product", ["minimalist_premium_product", "luxury_automotive_commercial", "performance_car_commercial", "food_macro_commercial", "dark_surreal_commercial", "premium_product_film", "japanese_commercial", "food_commercial", "high_saturation_commercial", "phone_ugc_ad"]],
+  ["POV / social video", ["ultra_realistic_pov", "smartphone_ugc", "authentic_smartphone_vlog", "smartphone_video"]],
+  ["Film / era", ["film_1970s", "cinema_1980s", "cinema_1990s", "early_2000s_digital_cinema", "modern_digital_cinema", "cinematic_35mm", "vhs_analog", "vhs_rental_movie"]],
+  ["Physical character animation", ["figurine_animation"]],
+  ["Animation / graphic", ["animation_2d", "animation_3d", "stop_motion", "anime_1990s", "retro_anime_motion_graphics", "retro_anime_noir_jazz", "contemporary_anime", "contemporary_action_anime", "western_cartoon", "sprite_16bit", "sketch_anime", "lineart_anime", "graphic_poster_animation", "minimalist_motion_design", "photoreal_graphic_hybrid"]],
+  ["Music / game / hybrid", ["music_video", "anime_music_video", "game_cinematic"]],
+];
+const DEFAULT_SHOT_PRESETS = () => ({
+  camera_angle: "none", camera_motion: "none", camera_shot: "none",
+  camera_amplitude: "none", camera_speed: "none", style: "none",
+});
+function normalizeShotPresets(value) {
+  const raw = value && typeof value === "object" ? value : {};
+  return {
+    camera_angle: Object.hasOwn(CAMERA_ANGLE_PRESETS, raw.camera_angle) ? raw.camera_angle : "none",
+    camera_motion: Object.hasOwn(CAMERA_MOTION_PRESETS, raw.camera_motion) ? raw.camera_motion : "none",
+    camera_shot: Object.hasOwn(CAMERA_SHOT_PRESETS, raw.camera_shot) ? raw.camera_shot : "none",
+    camera_amplitude: Object.hasOwn(CAMERA_AMPLITUDE_PRESETS, raw.camera_amplitude) ? raw.camera_amplitude : "none",
+    camera_speed: Object.hasOwn(CAMERA_SPEED_PRESETS, raw.camera_speed) ? raw.camera_speed : "none",
+    style: Object.hasOwn(STYLE_PRESETS, raw.style) ? raw.style : "none",
+  };
+}
 const REFERENCE_ROLE_LABELS = {
   first_frame: "First frame",
   last_frame: "Last frame",
@@ -99,6 +255,7 @@ const DEFAULT_PROJECT = () => ({
     id: crypto.randomUUID?.() || `shot-${Date.now()}`,
     duration: 5,
     visual_action: "",
+    presets: DEFAULT_SHOT_PRESETS(),
   }],
   references: [],
   constraints: "",
@@ -107,6 +264,7 @@ const DEFAULT_PROJECT = () => ({
   image_model: DEFAULT_MODEL_BUNDLE,
   auto_run: false,
   enhance: false,
+  enhance_level: "none",
   enhanced_prompt: "",
 });
 
@@ -224,25 +382,33 @@ function normalizeProject(value) {
   project.user_request = String(raw.user_request || "");
   project.constraints = String(raw.constraints || "");
   project.verbatim_content = String(raw.verbatim_content || "");
-  const savedEnhanceModel = String(raw.enhance_model || "") === LEGACY_LIGHTX2V_MODEL
-    ? LIGHTX2V_MODEL : String(raw.enhance_model || "");
-  const savedImageModel = String(raw.image_model || "") === LEGACY_LIGHTX2V_MODEL
-    ? LIGHTX2V_MODEL : String(raw.image_model || "");
-  project.enhance_model = [DEFAULT_ENHANCE_MODEL, LIGHTX2V_MODEL].includes(savedEnhanceModel)
+  const rawEnhanceModel = String(raw.enhance_model || "");
+  const rawImageModel = String(raw.image_model || "");
+  const savedEnhanceModel = REMOVED_LIGHTX2V_MODELS.has(rawEnhanceModel) ? DEFAULT_ENHANCE_MODEL : rawEnhanceModel;
+  const savedImageModel = REMOVED_LIGHTX2V_MODELS.has(rawImageModel) ? DEFAULT_MODEL_BUNDLE : rawImageModel;
+  project.enhance_model = [DEFAULT_ENHANCE_MODEL, OMNI_MODEL].includes(savedEnhanceModel)
     ? savedEnhanceModel : DEFAULT_ENHANCE_MODEL;
-  project.image_model = [DEFAULT_MODEL_BUNDLE, LIGHTX2V_MODEL].includes(savedImageModel)
+  project.image_model = [DEFAULT_MODEL_BUNDLE, OMNI_MODEL].includes(savedImageModel)
     ? savedImageModel : DEFAULT_MODEL_BUNDLE;
   project.auto_run = raw.auto_run === true;
-  project.enhance = raw.enhance === true;
+  project.enhance_level = Object.hasOwn(ENHANCE_LEVELS, raw.enhance_level)
+    ? raw.enhance_level : raw.enhance === true ? "normal" : "none";
+  project.enhance = project.enhance_level !== "none";
   project.enhanced_prompt = String(raw.enhanced_prompt || "");
   if (Array.isArray(raw.shots) && raw.shots.length) {
     project.shots = raw.shots.map((shot, index) => ({
       id: String(shot?.id || uid(`shot-${index + 1}`)),
       duration: clampNumber(shot?.duration, 1, MIN_SHOT_DURATION, 60),
       visual_action: migrateLegacyShotContent(shot, index),
+      presets: normalizeShotPresets(shot?.presets),
     }));
   } else {
     project.shots[0].duration = clampNumber(raw.requested_duration, 5, 0.1, 60);
+  }
+  // Version 24 stored one preset bundle globally. Preserve it on Shot 1 only;
+  // later shots intentionally remain independent and default to None.
+  if (raw.presets && typeof raw.presets === "object" && project.shots[0]) {
+    project.shots[0].presets = normalizeShotPresets(raw.presets);
   }
   const legacyAudio = [];
   if (String(raw.overall_soundscape || "").trim()) {
@@ -436,6 +602,16 @@ function installStyles() {
     .mmh3p-visual-action-field { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; }
     .mmh3p-visual-action-field .mmh3p-mention-wrap { flex:1 1 auto; height:auto; min-height:0; }
     .mmh3p-visual-action-field .mmh3p-mention-wrap textarea { height:100%; min-height:0; resize:none; overflow:auto; }
+    .mmh3p-presets { flex:0 0 auto; border-top:1px solid #343b45; padding-top:6px; }
+    .mmh3p-preset-tabs { display:flex; gap:5px; margin-bottom:5px; }
+    .mmh3p-preset-tabs button { min-width:72px; padding:4px 10px; }
+    .mmh3p-preset-tabs button.active { color:#d9efff; border-color:var(--accent); background:#263746; }
+    .mmh3p-preset-panel { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; }
+    .mmh3p-preset-panel[hidden] { display:none; }
+    .mmh3p-preset-panel.style { grid-template-columns:minmax(0,1fr); }
+    .mmh3p-preset-field { min-width:0; display:flex; align-items:center; gap:5px; }
+    .mmh3p-preset-field span { flex:0 0 auto; color:var(--muted); font-size:9px; }
+    .mmh3p-preset-field select { min-width:0; width:100%; height:25px; font-size:10px; }
     .mmh3p-field { display:flex; flex-direction:column; gap:3px; }
     .mmh3p-field span { color:var(--muted); font-size:10px; }
     .mmh3p-editor textarea { min-height:44px; }
@@ -513,6 +689,10 @@ function installStyles() {
       white-space:pre-wrap; word-break:break-word; background:#121416; border:1px solid #30353d;
       border-radius:5px; color:#ccd2da; font:10px/1.42 ui-monospace,Consolas,monospace; }
     .mmh3p-preview-head { justify-content:space-between; margin-bottom:6px; }
+    .mmh3p-preview-modebar { justify-content:flex-end; min-height:24px; margin:6px 0 -2px;
+      padding:3px 6px; border:1px solid #30353d; border-radius:5px; background:#181b20; }
+    .mmh3p-enhance-level { display:flex; align-items:center; gap:6px; color:var(--muted); font-size:10px; }
+    .mmh3p-enhance-level select { width:92px; min-width:92px; height:25px; }
     .mmh3p-log-panel { min-width:0; min-height:0; display:flex; flex-direction:column; }
     .mmh3p-log { flex:1; min-height:0; overflow:auto; margin-top:6px; padding:6px 8px;
       white-space:pre-wrap; word-break:break-word; color:#a9d1ad; background:#121416;
@@ -541,6 +721,9 @@ class PrompterUI {
     this.selectedShotId = this.project.shots[0]?.id;
     this.previewData = null;
     this.autoRunPreview = null;
+    this.rawPromptEnabled = false;
+    this.lastRawModelPrompt = "";
+    this.lastRawModelSource = "";
     this.compileTimer = null;
     this.compileController = null;
     this.enhanceController = null;
@@ -592,14 +775,27 @@ class PrompterUI {
               <div class="mmh3p-mention-menu" data-el="mention-menu" role="listbox"></div>
             </div>
           </div>
+          <div class="mmh3p-presets">
+            <div class="mmh3p-preset-tabs">
+              <button data-action="preset-tab" data-preset-tab="camera" type="button">Camera</button>
+              <button data-action="preset-tab" data-preset-tab="style" type="button">Style</button>
+            </div>
+            <div class="mmh3p-preset-panel" data-el="camera-presets">
+              <label class="mmh3p-preset-field"><span>Angle</span><select data-preset="camera_angle"></select></label>
+              <label class="mmh3p-preset-field"><span>Motion</span><select data-preset="camera_motion"></select></label>
+              <label class="mmh3p-preset-field"><span>Shot</span><select data-preset="camera_shot"></select></label>
+              <label class="mmh3p-preset-field"><span>Amplitude</span><select data-preset="camera_amplitude"></select></label>
+              <label class="mmh3p-preset-field"><span>Speed</span><select data-preset="camera_speed"></select></label>
+            </div>
+            <div class="mmh3p-preset-panel style" data-el="style-presets" hidden>
+              <label class="mmh3p-preset-field"><span>Style</span><select data-preset="style"></select></label>
+            </div>
+          </div>
         </div>
         <div class="mmh3p-panel mmh3p-preview-panel">
           <div class="mmh3p-row mmh3p-preview-head">
             <span class="mmh3p-label">Generated Prompt</span>
             <div class="mmh3p-enhance-actions">
-              <label class="mmh3p-auto-run" title="Use richer Qwen3.8 interpretation and expansion while preserving the requested events">
-                <input data-el="enhance" type="checkbox"><span>Enhance</span>
-              </label>
               <button class="mmh3p-enhance-button" data-action="enhance" type="button">Generate Prompt</button>
               <label class="mmh3p-auto-run" title="Generate the prompt as part of the ComfyUI queue when this node executes">
                 <input data-el="auto-run" type="checkbox"><span>Auto Run</span>
@@ -607,6 +803,14 @@ class PrompterUI {
             </div>
           </div>
           <pre class="mmh3p-preview" data-el="preview">Compiling…</pre>
+          <div class="mmh3p-row mmh3p-preview-modebar">
+            <label class="mmh3p-enhance-level" title="None: concise standard prompt. Normal: materially expands action steps and resolves hands, objects, camera, and keyframe continuity. Strong: creates a much longer rewriter-style scene with compatible new staging, lighting, performance, sound, and atmosphere details.">
+              <span>Enhance</span><select data-el="enhance"></select>
+            </label>
+            <label class="mmh3p-auto-run" title="Show the complete system and user prompts supplied to the selected prompt-generation model">
+              <input data-el="raw-prompt" type="checkbox"><span>Raw Prompt</span>
+            </label>
+          </div>
         </div>
       </div>
       </div>
@@ -634,6 +838,25 @@ class PrompterUI {
 
     this.els = Object.fromEntries([...this.root.querySelectorAll("[data-el]")].map(el => [el.dataset.el, el]));
     MODES.forEach(mode => this.els.mode.add(new Option(mode === "AUTO" ? "Auto" : mode, mode)));
+    Object.entries(ENHANCE_LEVELS).forEach(([value, label]) => this.els.enhance.add(new Option(label, value)));
+    const fillPreset = (name, options) => {
+      const select = this.root.querySelector(`[data-preset="${name}"]`);
+      Object.entries(options).forEach(([value, label]) => select.add(new Option(label, value)));
+    };
+    fillPreset("camera_angle", CAMERA_ANGLE_PRESETS);
+    fillPreset("camera_motion", CAMERA_MOTION_PRESETS);
+    fillPreset("camera_shot", CAMERA_SHOT_PRESETS);
+    fillPreset("camera_amplitude", CAMERA_AMPLITUDE_PRESETS);
+    fillPreset("camera_speed", CAMERA_SPEED_PRESETS);
+    const styleSelect = this.root.querySelector('[data-preset="style"]');
+    styleSelect.add(new Option(STYLE_PRESETS.none, "none"));
+    STYLE_PRESET_GROUPS.forEach(([label, values]) => {
+      const group = document.createElement("optgroup");
+      group.label = label;
+      values.forEach(value => group.append(new Option(STYLE_PRESETS[value], value)));
+      styleSelect.append(group);
+    });
+    this.activePresetTab = "camera";
     this.bind();
   }
 
@@ -651,11 +874,32 @@ class PrompterUI {
       button.addEventListener("click", () => this.addReference(button.dataset.refType));
     });
     this.root.querySelector('[data-action="enhance"]').addEventListener("click", () => this.enhancePrompt());
+    this.root.querySelectorAll('[data-action="preset-tab"]').forEach(button => {
+      button.addEventListener("click", () => {
+        this.activePresetTab = button.dataset.presetTab;
+        this.renderPresets();
+      });
+    });
+    this.root.querySelectorAll("[data-preset]").forEach(select => {
+      select.addEventListener("change", () => {
+        const shot = this.selectedShot();
+        if (!shot) return;
+        shot.presets ||= DEFAULT_SHOT_PRESETS();
+        shot.presets[select.dataset.preset] = select.value;
+        this.commit();
+      });
+    });
     this.els.enhance.addEventListener("change", () => {
-      this.project.enhance = this.els.enhance.checked;
+      this.project.enhance_level = this.els.enhance.value;
+      this.project.enhance = this.project.enhance_level !== "none";
       this.commit(false);
+      const description = this.project.enhance_level === "strong"
+        ? "use a longer, more detailed rewriter-style expansion"
+        : this.project.enhance_level === "normal"
+          ? "use the current rich contextual expansion"
+          : "use standard concise generation";
       this.appendLog(
-        `Enhance ${this.project.enhance ? "enabled" : "disabled"}; Qwen3.8 will ${this.project.enhance ? "expand the prompt with richer contextual detail" : "use the standard concise generation mode"}.`,
+        `Enhance set to ${ENHANCE_LEVELS[this.project.enhance_level]}; Qwen3.8 will ${description}.`,
         "enhance-mode",
       );
     });
@@ -666,6 +910,10 @@ class PrompterUI {
         `Auto Run ${this.project.auto_run ? "enabled" : "disabled"}; prompt generation ${this.project.auto_run ? "will run" : "will not run"} during ComfyUI queue execution.`,
         "auto-run",
       );
+    });
+    this.els["raw-prompt"].addEventListener("change", () => {
+      this.rawPromptEnabled = this.els["raw-prompt"].checked;
+      this.renderPreview();
     });
     this.els["model-bundle"].addEventListener("change", () => {
       const bundleId = this.els["model-bundle"].value || DEFAULT_MODEL_BUNDLE;
@@ -925,6 +1173,7 @@ class PrompterUI {
     selected.duration = firstHalf;
     const shot = {
       id: uid("shot"), duration: firstHalf, visual_action: "",
+      presets: DEFAULT_SHOT_PRESETS(),
     };
     this.project.shots.splice(selectedIndex + 1, 0, shot);
     this.selectedShotId = shot.id; this.commit(); this.render();
@@ -955,7 +1204,11 @@ class PrompterUI {
     this.commit(); this.renderReferences(); this.renderHeader(); this.renderTimeline();
   }
 
-  commit(refresh = true) {
+  commit(refresh = true, preserveRawModelPrompt = false) {
+    if (!preserveRawModelPrompt) {
+      this.lastRawModelPrompt = "";
+      this.lastRawModelSource = "";
+    }
     this.project.requested_duration = Number(this.totalDuration().toFixed(3));
     if (this.stateWidget) {
       this.stateWidget.value = JSON.stringify(this.project);
@@ -988,7 +1241,29 @@ class PrompterUI {
     this.els.log.scrollTop = this.els.log.scrollHeight;
   }
 
-  async pollEnhanceProgress(jobId, controller) {
+  updateModelDownloadDisplay(bundleId, downloaded, total, complete = false) {
+    const model = this.modelBundles.find(item => item.id === bundleId);
+    const select = this.els["model-bundle"];
+    const option = [...(select?.options || [])].find(item => item.value === bundleId);
+    if (!model || !option) return;
+    model._catalogLabel ||= model.label;
+    const percent = total > 0 ? Math.min(100, Math.max(0, downloaded / total * 100)) : 0;
+    const state = complete
+      ? "installed"
+      : `downloading ${(downloaded / 1e9).toFixed(2)} / ${(total / 1e9).toFixed(2)} GB (${percent.toFixed(1)}%)`;
+    const replacement = ` · ${state}`;
+    const catalog = model._catalogLabel;
+    const statusPattern = /(?: · | 쨌 )(?:installed|[0-9.]+ GB missing)/;
+    option.textContent = statusPattern.test(catalog)
+      ? catalog.replace(statusPattern, replacement)
+      : `${catalog}${replacement}`;
+    if (select?.value === bundleId && this.els["model-status"]) {
+      this.els["model-status"].textContent = complete ? "ready" : `${percent.toFixed(1)}%`;
+      this.els["model-status"].classList.remove("error");
+    }
+  }
+
+  async pollEnhanceProgress(jobId, controller, bundleId) {
     let lastStage = "";
     while (!controller.signal.aborted) {
       try {
@@ -1006,6 +1281,12 @@ class PrompterUI {
             "enhance-download",
             "download",
           );
+          this.updateModelDownloadDisplay(bundleId, downloaded, total, percent >= 100);
+        } else if (["model_ready", "image_model_ready"].includes(job.stage)) {
+          this.updateModelDownloadDisplay(bundleId, 1, 1, true);
+          if (job.stage !== lastStage) {
+            this.appendLog(job.message || "Model bundle is ready.", `enhance-${job.stage}`);
+          }
         } else if (job.stage === "reference_analysis") {
           this.appendLog(job.message || "Analyzing registered visual references.", "enhance-reference-analysis");
         } else if (job.stage && job.stage !== lastStage) {
@@ -1020,26 +1301,29 @@ class PrompterUI {
     }
   }
 
-  async loadModels() {
+  async loadModels(preferredBundle = "", writeLog = true) {
     const select = this.els["model-bundle"];
     const button = this.root.querySelector('[data-action="enhance"]');
     try {
-      const response = await api.fetchApi(MODELS_ENDPOINT);
+      const response = await api.fetchApi(`${MODELS_ENDPOINT}?_=${Date.now()}`, { cache: "no-store" });
       const data = await response.json();
       if (!response.ok || data.status !== "success") throw new Error(data.message || "Could not list models");
       this.modelBundles = data.image_models || [];
       select.replaceChildren();
       this.modelBundles.forEach(model => select.add(new Option(model.label, model.id)));
       if (!this.modelBundles.length) throw new Error("No prompt generation model is available");
-      const savedBundle = this.modelBundles.some(model => model.id === this.project.image_model)
-        ? this.project.image_model : DEFAULT_MODEL_BUNDLE;
+      const requestedBundle = preferredBundle || this.project.image_model;
+      const savedBundle = this.modelBundles.some(model => model.id === requestedBundle)
+        ? requestedBundle : DEFAULT_MODEL_BUNDLE;
       select.value = savedBundle;
       const selected = this.modelBundles.find(model => model.id === savedBundle);
       this.project.enhance_model = selected?.enhance_model || DEFAULT_ENHANCE_MODEL;
       this.project.image_model = selected?.image_model || savedBundle;
       this.commit(false);
       this.updateModelCompatibility(false);
-      this.appendLog(`${this.modelBundles.length} prompt generation model bundle(s) available.`, "models");
+      if (writeLog) {
+        this.appendLog(`${this.modelBundles.length} prompt generation model bundle(s) available.`, "models");
+      }
     } catch (error) {
       select.replaceChildren(new Option("Qwen3.8 + Vision F16 bundle unavailable", ""));
       button.disabled = true;
@@ -1059,8 +1343,8 @@ class PrompterUI {
     if (this.els.enhance) {
       this.els.enhance.disabled = !qwenEnhanceAvailable;
       this.els.enhance.closest("label").title = qwenEnhanceAvailable
-        ? "Use richer Qwen3.8 interpretation and expansion while preserving the requested events"
-        : "Enhance mode is available only with Qwen3.8";
+        ? "None: concise standard prompt. Normal: materially expands action steps and resolves hands, objects, camera, and keyframe continuity. Strong: creates a much longer rewriter-style scene with compatible new staging, lighting, performance, sound, and atmosphere details."
+        : "Enhance levels are available only with Qwen3.8. This trained rewriter uses its own fixed expansion profile.";
     }
     if (status) {
       status.textContent = supported ? "ready" : `${mode} unsupported`;
@@ -1072,7 +1356,7 @@ class PrompterUI {
     }
     if (!supported && writeLog) {
       this.appendLog(
-        `The selected LightX2V 8B rewriter does not support ${mode}. Select Qwen3.8 for R2V/REF2VA.`,
+        `${profile?.label || "The selected rewriter"} does not support ${mode}. Select a compatible model bundle.`,
         "model-compatibility", "error",
       );
     }
@@ -1097,7 +1381,10 @@ class PrompterUI {
     const needsVideoAnalysis = this.project.references.some(ref =>
       ref.type === "video" && ref.video_filename && Number(ref.duration) > 0
     );
-    const needsVisualAnalysis = needsImageAnalysis || needsVideoAnalysis;
+    const needsAudioAnalysis = this.project.references.some(ref =>
+      ref.type === "audio" && ref.audio_filename
+    );
+    const needsVisualAnalysis = needsImageAnalysis || needsVideoAnalysis || needsAudioAnalysis;
     const missingBytes = Number(modelInfo?.text_size || 0)
       + (needsVisualAnalysis ? Number(modelInfo?.vision_size || 0) : 0);
     if (missingBytes > 0) {
@@ -1117,7 +1404,7 @@ class PrompterUI {
     button.title = "Stop the current prompt generation";
     const sourceProject = JSON.stringify({ ...this.project, enhanced_prompt: "" });
     this.appendLog("Prompt generation started.", `enhance-start-${jobId}`);
-    const progressPromise = this.pollEnhanceProgress(jobId, controller);
+    const progressPromise = this.pollEnhanceProgress(jobId, controller, selectedBundle);
     try {
       const response = await api.fetchApi(ENHANCE_ENDPOINT, {
         method: "POST",
@@ -1155,9 +1442,18 @@ class PrompterUI {
       this.project.enhance_model = data.model;
       this.project.image_model = selectedBundle;
       this.project.enhanced_prompt = data.enhanced_prompt;
+      this.lastRawModelPrompt = String(data.raw_model_prompt || "");
+      this.lastRawModelSource = sourceProject;
       this.autoRunPreview = null;
-      if (modelInfo) modelInfo.installed = true;
-      this.commit(false);
+      if (modelInfo) {
+        modelInfo.installed = true;
+        modelInfo.text_installed = true;
+        modelInfo.vision_installed = true;
+        modelInfo.size = 0;
+        modelInfo.text_size = 0;
+        modelInfo.vision_size = 0;
+      }
+      this.commit(false, true);
       this.renderReferences();
       await this.compile();
       this.appendLog("Generated prompt is ready.", `enhance-result-${jobId}`);
@@ -1167,6 +1463,7 @@ class PrompterUI {
     } finally {
       controller.abort();
       await progressPromise;
+      await this.loadModels(selectedBundle, false);
       if (this.enhanceController === controller) this.enhanceController = null;
       if (this.enhanceJobId === jobId) this.enhanceJobId = "";
       button.textContent = originalLabel;
@@ -1242,14 +1539,26 @@ class PrompterUI {
   }
 
   render() {
-    this.renderHeader(); this.renderTimeline(); this.renderShotEditor(); this.renderReferences();
+    this.renderHeader(); this.renderTimeline(); this.renderShotEditor(); this.renderPresets(); this.renderReferences();
     this.scheduleCompile();
+  }
+
+  renderPresets() {
+    const tab = this.activePresetTab === "style" ? "style" : "camera";
+    this.els["camera-presets"].hidden = tab !== "camera";
+    this.els["style-presets"].hidden = tab !== "style";
+    this.root.querySelectorAll('[data-action="preset-tab"]').forEach(button => {
+      button.classList.toggle("active", button.dataset.presetTab === tab);
+    });
+    this.root.querySelectorAll("[data-preset]").forEach(select => {
+      select.value = this.selectedShot()?.presets?.[select.dataset.preset] || "none";
+    });
   }
 
   renderHeader() {
     this.els.mode.value = this.project.mode;
     this.els["auto-run"].checked = this.project.auto_run === true;
-    this.els.enhance.checked = this.project.enhance === true;
+    this.els.enhance.value = this.project.enhance_level || (this.project.enhance ? "normal" : "none");
     this.els.duration.value = this.totalDuration().toFixed(2);
     const resolvedMode = this.project.mode === "AUTO"
       ? inferAutoMode(this.project.references)
@@ -1289,7 +1598,12 @@ class PrompterUI {
       const summary = document.createElement("div"); summary.className = "mmh3p-shot-summary";
       summary.textContent = shot.visual_action || "Click to describe this shot.";
       card.append(head, summary);
-      card.addEventListener("click", () => { this.selectedShotId = shot.id; this.renderTimeline(); this.renderShotEditor(); });
+      card.addEventListener("click", () => {
+        this.selectedShotId = shot.id;
+        this.renderTimeline();
+        this.renderShotEditor();
+        this.renderPresets();
+      });
       card.addEventListener("dragstart", event => {
         if (this.root.classList.contains("resizing")) { event.preventDefault(); return; }
         event.dataTransfer.setData("text/plain", shot.id); card.classList.add("dragging");
@@ -1598,12 +1912,13 @@ class PrompterUI {
     const startLeft = leftShot.duration;
     const timelineWidth = Math.max(1, this.els.timeline.getBoundingClientRect().width);
     const secondsPerPixel = this.totalDuration() / timelineWidth;
+    const shotFrameStep = this.totalDuration() / Math.max(1, this.timelineFrameCount());
     this.root.classList.add("resizing"); handle.classList.add("active");
     handle.setPointerCapture?.(event.pointerId);
 
     const onMove = moveEvent => {
       let nextLeft = startLeft + (moveEvent.clientX - startX) * secondsPerPixel;
-      nextLeft = Math.round(nextLeft / SHOT_SNAP_SECONDS) * SHOT_SNAP_SECONDS;
+      nextLeft = Math.round(nextLeft / shotFrameStep) * shotFrameStep;
       nextLeft = Math.max(MIN_SHOT_DURATION, Math.min(pairTotal - MIN_SHOT_DURATION, nextLeft));
       leftShot.duration = nextLeft;
       rightShot.duration = pairTotal - nextLeft;
@@ -1969,6 +2284,12 @@ class PrompterUI {
   }
 
   renderPreview() {
+    if (this.rawPromptEnabled) {
+      this.els.preview.textContent = this.lastRawModelPrompt
+        || this.previewData?.llm_prompt
+        || "Raw model input is not available yet.";
+      return;
+    }
     if (this.autoRunPreview) {
       this.els.preview.textContent = this.autoRunPreview;
       return;
@@ -1990,6 +2311,8 @@ class PrompterUI {
   load(value) {
     this.project = normalizeProject(value);
     this.autoRunPreview = null;
+    this.lastRawModelPrompt = "";
+    this.lastRawModelSource = "";
     if (!this.project.shots.some(shot => shot.id === this.selectedShotId)) this.selectedShotId = this.project.shots[0]?.id;
     this.render();
   }

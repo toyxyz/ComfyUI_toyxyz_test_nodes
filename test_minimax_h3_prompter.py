@@ -1,5 +1,7 @@
 import importlib.util
+import hashlib
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -12,6 +14,12 @@ MODULE_PATH = Path(__file__).parent / "nodes" / "minimax_h3_prompter.py"
 SPEC = importlib.util.spec_from_file_location("minimax_h3_prompter_under_test", MODULE_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+
+
+def command_prompt(command):
+    if "-p" in command:
+        return command[command.index("-p") + 1]
+    return Path(command[command.index("--file") + 1]).read_text(encoding="utf-8")
 
 
 class MinimaxH3PrompterTests(unittest.TestCase):
@@ -42,22 +50,238 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertEqual(result["enhanced_prompt"], saved)
         self.assertEqual(result["video_prompt"], saved)
 
-    def test_qwen_enhance_toggle_is_normalized_and_defaults_off(self):
+    def test_qwen_enhance_level_is_normalized_and_migrates_legacy_toggle(self):
         default_project, _warnings = MODULE.normalize_project({})
         enabled_project, _warnings = MODULE.normalize_project({"enhance": True})
+        strong_project, _warnings = MODULE.normalize_project({"enhance_level": "strong"})
         self.assertFalse(default_project["enhance"])
+        self.assertEqual(default_project["enhance_level"], "none")
         self.assertTrue(enabled_project["enhance"])
+        self.assertEqual(enabled_project["enhance_level"], "normal")
+        self.assertTrue(strong_project["enhance"])
+        self.assertEqual(strong_project["enhance_level"], "strong")
+
+    def test_prompt_presets_default_to_none_and_normalize_known_values(self):
+        default_project, _warnings = MODULE.normalize_project({})
+        self.assertEqual(default_project["shots"][0]["presets"], {
+            "camera_angle": "none", "camera_motion": "none", "camera_shot": "none",
+            "camera_amplitude": "none", "camera_speed": "none", "style": "none",
+        })
+        project, _warnings = MODULE.normalize_project({
+            "shots": [{"duration": 5, "presets": {
+                "camera_angle": "low_angle", "camera_motion": "tracking",
+                "camera_shot": "cowboy_shot", "camera_amplitude": "large",
+                "camera_speed": "fast", "style": "animation_3d",
+            }}]
+        })
+        presets = project["shots"][0]["presets"]
+        self.assertEqual(presets["camera_angle"], "low_angle")
+        self.assertEqual(presets["camera_motion"], "tracking")
+        self.assertEqual(presets["camera_shot"], "cowboy_shot")
+        self.assertEqual(presets["camera_amplitude"], "large")
+        self.assertEqual(presets["camera_speed"], "fast")
+        self.assertEqual(presets["style"], "animation_3d")
+
+    def test_prompt_presets_are_compiled_as_explicit_camera_and_style_instructions(self):
+        result = self.compile({
+            "mode": "T2VA",
+            "shots": [{"duration": 5, "visual_action": "A woman walks forward.", "presets": {
+                "camera_angle": "low_angle", "camera_motion": "tracking",
+                "camera_shot": "cowboy_shot", "camera_amplitude": "large",
+                "camera_speed": "fast", "style": "animation_3d",
+            }}],
+        })
+        prompt = result["draft_video_prompt"]
+        self.assertIn("PROMPT_PRESETS:", prompt)
+        self.assertIn("style: polished 3D animation", prompt)
+        self.assertIn("camera_angle: low angle looking upward", prompt)
+        self.assertIn("camera_motion: tracking shot following the moving subject", prompt)
+        self.assertIn("camera_shot: cowboy shot", prompt)
+        self.assertIn("camera_amplitude: with large amplitude", prompt)
+        self.assertIn("camera_speed: at fast speed", prompt)
+        self.assertIn("combine selected motion, amplitude, and speed", prompt)
+        self.assertIn("scope: each block applies only to its named shot", prompt)
+        self.assertIn("style_expression: when a shot has style, state that style naturally in the opening sentence", prompt)
+        self.assertIn("status: mandatory explicit user selections", prompt)
+        self.assertIn("[Shot 1]\nstyle: polished 3D animation", prompt)
+
+    def test_prompt_presets_are_isolated_per_shot(self):
+        result = self.compile({
+            "mode": "T2VA",
+            "shots": [
+                {"duration": 2.5, "visual_action": "A woman walks.", "presets": {
+                    "camera_motion": "arc", "style": "animation_3d",
+                }},
+                {"duration": 2.5, "visual_action": "She stops.", "presets": {
+                    "camera_motion": "static", "camera_shot": "close_up",
+                }},
+            ],
+        })
+        prompt = result["draft_video_prompt"]
+        preset_section = prompt.split("PROMPT_PRESETS:\n", 1)[1].split("\n\nTARGET_REQUEST:", 1)[0]
+        self.assertIn("[Shot 1]\nstyle: polished 3D animation with coherent modeled forms", preset_section)
+        self.assertIn("camera_motion: arc shot moving around the subject", preset_section)
+        self.assertIn("[Shot 2]\ncamera_motion: static shot with camera position", preset_section)
+        self.assertIn("camera_shot: close-up centered on the face", preset_section)
+        self.assertEqual(preset_section.count("style: polished 3D animation with coherent modeled forms"), 1)
+
+    def test_legacy_global_presets_migrate_to_first_shot_only(self):
+        project, _warnings = MODULE.normalize_project({
+            "presets": {"camera_motion": "arc"},
+            "shots": [{"duration": 2.5}, {"duration": 2.5}],
+        })
+        self.assertEqual(project["shots"][0]["presets"]["camera_motion"], "arc")
+        self.assertEqual(project["shots"][1]["presets"]["camera_motion"], "none")
+
+    def test_extended_camera_motion_presets_compile(self):
+        expected = {
+            "dolly_left": "camera dolly left", "dolly_right": "camera dolly right",
+            "dolly_zoom_in": "move the camera forward while zooming out",
+            "dolly_zoom_out": "move the camera backward while zooming in",
+            "crane_up": "crane movement lifting", "crane_down": "crane movement lowering",
+            "orbit_left": "orbit left around", "orbit_right": "orbit right around",
+            "follow": "follow shot continuously following", "handheld": "natural handheld camera movement",
+        }
+        for motion, phrase in expected.items():
+            with self.subTest(motion=motion):
+                result = self.compile({
+                    "mode": "T2VA",
+                    "shots": [{"duration": 5, "visual_action": "A subject moves.",
+                               "presets": {"camera_motion": motion}}],
+                })
+                self.assertIn("camera_motion:", result["draft_video_prompt"])
+                self.assertIn(phrase, result["draft_video_prompt"])
+
+    def test_document_style_presets_normalize_and_compile(self):
+        expected_keys = {
+            "anime_1990s", "retro_anime_motion_graphics", "retro_anime_noir_jazz",
+            "contemporary_anime", "western_cartoon", "vhs_analog", "cyberpunk_live_action",
+            "epic_dark_fantasy", "high_saturation_commercial", "photoreal_graphic_hybrid",
+            "phone_ugc_ad", "sprite_16bit", "sketch_anime", "lineart_anime",
+            "anamorphic_cinema", "film_noir", "neo_noir", "horror_cinema",
+            "scifi_mystery", "retro_futuristic_scifi", "premium_product_film",
+            "japanese_commercial", "food_commercial", "music_video", "anime_music_video",
+            "graphic_poster_animation", "minimalist_motion_design", "game_cinematic",
+            "dark_retro_fantasy", "contemporary_action_anime", "vhs_rental_movie",
+            "dark_medieval_fantasy", "authentic_smartphone_vlog", "cinematic_35mm",
+            "analog_horror_1990s", "figurine_animation",
+        }
+        self.assertTrue(expected_keys.issubset(MODULE.STYLE_PRESET_PROMPTS))
+        for style in expected_keys:
+            with self.subTest(style=style):
+                result = self.compile({
+                    "mode": "T2VA",
+                    "shots": [{"duration": 5, "visual_action": "A subject moves.",
+                               "presets": {"style": style}}],
+                })
+                self.assertIn(MODULE.STYLE_PRESET_PROMPTS[style], result["draft_video_prompt"])
+
+    def test_general_style_presets_do_not_force_scene_content(self):
+        generic_keys = (
+            "animation_2d", "animation_3d", "cinematic_live_action",
+            "smartphone_video", "photoreal_live_action", "documentary", "stop_motion",
+        )
+        combined = "\n".join(MODULE.STYLE_PRESET_PROMPTS[key] for key in generic_keys).lower()
+        forbidden = (
+            "locked straight-on", "dynamic framing", "handheld smartphone framing",
+            "restrained camera movement", "slow suspenseful camera movement",
+            "elegant slow camera movement", "rhythmic camera movement",
+            "visually motivated cuts", "editing rhythm", "clean transitions",
+            "rain-soaked streets", "monumental landscapes", "ancient armor and robes",
+            "spacecraft interiors", "slow-motion splashes and particles",
+            "dramatic natural landscapes",
+        )
+        for phrase in forbidden:
+            with self.subTest(phrase=phrase):
+                self.assertNotIn(phrase, combined)
+
+    def test_live_action_cinematic_document_presets_are_complete(self):
+        expected = {
+            "modern_cinematic_live_action", "prestige_drama", "intimate_relationship_drama",
+            "short_form_microdrama", "golden_hour_road_movie", "natural_light_indie_film",
+            "mountain_adventure_cinema", "survival_expedition_film",
+            "blue_hour_urban_cinema", "rainy_city_one_take", "urban_editorial",
+            "night_city_timelapse", "modern_neo_noir", "classic_film_noir",
+            "crime_thriller", "thriller_1990s", "cinematic_horror_live_action",
+            "found_footage_horror", "consumer_camcorder_horror",
+            "observational_documentary", "workplace_mockumentary", "reality_tv_documentary",
+            "grounded_martial_arts_cinema", "gritty_close_quarters_action",
+            "dark_fantasy_live_action", "neon_cyberpunk_cinema", "dark_dystopian_scifi",
+            "prestige_scifi_drama", "high_fashion_editorial", "korean_fashion_campaign",
+            "streetwear_fashion_film", "minimalist_premium_product",
+            "luxury_automotive_commercial", "performance_car_commercial",
+            "food_macro_commercial", "dark_surreal_commercial", "ultra_realistic_pov",
+            "smartphone_ugc", "film_1970s", "cinema_1980s", "cinema_1990s",
+            "early_2000s_digital_cinema", "modern_digital_cinema",
+        }
+        self.assertTrue(expected.issubset(MODULE.STYLE_PRESET_PROMPTS))
+        for style in expected:
+            with self.subTest(style=style):
+                self.assertGreaterEqual(len(MODULE.STYLE_PRESET_PROMPTS[style].split()), 8)
+
+    def test_style_ui_uses_labeled_categories(self):
+        source = (Path(__file__).parent / "web" / "minimax_h3_prompter.js").read_text(encoding="utf-8")
+        self.assertIn("const STYLE_PRESET_GROUPS = [", source)
+        for category in (
+            "General cinema / drama", "Natural light / outdoor cinema", "Urban cinema",
+            "Noir / thriller", "Horror / found footage", "Documentary / reality",
+            "Action / fantasy", "Science fiction", "Fashion / editorial",
+            "Commercial / product", "POV / social video", "Film / era",
+            "Physical character animation", "Animation / graphic", "Music / game / hybrid",
+        ):
+            self.assertIn(category, source)
+
+    def test_general_style_presets_have_balanced_detail(self):
+        general = (
+            "animation_2d", "animation_3d", "cinematic_live_action", "smartphone_video",
+            "photoreal_live_action", "documentary", "stop_motion",
+        )
+        for style in general:
+            with self.subTest(style=style):
+                self.assertGreaterEqual(len(MODULE.STYLE_PRESET_PROMPTS[style].split()), 12)
+
+    def test_raw_model_prompt_formats_system_and_user_channels(self):
+        raw = MODULE._format_raw_model_prompt("SYSTEM RULES", "CURRENT USER DATA")
+        self.assertEqual(
+            raw,
+            "===== SYSTEM PROMPT =====\nSYSTEM RULES\n\n"
+            "===== USER PROMPT =====\nCURRENT USER DATA",
+        )
 
     def test_qwen_rich_enhance_contract_expands_without_changing_events(self):
         contract = MODULE.ENHANCED_COMMON_LLM_SYSTEM_RULES + MODULE.SYSTEM_PROMPT_CONFIG["enhance_addendum"]
         self.assertIn("creative cinematic rewriter", contract)
         self.assertIn("early-to-middle-to-late progression", contract)
         self.assertIn("Track which hand holds every object", contract)
-        self.assertIn("action-development rewrite", contract)
-        self.assertIn("Spend most detail on requested events", contract)
-        self.assertIn("locomotion legible through displacement and weight transfer", contract)
-        self.assertIn("no unsupported storage or clothing", contract)
+        self.assertIn("NORMAL DEVELOPMENT REWRITER", contract)
+        self.assertIn("materially fuller and more explicit", contract)
+        self.assertIn("KEYFRAME DEVELOPMENT", contract)
+        self.assertIn("every important change", contract)
+        self.assertIn("camera preset governs the motion path", contract)
+        self.assertIn("Make locomotion visible through displacement", contract)
+        self.assertIn("object custody", contract)
         self.assertIn("non_diegetic_music", contract)
+
+    def test_qwen_strong_enhance_adds_rewriter_depth_and_larger_budget(self):
+        self.assertIn("STRONG CREATIVE REWRITER", MODULE.STRONG_ENHANCE_ADDENDUM)
+        self.assertIn("opening composition", MODULE.STRONG_ENHANCE_ADDENDUM)
+        self.assertIn("actively invent coherent production detail", MODULE.STRONG_ENHANCE_ADDENDUM)
+        self.assertIn("minor anonymous background elements", MODULE.STRONG_ENHANCE_ADDENDUM)
+        self.assertIn("musical treatment", MODULE.STRONG_ENHANCE_ADDENDUM)
+        self.assertTrue(all(
+            MODULE.STRONG_ENHANCE_ADDENDUM in MODULE.STRONG_MODE_LLM_SYSTEM_PROMPTS[mode]
+            for mode in MODULE.STRONG_MODE_LLM_SYSTEM_PROMPTS
+        ))
+        self.assertTrue(all(
+            "NORMAL DEVELOPMENT REWRITER" not in MODULE.STRONG_MODE_LLM_SYSTEM_PROMPTS[mode]
+            for mode in MODULE.STRONG_MODE_LLM_SYSTEM_PROMPTS
+        ))
+        project, _warnings = MODULE.normalize_project({
+            "mode": "T2VA", "enhance_level": "strong",
+            "shots": [{"duration": 5, "visual_action": "A woman walks forward."}],
+        })
+        prompt = MODULE.build_video_prompt(project, 5.17)
+        self.assertIn("recommended_english_words: 320-520", prompt)
 
     def test_korean_i2va_style_repetition_and_visibility_are_compiled_as_locks(self):
         result = self.compile({
@@ -82,7 +306,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertIn("continuous or repeated motion", prompt)
         self.assertIn("Preserve stated actors, limb or hand count, contact target", prompt)
         self.assertIn("ACTION_VISIBILITY_LOCK:", prompt)
-        self.assertIn("recommended_english_words: 140-220", prompt)
+        self.assertIn("recommended_english_words: 180-280", prompt)
 
     def test_target_style_application_is_mode_aware(self):
         cases = {
@@ -273,6 +497,119 @@ class MinimaxH3PrompterTests(unittest.TestCase):
                     self.assertIn("exclude source setting, composition", prompt)
                 else:
                     self.assertIn("exclude source setting, style, composition", prompt)
+
+    def test_ref2va_retention_line_plan_uses_exact_guide_syntax_and_shot_scope(self):
+        result = self.compile({
+            "mode": "REF2VA",
+            "shots": [
+                {"duration": 2.5, "visual_action": "@hero enters."},
+                {"duration": 2.5, "visual_action": "The room remains empty."},
+            ],
+            "references": [{
+                "type": "picture", "role": "subject_identity",
+                "strength": "strong", "alias": "hero",
+            }],
+        })
+        model = MODULE._reference_model(result["project"])
+        self.assertEqual(model["label_plan"]["<Subject 1>"]["applicable_shots"], [1])
+        self.assertEqual(
+            model["label_plan"]["<Subject 1>"]["retention_prefix"],
+            "<Subject 1> (appears in [Shot 1]): fully_preserved -",
+        )
+        self.assertIn(
+            "RETENTION_LINE_PLAN:\n<Subject 1> (appears in [Shot 1]): fully_preserved -",
+            result["llm_prompt"],
+        )
+        self.assertNotIn("RETENTION OUTPUT MARKERS:", result["llm_prompt"])
+
+    def test_ref2va_subject_scope_stays_continuous_between_later_mentions(self):
+        result = self.compile({
+            "mode": "REF2VA",
+            "shots": [
+                {"duration": 2.5, "visual_action": "@man stands on a beach."},
+                {"duration": 2.5, "visual_action": "@girl approaches @man."},
+                {"duration": 2.5, "visual_action": "@girl kisses @man."},
+                {"duration": 2.5, "visual_action": "@man faints."},
+                {"duration": 2.5, "visual_action": "@girl lies on @man."},
+                {"duration": 2.5, "visual_action": "@man struggles beneath @girl."},
+            ],
+            "references": [
+                {"type": "picture", "role": "subject_identity", "alias": "girl", "strength": "normal"},
+                {"type": "picture", "role": "subject_identity", "alias": "man", "strength": "normal"},
+            ],
+        })
+        plan = MODULE._reference_model(result["project"])["label_plan"]
+        self.assertEqual(plan["<Subject 1>"]["applicable_shots"], [2, 3, 4, 5, 6])
+        self.assertEqual(plan["<Subject 2>"]["applicable_shots"], [1, 2, 3, 4, 5, 6])
+        self.assertEqual(
+            plan["<Subject 1>"]["retention_prefix"],
+            "<Subject 1> (appears in [Shot 2], [Shot 3], [Shot 4], [Shot 5], [Shot 6]): partially_preserved -",
+        )
+
+    def test_ref2va_retention_line_plan_formats_picture_video_and_audio_roles(self):
+        result = self.compile({
+            "mode": "REF2VA",
+            "shots": [
+                {"duration": 2.5, "visual_action": "Opening action."},
+                {"duration": 2.5, "visual_action": "Closing action."},
+            ],
+            "references": [
+                {"type": "picture", "role": "first_frame"},
+                {"type": "picture", "role": "last_frame"},
+                {"type": "video", "role": "motion", "duration": 1.0,
+                 "timeline_start": 3.0},
+                {"type": "audio", "role": "voice_delivery"},
+            ],
+        })
+        plan = MODULE._reference_model(result["project"])["label_plan"]
+        self.assertEqual(
+            plan["<Picture 1>"]["retention_prefix"],
+            "<Picture 1> ([Shot 1] first frame): fully_preserved -",
+        )
+        self.assertEqual(
+            plan["<Picture 2>"]["retention_prefix"],
+            "<Picture 2> ([Shot 2] final frame): fully_preserved -",
+        )
+        self.assertEqual(
+            plan["<Video 1>"]["retention_prefix"],
+            "<Video 1> (applies to [Shot 2]): weak_reference -",
+        )
+        self.assertEqual(
+            plan["<Audio 1>"]["retention_prefix"],
+            "<Audio 1>: reference -",
+        )
+
+    def test_ref2va_retention_prefix_repair_preserves_descriptions_and_order(self):
+        result = self.compile({
+            "mode": "REF2VA",
+            "shots": [
+                {"duration": 2.5, "visual_action": "@hero enters."},
+                {"duration": 2.5, "visual_action": "@hero sits."},
+            ],
+            "references": [
+                {"type": "picture", "role": "subject_identity", "alias": "hero",
+                 "strength": "normal"},
+                {"type": "audio", "role": "voice_delivery"},
+            ],
+        })
+        plan = MODULE._reference_model(result["project"])["label_plan"]
+        malformed = (
+            "subject_definitions:\n...\n\nsummary:\n...\n\n"
+            "retention_analysis:\n"
+            "<Audio 1>: reference; preserve the measured delivery.\n"
+            "<Subject 1>: Shots 1, 2; partially_preserved; preserve the core identity.\n\n"
+            "detailed_description:\n[Shot 1] ...\n[Shot 2] ...\n\n"
+            "overall_soundscape:\nN/A\n\nnon_diegetic_music:\nN/A"
+        )
+        repaired = MODULE._enforce_retention_line_plan(malformed, plan)
+        retention = MODULE._ref_prompt_sections(repaired)["retention_analysis"]
+        self.assertEqual(
+            retention.splitlines(),
+            [
+                "<Subject 1> (appears in [Shot 1], [Shot 2]): partially_preserved - preserve the core identity.",
+                "<Audio 1>: reference - preserve the measured delivery.",
+            ],
+        )
 
     def test_reference_alias_is_normalized_and_replaced(self):
         result = self.compile({
@@ -608,6 +945,58 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertIn('mmh3p-video-lane { height:52px; position:relative; width:100%; overflow:hidden', source)
         self.assertIn('help.textContent = "Video clips · drag a clip to move · drag either edge to trim"', source)
         self.assertIn('const MIN_VIDEO_CLIP_FRAMES = 10', source)
+        self.assertIn('const SHOT_SNAP_SECONDS = 1 / VIDEO_OUTPUT_FPS', source)
+        self.assertIn('data-action="preset-tab" data-preset-tab="camera"', source)
+        self.assertIn('data-action="preset-tab" data-preset-tab="style"', source)
+        self.assertIn('data-preset="camera_angle"', source)
+        self.assertIn('data-preset="camera_motion"', source)
+        self.assertIn('data-preset="camera_shot"', source)
+        self.assertNotIn('data-preset="camera_lens"', source)
+        self.assertIn('extreme_close_up: "Extreme close-up (ECU)"', source)
+        self.assertIn('medium_close_up: "Medium close-up (MCU)"', source)
+        self.assertIn('medium_wide_shot: "Medium wide shot (MWS)"', source)
+        self.assertIn('cowboy_shot: "Cowboy shot (CS)"', source)
+        self.assertIn('medium_full_shot: "Medium full shot (MFS)"', source)
+        self.assertIn('extreme_wide_shot: "Extreme wide shot (EWS)"', source)
+        self.assertIn('establishing_shot: "Establishing shot (ES)"', source)
+        self.assertIn('insert_shot: "Insert shot"', source)
+        self.assertIn('detail_shot: "Detail shot"', source)
+        self.assertIn('two_shot: "Two shot"', source)
+        self.assertIn('three_shot: "Three shot"', source)
+        self.assertIn('group_shot: "Group shot"', source)
+        self.assertIn('data-preset="camera_amplitude"', source)
+        self.assertIn('data-preset="camera_speed"', source)
+        self.assertIn('data-preset="style"', source)
+        self.assertIn('data-el="raw-prompt" type="checkbox"><span>Raw Prompt</span>', source)
+        self.assertIn('this.rawPromptEnabled = this.els["raw-prompt"].checked', source)
+        self.assertIn('this.previewData?.llm_prompt', source)
+        self.assertIn('this.lastRawModelPrompt = String(data.raw_model_prompt || "")', source)
+        self.assertIn('anime_1990s: "1990s Japanese hand-drawn anime"', source)
+        self.assertIn('food_commercial: "Food commercial"', source)
+        self.assertIn('dark_retro_fantasy: "Dark retro fantasy film"', source)
+        self.assertIn('shot.presets[select.dataset.preset] = select.value', source)
+        self.assertIn('this.selectedShot()?.presets?.[select.dataset.preset]', source)
+        self.assertIn('id: uid("shot"), duration: firstHalf, visual_action: "",\n      presets: DEFAULT_SHOT_PRESETS(),', source)
+        self.assertIn('zoom_in: "Zoom in"', source)
+        self.assertIn('truck_left: "Truck left"', source)
+        self.assertIn('pedestal_up: "Pedestal up"', source)
+        self.assertIn('dolly_left: "Dolly left"', source)
+        self.assertIn('dolly_right: "Dolly right"', source)
+        self.assertIn('dolly_zoom_in: "Dolly zoom in"', source)
+        self.assertIn('dolly_zoom_out: "Dolly zoom out"', source)
+        self.assertIn('crane_up: "Crane up"', source)
+        self.assertIn('crane_down: "Crane down"', source)
+        self.assertIn('orbit_left: "Orbit left"', source)
+        self.assertIn('orbit_right: "Orbit right"', source)
+        self.assertIn('follow: "Follow shot"', source)
+        self.assertIn('handheld: "Handheld"', source)
+        self.assertIn('shake_strongly: "Shake strongly"', source)
+        self.assertIn('roll_counterclockwise: "Roll counterclockwise"', source)
+        self.assertIn('top_down: "Top-down"', source)
+        self.assertIn('ground_level: "Ground-level"', source)
+        self.assertIn('three_quarter: "Three-quarter"', source)
+        self.assertIn('const shotFrameStep = this.totalDuration() / Math.max(1, this.timelineFrameCount())', source)
+        self.assertIn('Math.round(nextLeft / shotFrameStep) * shotFrameStep', source)
         self.assertIn('`${visibleDuration.toFixed(2)}s · ${visibleFrames} frames`', source)
         self.assertIn('const labelPosition = (visibleCenter - ref.timeline_start)', source)
         self.assertIn('object-fit:contain; object-position:center', source)
@@ -647,7 +1036,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertIn('event.key === "Enter" || event.key === "Tab"', source)
         self.assertIn('button.classList.toggle("active", active)', source)
         self.assertIn('this.insertMention(entry.alias, mention)', source)
-        self.assertIn('commit(refresh = true) {', source)
+        self.assertIn('commit(refresh = true, preserveRawModelPrompt = false) {', source)
         self.assertNotIn('invalidateEnhancement', source)
         self.assertNotIn('this.project.enhanced_prompt = ""', source)
         self.assertNotIn('data-action="copy-raw"', source)
@@ -808,6 +1197,10 @@ class MinimaxH3PrompterTests(unittest.TestCase):
             "Picture 1 is the complete literal frame at 0.00 seconds",
             MODULE.MODE_LLM_SYSTEM_PROMPTS["I2VA"],
         )
+        self.assertIn(
+            "applies only after this exact opening instant when it conflicts with Picture 1",
+            MODULE.MODE_LLM_SYSTEM_PROMPTS["I2VA"],
+        )
 
     def test_system_prompts_are_loaded_from_json_config(self):
         config_path = MODULE_PATH.parent / "minimax_h3_system_prompts.json"
@@ -820,47 +1213,73 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         for mode, mode_rules in config["modes"].items():
             expected = config["common"]
             expected += config["action_semantics"]
-            expected += config["static_asset_rules"]["common"]
             expected += config["common_addendum"]
             if mode != "REF2VA":
                 expected += config["base"]
             expected += mode_rules
             expected += config["mode_addenda"].get(mode, "")
-            if mode == "FL2VA":
-                expected += config["static_asset_rules"]["FL2VA"]
             self.assertEqual(MODULE.MODE_LLM_SYSTEM_PROMPTS[mode], expected)
             enhanced_expected = config["common_enhanced"]
             enhanced_expected += config["action_semantics"]
-            enhanced_expected += config["static_asset_rules"]["common"]
-            enhanced_expected += config["static_asset_rules"]["enhanced"]
             enhanced_expected += config["common_addendum"]
             if mode != "REF2VA":
                 enhanced_expected += config["base"]
             enhanced_expected += mode_rules
             enhanced_expected += config["mode_addenda"].get(mode, "")
-            if mode == "FL2VA":
-                enhanced_expected += config["static_asset_rules"]["FL2VA"]
-                enhanced_expected += config["static_asset_rules"]["FL2VA_enhanced"]
             enhanced_expected += config["enhance_addendum"]
             self.assertEqual(MODULE.ENHANCED_MODE_LLM_SYSTEM_PROMPTS[mode], enhanced_expected)
 
-    def test_static_character_motion_rules_cover_standard_and_enhanced_fl2va(self):
-        standard = MODULE.MODE_LLM_SYSTEM_PROMPTS["FL2VA"]
-        enhanced = MODULE.ENHANCED_MODE_LLM_SYSTEM_PROMPTS["FL2VA"]
-        self.assertIn("reference pose is fixed only at its assigned anchor time", standard)
-        self.assertIn("appearance-only morph", standard)
-        self.assertIn("visible joint-driven departure from Picture 1", enhanced)
-        self.assertIn("Drive hair, clothing, ribbons", enhanced)
+    def test_figurine_motion_rules_are_opt_in_and_scoped_per_shot(self):
+        project = {
+            "shots": [
+                {"presets": {"style": "none"}},
+                {"presets": {"style": "figurine_animation"}},
+            ],
+        }
+        standard = MODULE._figurine_animation_system_module(project, "FL2VA", "none")
+        enhanced = MODULE._figurine_animation_system_module(project, "FL2VA", "normal")
+        self.assertIn("explicitly selected for [Shot 2]", standard)
+        self.assertNotIn("[Shot 1]", standard)
+        self.assertIn("exact endpoint", standard)
+        self.assertIn("character that comes fully alive, not as a rigid object", enhanced)
+        self.assertIn("Do not expose or invent mechanical joints", enhanced)
+        self.assertIn("natural expressive performance has priority over literal toy stiffness", enhanced)
+        self.assertIn("alternating foot placement", enhanced)
+        self.assertIn("physical release and first unsupported step", enhanced)
+        self.assertIn("appearance interpolation", enhanced)
+        self.assertEqual(
+            MODULE._figurine_animation_system_module(
+                {"shots": [{"presets": {"style": "none"}}]}, "FL2VA", "strong",
+            ),
+            "",
+        )
+        for prompt in MODULE.MODE_LLM_SYSTEM_PROMPTS.values():
+            self.assertNotIn("FIGURINE ANIMATION PRESET", prompt)
+        compiled = self.compile({
+            "mode": "FL2VA",
+            "enhance_level": "normal",
+            "shots": [
+                {"duration": 2.5, "visual_action": "A normal subject moves."},
+                {"duration": 2.5, "visual_action": "The figurine moves its arms.",
+                 "presets": {"style": "figurine_animation"}},
+            ],
+            "references": [
+                {"type": "image", "role": "first_frame", "source": "first.png"},
+                {"type": "image", "role": "last_frame", "source": "last.png"},
+            ],
+        })
+        self.assertIn("explicitly selected for [Shot 2]", compiled["llm_prompt"])
+        self.assertEqual(compiled["llm_prompt"].count("FIGURINE ANIMATION PRESET"), 1)
 
     def test_explicit_target_style_and_repeated_action_semantics_are_locked(self):
         for prompt in (
             MODULE.MODE_LLM_SYSTEM_PROMPTS["I2VA"],
             MODULE.ENHANCED_MODE_LLM_SYSTEM_PROMPTS["I2VA"],
         ):
-            self.assertIn("3D animation overrides a photographed collectible presentation", prompt)
             self.assertIn("Obey TARGET_STYLE_LOCK", prompt)
             self.assertIn("weaken a repeated action into one contact or static hold", prompt)
             self.assertIn("insert unsupported clothing over the named contact target", prompt)
+            self.assertIn("Never replace explicitly requested subject motion with camera-only motion", prompt)
 
     def test_system_prompt_lengths_stay_qwen38_friendly(self):
         self.assertLessEqual(len(MODULE.COMMON_LLM_SYSTEM_RULES), 6000)
@@ -873,10 +1292,10 @@ class MinimaxH3PrompterTests(unittest.TestCase):
                     [],
                 )
                 combined = len(MODULE._mode_prompt_preamble(mode)) + len(prompt) + len(lock) + 4
-                self.assertLessEqual(combined, 10100)
+                self.assertLessEqual(combined, 10200)
         for mode, prompt in MODULE.ENHANCED_MODE_LLM_SYSTEM_PROMPTS.items():
             with self.subTest(enhanced_mode=mode):
-                self.assertLessEqual(len(prompt), 10200)
+                self.assertLessEqual(len(prompt), 12500)
 
     def test_ref2va_prompt_rejects_literal_retention_placeholder(self):
         prompt = MODULE.MODE_LLM_SYSTEM_PROMPTS["REF2VA"]
@@ -969,13 +1388,28 @@ class MinimaxH3PrompterTests(unittest.TestCase):
             source,
         )
 
-    def test_enhance_toggle_is_left_of_generate_and_qwen_only(self):
+    def test_enhance_list_is_below_generated_prompt_with_raw_prompt_beside_it(self):
         source = (MODULE_PATH.parent.parent / "web" / "minimax_h3_prompter.js").read_text(encoding="utf-8")
-        toggle_index = source.index('data-el="enhance"')
+        preview_index = source.index('data-el="preview"')
+        modebar_index = source.index('<div class="mmh3p-row mmh3p-preview-modebar">')
+        level_index = source.index('data-el="enhance"')
+        raw_index = source.index('data-el="raw-prompt"')
         generate_index = source.index('data-action="enhance"')
-        self.assertLess(toggle_index, generate_index)
-        self.assertIn('this.project.enhance = this.els.enhance.checked', source)
-        self.assertIn('Enhance mode is available only with Qwen3.8', source)
+        self.assertLess(generate_index, level_index)
+        self.assertLess(preview_index, modebar_index)
+        self.assertLess(level_index, raw_index)
+        self.assertIn('const ENHANCE_LEVELS = { none: "None", normal: "Normal", strong: "Strong" }', source)
+        self.assertIn('this.project.enhance_level = this.els.enhance.value', source)
+        self.assertIn('Strong: creates a much longer rewriter-style scene with compatible new staging', source)
+        self.assertIn('Enhance levels are available only with Qwen3.8', source)
+
+    def test_model_download_progress_updates_catalog_and_refreshes_after_generation(self):
+        source = Path("web/minimax_h3_prompter.js").read_text(encoding="utf-8")
+        self.assertIn("updateModelDownloadDisplay(bundleId, downloaded, total, complete = false)", source)
+        self.assertIn("this.updateModelDownloadDisplay(bundleId, downloaded, total, percent >= 100)", source)
+        self.assertIn("await this.loadModels(selectedBundle, false)", source)
+        self.assertIn("modelInfo.text_size = 0", source)
+        self.assertIn("modelInfo.vision_size = 0", source)
 
     def test_picture_outputs_follow_picture_reference_order(self):
         first = object()
@@ -1132,16 +1566,16 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertNotEqual(result["draft_video_prompt"], result["video_prompt"])
         self.assertTrue(result["llm_prompt"].endswith(result["draft_video_prompt"]))
 
-    def test_enhance_model_list_exposes_qwen38_and_lightx2v(self):
+    def test_enhance_model_list_exposes_qwen38_and_omni(self):
         with tempfile.TemporaryDirectory() as root:
             for name in ("writer.gguf", "adapter-LoRA.gguf", "model-mmproj.gguf", "draft.gguf"):
                 Path(root, name).write_bytes(b"x")
             models = MODULE.list_enhance_models([root])
         self.assertEqual(len(models), 2)
         self.assertEqual(models[0]["id"], MODULE.DEFAULT_ENHANCE_MODEL_ID)
-        self.assertEqual(models[1]["id"], MODULE.LIGHTX2V_MODEL_ID)
+        self.assertEqual(models[1]["id"], MODULE.OMNI_MODEL_ID)
 
-    def test_model_bundle_list_exposes_qwen_and_lightx2v(self):
+    def test_model_bundle_list_exposes_qwen_and_omni(self):
         with tempfile.TemporaryDirectory() as root:
             Path(root, MODULE.DEFAULT_ENHANCE_MODEL_FILE).write_bytes(b"qwen")
             Path(root, MODULE.QWEN_IMAGE_MMPROJ_FILE).write_bytes(b"qwen-projector")
@@ -1151,60 +1585,74 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertTrue(models[0]["label"].startswith("JonathanColetti/Qwen3.8-27B-Uncensored-GGUF · Q4_K_M + Vision F16"))
         self.assertTrue(models[0]["label"].endswith("VRAM ≈ 20–22 GB"))
         self.assertTrue(models[0]["installed"])
-        self.assertFalse(models[1]["installed"])
-        self.assertEqual(models[1]["supported_modes"], ["T2VA", "I2VA", "FL2VA", "L2VA"])
-        self.assertIn("R2V unsupported", models[1]["label"])
-        self.assertIn("Q8_0 + Vision F16", models[1]["label"])
-        self.assertEqual(models[1]["runtime"], "llama.cpp-gguf")
+        self.assertEqual(models[1]["id"], MODULE.OMNI_MODEL_ID)
+        self.assertEqual(models[1]["supported_modes"], ["T2VA", "I2VA", "FL2VA", "L2VA", "REF2VA"])
+        self.assertNotIn("image/video/audio", models[1]["label"])
+        self.assertEqual(models[1]["runtime"], "llama.cpp-mtmd-gguf-lora")
 
     def test_normalize_project_preserves_supported_image_model_selection(self):
         project, _warnings = MODULE.normalize_project({"image_model": MODULE.QWEN_IMAGE_MODEL_ID})
         self.assertEqual(project["image_model"], MODULE.QWEN_IMAGE_MODEL_ID)
 
-    def test_normalize_project_preserves_lightx2v_selection(self):
+    def test_normalize_project_migrates_removed_lightx2v_selection_to_qwen(self):
+        removed = next(iter(MODULE.REMOVED_LIGHTX2V_MODEL_IDS))
         project, _warnings = MODULE.normalize_project({
-            "enhance_model": MODULE.LIGHTX2V_MODEL_ID,
-            "image_model": MODULE.LIGHTX2V_MODEL_ID,
+            "enhance_model": removed,
+            "image_model": removed,
         })
-        self.assertEqual(project["enhance_model"], MODULE.LIGHTX2V_MODEL_ID)
-        self.assertEqual(project["image_model"], MODULE.LIGHTX2V_MODEL_ID)
+        self.assertEqual(project["enhance_model"], MODULE.DEFAULT_ENHANCE_MODEL_ID)
+        self.assertEqual(project["image_model"], MODULE.QWEN_IMAGE_MODEL_ID)
 
-    def test_normalize_project_migrates_legacy_lightx2v_selection(self):
+    def test_normalize_project_preserves_omni_selection(self):
         project, _warnings = MODULE.normalize_project({
-            "enhance_model": MODULE.LEGACY_LIGHTX2V_MODEL_ID,
-            "image_model": MODULE.LEGACY_LIGHTX2V_MODEL_ID,
+            "enhance_model": MODULE.OMNI_MODEL_ID,
+            "image_model": MODULE.OMNI_MODEL_ID,
         })
-        self.assertEqual(project["enhance_model"], MODULE.LIGHTX2V_MODEL_ID)
-        self.assertEqual(project["image_model"], MODULE.LIGHTX2V_MODEL_ID)
+        self.assertEqual(project["enhance_model"], MODULE.OMNI_MODEL_ID)
+        self.assertEqual(project["image_model"], MODULE.OMNI_MODEL_ID)
 
-    def test_lightx2v_messages_preserve_direct_image_order(self):
-        with tempfile.TemporaryDirectory() as root:
-            first = Path(root, "first.png")
-            last = Path(root, "last.png")
-            first.write_bytes(b"first")
-            last.write_bytes(b"last")
-            messages = MODULE._lightx2v_messages(
-                "Two states connect.", "fl2av", "adaptive", 5,
-                [str(first), str(last)],
-            )
-        user_content = messages[1]["content"]
-        images = [item["image_url"]["url"] for item in user_content if item["type"] == "image_url"]
-        self.assertEqual(len(images), 2)
-        self.assertIn("Zmlyc3Q=", images[0])
-        self.assertIn("bGFzdA==", images[1])
-        self.assertIn("task: fl2av", user_content[-1]["text"])
-        self.assertIn("Cuts and transitions may occur only at supplied shot boundaries", messages[0]["content"])
+    def test_omni_system_prompts_are_bundled_for_base_and_ref_modes(self):
+        base = MODULE._omni_system_prompt("I2VA")
+        ref = MODULE._omni_system_prompt("REF2VA")
+        self.assertIn("Exactly three core fields", base)
+        self.assertIn("Return exactly these six sections", ref)
+        self.assertIn("retention_analysis:", ref)
+        # These hashes lock the UTF-8 text published in the official Omni
+        # repository's system_prompt.py. In particular, this catches Windows
+        # console encoding damage to em/en dashes and numeric ranges.
+        self.assertEqual(
+            hashlib.sha256(base.encode("utf-8")).hexdigest(),
+            "6386c2cbcdbd865efcf4a2da9e18cac47d3654d544f1a95bd229f5748662eeb4",
+        )
+        self.assertEqual(
+            hashlib.sha256(ref.encode("utf-8")).hexdigest(),
+            "5970ae7039c4eab04990dc9ec893e56cbf67d22fe5c55946e41f3ba79ed9034d",
+        )
 
-    def test_lightx2v_rejects_ref2va_before_model_download(self):
-        with self.assertRaisesRegex(ValueError, "does not support R2V/REF2VA"):
-            MODULE.enhance_project({
-                "mode": "REF2VA",
-                "shots": [{"duration": 5, "visual_action": "@hero walks."}],
-                "references": [{
-                    "type": "picture", "role": "subject_identity", "alias": "hero",
-                    "strength": "normal",
-                }],
-            }, MODULE.LIGHTX2V_MODEL_ID, MODULE.LIGHTX2V_MODEL_ID)
+    def test_omni_system_prompt_routes_only_ref2va_to_ref2av_contract(self):
+        for mode in ("T2VA", "I2VA", "FL2VA", "L2VA"):
+            with self.subTest(mode=mode):
+                prompt = MODULE._omni_system_prompt(mode)
+                self.assertIn("T2AV, I2AV, FL2AV, and L2AV modes", prompt)
+                self.assertNotIn("subject_definitions:", prompt)
+        self.assertIn("subject_definitions:", MODULE._omni_system_prompt("REF2VA"))
+
+    def test_omni_raw_prompt_keeps_shots_aliases_and_per_shot_presets_concise(self):
+        project, _warnings = MODULE.normalize_project({
+            "mode": "REF2VA",
+            "shots": [{
+                "duration": 5, "visual_action": "@hero walks forward.",
+                "presets": {"camera_motion": "orbit_left", "style": "cinematic_live_action"},
+            }],
+            "references": [{
+                "type": "picture", "role": "subject_identity", "alias": "hero",
+            }],
+        })
+        raw = MODULE._build_omni_raw_prompt(project, 5.167)
+        self.assertIn("<Subject 1> walks forward", raw)
+        self.assertIn("[Shot 1] Required presets:", raw)
+        self.assertIn("orbit left", raw)
+        self.assertNotIn("MODE_DATA:", raw)
 
     def test_qwen_vision_bundle_reuses_writer_model(self):
         with tempfile.TemporaryDirectory() as root:
@@ -1238,41 +1686,23 @@ class MinimaxH3PrompterTests(unittest.TestCase):
             MODULE.QWEN_IMAGE_MMPROJ_FILE, 0, MODULE.QWEN_IMAGE_MMPROJ_SIZE,
         )])
 
-    def test_lightx2v_download_reports_live_bytes_and_explicit_completion(self):
-        with tempfile.TemporaryDirectory() as root:
-            events = []
-
-            def fake_download(repo, filename, local_dir, component_size,
-                              completed_size, bundle_size, progress):
-                self.assertEqual(repo, MODULE.LIGHTX2V_MODEL_REPO)
-                if progress:
-                    progress(
-                        stage="downloading", message=f"Downloading {filename}",
-                        downloaded=completed_size + component_size // 2, total=bundle_size,
-                    )
-                path = Path(local_dir, filename)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(b"gguf")
-                return str(path)
-
-            with (
-                mock.patch.object(MODULE, "_llm_roots", return_value=[root]),
-                mock.patch.dict(sys.modules, {"huggingface_hub": SimpleNamespace()}),
-                mock.patch.object(MODULE, "_download_image_component", side_effect=fake_download),
-            ):
-                model_path, mmproj_path = MODULE._resolve_lightx2v_model(
-                    lambda **values: events.append(values)
-                )
-
-        byte_events = [event for event in events if event.get("stage") == "downloading"]
-        self.assertTrue(any(0 < event.get("downloaded", 0) < event.get("total", 0) for event in byte_events))
-        self.assertEqual(byte_events[-1]["downloaded"], byte_events[-1]["total"])
-        self.assertTrue(model_path.endswith(MODULE.LIGHTX2V_MODEL_FILE))
-        self.assertTrue(mmproj_path.endswith(MODULE.LIGHTX2V_MMPROJ_FILE))
-
     def test_llm_output_cleanup_removes_reasoning_and_fence(self):
         cleaned = MODULE._clean_llm_output("<think>hidden</think>\n```text\nfinal prompt\n```")
         self.assertEqual(cleaned, "final prompt")
+
+    def test_llm_output_cleanup_rejects_unfinished_reasoning_trace(self):
+        self.assertEqual(MODULE._clean_llm_output("<think>still reasoning"), "")
+
+    def test_llm_output_cleanup_removes_qwen_chat_end_token(self):
+        prompt = (
+            "integrated_multimodal_description: [Shot 1] A woman walks.\n"
+            "overall_soundscape: Footsteps.\nnon_diegetic_music: N/A<|im_end|>"
+        )
+        self.assertEqual(
+            MODULE._clean_llm_output(prompt),
+            "integrated_multimodal_description: [Shot 1] A woman walks.\n"
+            "overall_soundscape: Footsteps.\nnon_diegetic_music: N/A",
+        )
 
     def test_llm_output_cleanup_extracts_marked_prompt_from_cli_noise(self):
         noisy = "Loading model...\nllama.cpp banner\n<H3_PROMPT>\nfinal prompt\n</H3_PROMPT>\nExiting..."
@@ -1281,6 +1711,163 @@ class MinimaxH3PrompterTests(unittest.TestCase):
     def test_llm_output_cleanup_removes_legacy_interactive_cli_noise(self):
         noisy = "Loading model...\navailable commands:\n\n> echoed input ... (truncated)\nfinal prompt\n\nExiting..."
         self.assertEqual(MODULE._clean_llm_output(noisy), "final prompt")
+
+    def test_llm_output_cleanup_removes_delimiterless_omni_prompt_echo(self):
+        noisy = (
+            "task: T2AV\nresolution: 16:9\neffective_duration: 5.17s\n"
+            "raw_prompt: [Shot 1] long request ... (truncated)\n"
+            "integrated_multimodal_description: [Shot 1] Final description.\n"
+            "overall_soundscape: Final ambience.\nnon_diegetic_music: N/A"
+        )
+        self.assertEqual(
+            MODULE._clean_llm_output(noisy),
+            "integrated_multimodal_description: [Shot 1] Final description.\n"
+            "overall_soundscape: Final ambience.\nnon_diegetic_music: N/A",
+        )
+
+    def test_llm_output_cleanup_removes_inline_omni_prompt_echo(self):
+        noisy = (
+            "task: T2AV resolution: 16:9 effective_duration: 5.17s "
+            "raw_prompt: [Shot 1] Korean input ... (truncated) "
+            "integrated_multimodal_description: [Shot 1] Final description. "
+            "overall_soundscape: Final ambience. non_diegetic_music: N/A"
+        )
+        self.assertEqual(
+            MODULE._clean_llm_output(noisy),
+            "integrated_multimodal_description: [Shot 1] Final description. "
+            "overall_soundscape: Final ambience. non_diegetic_music: N/A",
+        )
+
+    def test_llm_output_cleanup_removes_complete_inline_omni_prompt_echo(self):
+        noisy = (
+            "task: T2AV resolution: 16:9 effective_duration: 5.17s "
+            "raw_prompt: [Shot 1] A woman walks. "
+            "integrated_multimodal_description: [Shot 1] Final description. "
+            "overall_soundscape: Final ambience. non_diegetic_music: N/A"
+        )
+        self.assertEqual(
+            MODULE._clean_llm_output(noisy),
+            "integrated_multimodal_description: [Shot 1] Final description. "
+            "overall_soundscape: Final ambience. non_diegetic_music: N/A",
+        )
+
+    def test_llm_output_cleanup_removes_omni_echo_after_runtime_banner(self):
+        noisy = (
+            "llama.cpp runtime ready\n"
+            "task: T2AV resolution: 16:9 effective_duration: 5.17s "
+            "raw_prompt: [Shot 1] A woman walks. "
+            "integrated_multimodal_description: [Shot 1] Final description. "
+            "overall_soundscape: Final ambience. non_diegetic_music: N/A"
+        )
+        self.assertEqual(
+            MODULE._clean_llm_output(noisy),
+            "integrated_multimodal_description: [Shot 1] Final description. "
+            "overall_soundscape: Final ambience. non_diegetic_music: N/A",
+        )
+
+    def test_omni_text_prompt_is_a_single_pre_rendered_assistant_turn(self):
+        rendered = MODULE._render_omni_text_prompt("System rules", "Rewrite request")
+        self.assertEqual(
+            rendered,
+            "<|im_start|>system\nSystem rules<|im_end|>\n"
+            "<|im_start|>user\nRewrite request<|im_end|>\n"
+            "<|im_start|>assistant\n",
+        )
+        self.assertNotIn("<|im_end|>\n<|im_start|>assistant\n<|im_end|>", rendered)
+
+    def test_qwen3_text_prompt_prefills_completed_nonthinking_block(self):
+        rendered = MODULE._render_qwen3_text_prompt("System rules", "Rewrite request")
+        self.assertEqual(
+            rendered,
+            "<|im_start|>system\nSystem rules<|im_end|>\n"
+            "<|im_start|>user\nRewrite request<|im_end|>\n"
+            "<|im_start|>assistant\n<think>\n\n</think>\n\n",
+        )
+        self.assertTrue(rendered.endswith("<think>\n\n</think>\n\n"))
+
+    def test_llama_completion_finder_prefers_configured_one_shot_frontend(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            executable = Path(temp_dir) / ("llama-completion.exe" if os.name == "nt" else "llama-completion")
+            executable.write_bytes(b"")
+            with mock.patch.dict(os.environ, {"TOYXYZ_LLAMA_COMPLETION": str(executable)}):
+                self.assertEqual(MODULE._find_llama_completion(), str(executable.resolve()))
+
+    def test_qwen_completion_uses_supported_reasoning_off_flag(self):
+        self.assertEqual(
+            MODULE._qwen_thinking_args("C:/runtime/llama-completion.exe"),
+            ["--reasoning", "off"],
+        )
+        self.assertEqual(
+            MODULE._qwen_thinking_args("C:/legacy/llama-cli.exe"),
+            ["--chat-template-kwargs", '{"enable_thinking":false}'],
+        )
+
+    def test_managed_runtime_uses_its_own_user_namespace(self):
+        fake_folder_paths = SimpleNamespace(get_user_directory=lambda: "C:/ComfyUI/user")
+        with mock.patch.dict(sys.modules, {"folder_paths": fake_folder_paths}):
+            root = MODULE._llama_runtime_root().replace("\\", "/")
+        self.assertEqual(root, "C:/ComfyUI/user/toyxyz_minimax_h3/runtime")
+
+    def test_managed_runtime_reuses_complete_local_install_without_network(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime = Path(temp_dir)
+            (runtime / "llama-completion.exe").write_bytes(b"runtime")
+            (runtime / "llama-mtmd-cli.exe").write_bytes(b"runtime")
+            with (
+                mock.patch.object(MODULE, "_llama_runtime_backend", return_value="cuda"),
+                mock.patch.object(MODULE, "_managed_llama_dir", return_value=str(runtime)),
+                mock.patch.object(MODULE.urllib.request, "urlopen") as urlopen,
+            ):
+                self.assertEqual(MODULE._ensure_managed_llama_runtime(), str(runtime))
+            urlopen.assert_not_called()
+
+    def test_llm_output_cleanup_removes_textual_end_sentinel(self):
+        output = (
+            "integrated_multimodal_description: [Shot 1] A woman walks.\n"
+            "overall_soundscape: Footsteps.\n"
+            "non_diegetic_music: N/A [end of text]"
+        )
+        self.assertEqual(
+            MODULE._clean_llm_output(output),
+            "integrated_multimodal_description: [Shot 1] A woman walks.\n"
+            "overall_soundscape: Footsteps.\n"
+            "non_diegetic_music: N/A",
+        )
+
+    def test_llm_output_cleanup_uses_task_schema_for_complete_i2av_echo(self):
+        noisy = (
+            "task: I2AV resolution: adaptive effective_duration: 5.17s "
+            "raw_prompt: [Shot 1] A woman walks. "
+            "For the target video, at 0.00 seconds into the target video, "
+            "<Picture 1> (from [Shot 1]) is fully referenced. "
+            "integrated_multimodal_description: [Shot 1] Final description. "
+            "overall_soundscape: Final ambience. non_diegetic_music: N/A"
+        )
+        cleaned = MODULE._clean_llm_output(noisy)
+        self.assertTrue(cleaned.startswith("For the target video,"))
+        self.assertIn("integrated_multimodal_description:", cleaned)
+
+    def test_llm_output_cleanup_preserves_alignment_after_omni_prompt_echo(self):
+        noisy = (
+            "task: I2AV\nraw_prompt: long request ... (truncated)\n"
+            "For the target video, at 0.00 seconds into the target video, "
+            "<Picture 1> (from [Shot 1]) is fully referenced.\n\n"
+            "integrated_multimodal_description: [Shot 1] Final description.\n"
+            "overall_soundscape: Final ambience.\nnon_diegetic_music: N/A"
+        )
+        cleaned = MODULE._clean_llm_output(noisy)
+        self.assertTrue(cleaned.startswith("For the target video,"))
+        self.assertIn("integrated_multimodal_description:", cleaned)
+
+    def test_llm_output_cleanup_keeps_ref2av_schema_after_omni_prompt_echo(self):
+        noisy = (
+            "task: REF2AV\nraw_prompt: long request ... (truncated)\n"
+            "subject_definitions: <Subject 1> is defined.\n"
+            "summary: [reference generation] Test.\nretention_analysis: Test.\n"
+            "detailed_description: [Shot 1] Test.\noverall_soundscape: N/A\n"
+            "non_diegetic_music: N/A"
+        )
+        self.assertTrue(MODULE._clean_llm_output(noisy).startswith("subject_definitions:"))
 
     def test_reference_image_metadata_is_preserved(self):
         result = self.compile({
@@ -1707,13 +2294,13 @@ class MinimaxH3PrompterTests(unittest.TestCase):
             def fake_run(command, **kwargs):
                 self.assertIn("--image", command)
                 self.assertIn("--mmproj", command)
-                self.assertIn("stable identity", command[command.index("-p") + 1].lower())
-                self.assertIn("Never infer or label nationality, ethnicity, race, age", command[command.index("-p") + 1])
-                self.assertIn("Do not use speculative alternatives joined by or", command[command.index("-p") + 1])
-                self.assertIn("crop boundaries, visible body range", command[command.index("-p") + 1])
-                self.assertIn("VISUAL_MEDIUM:", command[command.index("-p") + 1])
-                self.assertIn("POSE_SUPPORT_CONTACT:", command[command.index("-p") + 1])
-                self.assertIn("ACTION_RELEVANT_OBJECTS:", command[command.index("-p") + 1])
+                self.assertIn("stable identity", command_prompt(command).lower())
+                self.assertIn("Never infer or label nationality, ethnicity, race, age", command_prompt(command))
+                self.assertIn("Do not use speculative alternatives joined by or", command_prompt(command))
+                self.assertIn("crop boundaries, visible body range", command_prompt(command))
+                self.assertIn("VISUAL_MEDIUM:", command_prompt(command))
+                self.assertIn("POSE_SUPPORT_CONTACT:", command_prompt(command))
+                self.assertIn("ACTION_RELEVANT_OBJECTS:", command_prompt(command))
                 return SimpleNamespace(
                     returncode=0,
                     stdout="<REFERENCE_ANALYSIS>stable observable details</REFERENCE_ANALYSIS>",
@@ -1724,6 +2311,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
                 mock.patch.dict(sys.modules, {"folder_paths": fake_folder_paths}),
                 mock.patch.object(MODULE, "_resolve_image_model", return_value=("vision.gguf", "mmproj.gguf")),
                 mock.patch.object(MODULE, "_find_llama_cli", return_value="llama-cli"),
+                mock.patch.object(MODULE, "_find_llama_completion", return_value="llama-cli"),
                 mock.patch.object(MODULE.subprocess, "run", side_effect=fake_run),
             ):
                 result = MODULE.analyze_reference_image(
@@ -1758,6 +2346,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
                 mock.patch.dict(sys.modules, {"folder_paths": fake_folder_paths}),
                 mock.patch.object(MODULE, "_resolve_image_model", return_value=("qwen.gguf", "vision.gguf")),
                 mock.patch.object(MODULE, "_find_llama_cli", return_value="llama-cli"),
+                mock.patch.object(MODULE, "_find_llama_completion", return_value="llama-cli"),
                 mock.patch.object(MODULE.subprocess, "run", side_effect=fake_run),
             ):
                 result = MODULE.analyze_reference_image(
@@ -1767,23 +2356,22 @@ class MinimaxH3PrompterTests(unittest.TestCase):
 
     def test_enhance_project_runs_selected_model_with_chat_messages(self):
         def fake_run(command, **kwargs):
-            self.assertIn("--single-turn", command)
-            self.assertIn("--chat-template-kwargs", command)
-            self.assertEqual(
-                command[command.index("--chat-template-kwargs") + 1],
-                '{"enable_thinking":false}',
-            )
-            system_path = command[command.index("-sysf") + 1]
-            system_text = Path(system_path).read_text(encoding="utf-8")
+            self.assertIn("-no-cnv", command)
+            self.assertIn("-st", command)
+            self.assertIn("--special", command)
+            self.assertNotIn("--chat-template-kwargs", command)
+            rendered = command_prompt(command)
+            system_text = rendered.split("<|im_end|>", 1)[0].split("\n", 1)[1]
             self.assertTrue(system_text.startswith("ACTIVE MODE: T2VA"))
             self.assertIn("Minimal detail needed to make the request renderable", system_text)
             self.assertIn("FINAL MODE LOCK — T2VA", system_text)
             self.assertIn("<H3_PROMPT>", system_text)
-            user_data = command[command.index("-p") + 1]
+            user_data = rendered.split("<|im_start|>user\n", 1)[1].split("<|im_end|>", 1)[0]
             self.assertTrue(user_data.startswith("INPUT DATA ONLY"))
             self.assertIn("mode: T2VA", user_data)
             self.assertIn("visual_action: A woman opens a door.", user_data)
-            self.assertIn("--log-disable", command)
+            self.assertNotIn("--log-disable", command)
+            self.assertNotIn("--reasoning", command)
             self.assertEqual(command[command.index("--top-k") + 1], "20")
             self.assertEqual(command[command.index("-n") + 1], "1800")
             return SimpleNamespace(returncode=0, stdout="<H3_PROMPT>\nintegrated_multimodal_description: [Shot 1] enhanced H3 prompt\n\noverall_soundscape: N/A\n\nnon_diegetic_music: N/A\n</H3_PROMPT>", stderr="")
@@ -1791,6 +2379,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         with (
             mock.patch.object(MODULE, "_resolve_enhance_model", return_value="model.gguf"),
             mock.patch.object(MODULE, "_find_llama_cli", return_value="llama-cli"),
+            mock.patch.object(MODULE, "_find_llama_completion", return_value="llama-cli"),
             mock.patch.object(MODULE.subprocess, "run", side_effect=fake_run),
         ):
             result = MODULE.enhance_project({
@@ -1812,6 +2401,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         with (
             mock.patch.object(MODULE, "_resolve_enhance_model", return_value="model.gguf"),
             mock.patch.object(MODULE, "_find_llama_cli", return_value="llama-cli"),
+            mock.patch.object(MODULE, "_find_llama_completion", return_value="llama-cli"),
             mock.patch.object(MODULE.subprocess, "run", side_effect=fake_run),
         ):
             result = MODULE.enhance_project({
@@ -1906,7 +2496,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         calls = []
 
         def fake_run(command, **kwargs):
-            prompt = command[command.index("-p") + 1]
+            prompt = command_prompt(command)
             temperature = command[command.index("--temp") + 1]
             calls.append((prompt, temperature))
             if len(calls) == 1:
@@ -1933,6 +2523,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         with (
             mock.patch.object(MODULE, "_resolve_enhance_model", return_value="model.gguf"),
             mock.patch.object(MODULE, "_find_llama_cli", return_value="llama-cli"),
+            mock.patch.object(MODULE, "_find_llama_completion", return_value="llama-cli"),
             mock.patch.object(MODULE.subprocess, "run", side_effect=fake_run),
         ):
             result = MODULE.enhance_project({
@@ -2003,7 +2594,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         )
 
         def fake_run(command, **kwargs):
-            calls.append(command[command.index("-p") + 1])
+            calls.append(command_prompt(command))
             return SimpleNamespace(
                 returncode=0,
                 stdout=f"<H3_PROMPT>{invalid}</H3_PROMPT>",
@@ -2013,6 +2604,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         with (
             mock.patch.object(MODULE, "_resolve_enhance_model", return_value="model.gguf"),
             mock.patch.object(MODULE, "_find_llama_cli", return_value="llama-cli"),
+            mock.patch.object(MODULE, "_find_llama_completion", return_value="llama-cli"),
             mock.patch.object(MODULE.subprocess, "run", side_effect=fake_run),
         ):
             result = MODULE.enhance_project({
@@ -2038,11 +2630,12 @@ class MinimaxH3PrompterTests(unittest.TestCase):
             }
 
         def fake_run(command, **kwargs):
-            user_prompt = command[command.index("-p") + 1]
-            system_text = Path(command[command.index("-sysf") + 1]).read_text(encoding="utf-8")
+            rendered = command_prompt(command)
+            user_prompt = rendered.split("<|im_start|>user\n", 1)[1].split("<|im_end|>", 1)[0]
+            system_text = rendered.split("<|im_end|>", 1)[0].split("\n", 1)[1]
             self.assertTrue(system_text.startswith("ACTIVE MODE: REF2VA FULL-REFERENCE"))
             self.assertIn("FINAL MODE LOCK — REF2VA", system_text)
-            self.assertIn("Use exactly these labels in order: <Subject 1>", system_text)
+            self.assertIn("Define and use exactly these output labels in order: <Subject 1>", system_text)
             self.assertIn("never use `integrated_multimodal_description:`", system_text)
             self.assertEqual(command[command.index("--top-k") + 1], "20")
             self.assertEqual(command[command.index("-n") + 1], "3072")
@@ -2065,6 +2658,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
             mock.patch.object(MODULE, "analyze_reference_image", side_effect=fake_analyze),
             mock.patch.object(MODULE, "_resolve_enhance_model", return_value="model.gguf"),
             mock.patch.object(MODULE, "_find_llama_cli", return_value="llama-cli"),
+            mock.patch.object(MODULE, "_find_llama_completion", return_value="llama-cli"),
             mock.patch.object(MODULE.subprocess, "run", side_effect=fake_run),
         ):
             result = MODULE.enhance_project({
@@ -2076,6 +2670,10 @@ class MinimaxH3PrompterTests(unittest.TestCase):
                     "image_filename": "hero.png", "image_subfolder": "toyxyz_h3_references",
                 }],
             }, "local:model.gguf", "qwen3.8-vision")
+        self.assertIn(
+            "<Subject 1> (appears in [Shot 1]): fully_preserved - retained.",
+            result["enhanced_prompt"],
+        )
         self.assertIn("[Shot 1] <Subject 1> turns toward the camera with image evidence", result["enhanced_prompt"])
         self.assertEqual(result["reference_analyses"][0]["id"], "hero-ref")
         self.assertEqual(result["reference_analyses"][0]["analysis"], "A woman with long silver hair and a red coat.")
@@ -2129,6 +2727,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
             mock.patch.object(MODULE, "analyze_reference_image") as cli_analysis,
             mock.patch.object(MODULE, "_resolve_enhance_model", return_value="model.gguf"),
             mock.patch.object(MODULE, "_find_llama_cli", return_value="llama-cli"),
+            mock.patch.object(MODULE, "_find_llama_completion", return_value="llama-cli"),
             mock.patch.object(MODULE.subprocess, "run", side_effect=fake_run),
         ):
             result = MODULE.enhance_project({
@@ -2178,7 +2777,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         calls = []
 
         def fake_run(command, **kwargs):
-            calls.append(command[command.index("-p") + 1])
+            calls.append(command_prompt(command))
             if len(calls) == 1:
                 output = "integrated_multimodal_description: [Shot 1] First. [Shot 2] At 00:04.500, invented cut.\n\noverall_soundscape: N/A\n\nnon_diegetic_music: N/A"
             else:
@@ -2189,6 +2788,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         with (
             mock.patch.object(MODULE, "_resolve_enhance_model", return_value="model.gguf"),
             mock.patch.object(MODULE, "_find_llama_cli", return_value="llama-cli"),
+            mock.patch.object(MODULE, "_find_llama_completion", return_value="llama-cli"),
             mock.patch.object(MODULE.subprocess, "run", side_effect=fake_run),
         ):
             result = MODULE.enhance_project({
@@ -2208,7 +2808,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
             }
 
         def fake_run(command, **kwargs):
-            prompt_text = command[command.index("-p") + 1]
+            prompt_text = command_prompt(command)
             calls.append(prompt_text)
             if len(calls) == 1:
                 output = (
@@ -2240,6 +2840,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
             mock.patch.object(MODULE, "analyze_reference_image", side_effect=fake_analyze),
             mock.patch.object(MODULE, "_resolve_enhance_model", return_value="model.gguf"),
             mock.patch.object(MODULE, "_find_llama_cli", return_value="llama-cli"),
+            mock.patch.object(MODULE, "_find_llama_completion", return_value="llama-cli"),
             mock.patch.object(MODULE.subprocess, "run", side_effect=fake_run),
         ):
             result = MODULE.enhance_project({
@@ -2259,7 +2860,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         calls = []
 
         def fake_run(command, **kwargs):
-            calls.append(command[command.index("-p") + 1])
+            calls.append(command_prompt(command))
             output = (
                 "subject_definitions:\n<Subject 1> is reusable guidance derived from <Picture 1>.\n\n"
                 "summary:\n[Reference Generation Task] The target uses <Subject 1> as weak appearance guidance.\n\n"
@@ -2274,6 +2875,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         with (
             mock.patch.object(MODULE, "_resolve_enhance_model", return_value="model.gguf"),
             mock.patch.object(MODULE, "_find_llama_cli", return_value="llama-cli"),
+            mock.patch.object(MODULE, "_find_llama_completion", return_value="llama-cli"),
             mock.patch.object(MODULE.subprocess, "run", side_effect=fake_run),
         ):
             result = MODULE.enhance_project({
@@ -2305,13 +2907,14 @@ class MinimaxH3PrompterTests(unittest.TestCase):
             )
 
         def fake_run(command, **kwargs):
-            calls.append(command[command.index("-p") + 1])
+            calls.append(command_prompt(command))
             generated = output(weak_detail=len(calls) == 1)
             return SimpleNamespace(returncode=0, stdout=f"<H3_PROMPT>{generated}</H3_PROMPT>", stderr="")
 
         with (
             mock.patch.object(MODULE, "_resolve_enhance_model", return_value="model.gguf"),
             mock.patch.object(MODULE, "_find_llama_cli", return_value="llama-cli"),
+            mock.patch.object(MODULE, "_find_llama_completion", return_value="llama-cli"),
             mock.patch.object(MODULE.subprocess, "run", side_effect=fake_run),
         ):
             result = MODULE.enhance_project({
@@ -2615,8 +3218,8 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertIn("number each label type independently", llm_prompt)
         self.assertIn("<Subject N> (Sx)", llm_prompt)
         self.assertIn("Define each image-derived Subject in one line", llm_prompt)
-        self.assertIn("RETENTION OUTPUT MARKERS:", llm_prompt)
-        self.assertIn("<Subject 1> uses partially_preserved", llm_prompt)
+        self.assertIn("RETENTION_LINE_PLAN:", llm_prompt)
+        self.assertIn("<Subject 1> (appears in [Shot 1]): partially_preserved -", llm_prompt)
         self.assertNotIn("normal = partially_preserved", llm_prompt)
         self.assertIn("must be correct in the final output", llm_prompt)
         self.assertIn("ACTIVE MODE: REF2VA FULL-REFERENCE", llm_prompt)

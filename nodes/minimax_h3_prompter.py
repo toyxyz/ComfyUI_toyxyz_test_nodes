@@ -13,16 +13,18 @@ import sys
 import tempfile
 import threading
 import time
+import tarfile
 import urllib.error
 import urllib.request
 import uuid
+import zipfile
 from contextlib import contextmanager
 from typing import Any
 
 
 MODEL_FPS = 24
 MIN_SHOT_DURATION = 0.25
-CURRENT_PROJECT_VERSION = 22
+CURRENT_PROJECT_VERSION = 26
 SUPPORTED_MODES = ("AUTO", "T2VA", "I2VA", "FL2VA", "L2VA", "REF2VA")
 SUPPORTED_DIALOGUE_MODES = ("spoken", "voiceover", "singing")
 SUPPORTED_TRANSITIONS = ("cut", "cross-dissolve", "fade", "wipe")
@@ -63,25 +65,37 @@ QWEN_IMAGE_MODEL_SIZE = DEFAULT_ENHANCE_MODEL_SIZE
 QWEN_IMAGE_MMPROJ_SIZE = 927606912
 QWEN_MODEL_DISPLAY_NAME = "JonathanColetti/Qwen3.8-27B-Uncensored-GGUF · Q4_K_M + Vision F16"
 QWEN_MODEL_VRAM_LABEL = "VRAM ≈ 20–22 GB"
-LEGACY_LIGHTX2V_MODEL_ID = "hf:lightx2v/MiniMax-H3-Prompt-Rewriter-LoRA-8B"
-LIGHTX2V_MODEL_ID = "hf:indhic-ai/MiniMax_H3-Prompt_Rewriter-8B-LORA-Merged-GGUF/Q8_0+vision-f16"
-LIGHTX2V_MODEL_REPO = "indhic-ai/MiniMax_H3-Prompt_Rewriter-8B-LORA-Merged-GGUF"
-LIGHTX2V_MODEL_FILE = "minimax-h3-prompt-rewriter-8b-Q8_0.gguf"
-LIGHTX2V_MMPROJ_FILE = "mmproj-minimax-h3-prompt-rewriter-8b-f16.gguf"
-LIGHTX2V_MODEL_SIZE = 8710000000
-LIGHTX2V_MMPROJ_SIZE = 1160000000
-LIGHTX2V_TOTAL_SIZE = LIGHTX2V_MODEL_SIZE + LIGHTX2V_MMPROJ_SIZE
-LIGHTX2V_MODEL_DISPLAY_NAME = "indhic-ai/MiniMax_H3-Prompt_Rewriter-8B-LORA-Merged-GGUF · Q8_0 + Vision F16"
-LIGHTX2V_MODEL_VRAM_LABEL = "VRAM ≈ 10–12 GB"
-LIGHTX2V_SUPPORTED_MODES = ("T2VA", "I2VA", "FL2VA", "L2VA")
-LIGHTX2V_SYSTEM_PROMPTS_PATH = os.path.join(
-    os.path.dirname(__file__), "minimax_h3_lightx2v_system_prompts.json"
+REMOVED_LIGHTX2V_MODEL_IDS = {
+    "hf:lightx2v/MiniMax-H3-Prompt-Rewriter-LoRA-8B",
+    "hf:indhic-ai/MiniMax_H3-Prompt_Rewriter-8B-LORA-Merged-GGUF/Q8_0+vision-f16",
+}
+OMNI_MODEL_ID = "hf:pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-Omni-GGUF/Q8_0+Qwen2.5-Omni-7B-Q4_K_M"
+OMNI_ADAPTER_REPO = "pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-Omni-GGUF"
+OMNI_ADAPTER_FILE = "MiniMax-H3-Prompt-Rewriter-LoRA-Omni-Q8_0.gguf"
+OMNI_BASE_REPO = "ggml-org/Qwen2.5-Omni-7B-GGUF"
+OMNI_BASE_FILE = "Qwen2.5-Omni-7B-Q4_K_M.gguf"
+OMNI_MMPROJ_FILE = "mmproj-Qwen2.5-Omni-7B-Q8_0.gguf"
+OMNI_ADAPTER_SIZE = 322961408
+OMNI_BASE_SIZE = 4680000000
+OMNI_MMPROJ_SIZE = 1550000000
+OMNI_TOTAL_SIZE = OMNI_ADAPTER_SIZE + OMNI_BASE_SIZE + OMNI_MMPROJ_SIZE
+OMNI_MODEL_DISPLAY_NAME = "pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-Omni-GGUF · Q8_0 + Qwen2.5-Omni-7B Q4_K_M"
+OMNI_MODEL_VRAM_LABEL = "VRAM ≈ 9 GB"
+OMNI_SYSTEM_PROMPTS_PATH = os.path.join(
+    os.path.dirname(__file__), "minimax_h3_omni_system_prompts.json"
 )
 BASE_ENHANCE_MAX_NEW_TOKENS = 1800
 RICH_ENHANCE_MAX_NEW_TOKENS = 3072
+STRONG_ENHANCE_MAX_NEW_TOKENS = 4096
 REF_ENHANCE_MAX_NEW_TOKENS = 3072
 ENHANCE_CONTEXT_SIZE = 16384
 _ENHANCE_LOCK = threading.Lock()
+LLAMA_RUNTIME_RELEASE = "b10310"
+LLAMA_RUNTIME_REPO = "ggml-org/llama.cpp"
+LLAMA_RUNTIME_URL = (
+    f"https://github.com/{LLAMA_RUNTIME_REPO}/releases/download/{LLAMA_RUNTIME_RELEASE}"
+)
+_LLAMA_RUNTIME_LOCK = threading.Lock()
 _ENHANCE_JOBS: dict[str, dict[str, Any]] = {}
 _ENHANCE_JOBS_LOCK = threading.Lock()
 _ENHANCE_CANCEL_EVENTS: dict[str, threading.Event] = {}
@@ -154,6 +168,10 @@ DEFAULT_PROJECT = {
             "id": "shot-1",
             "duration": 5.0,
             "visual_action": "",
+            "presets": {
+                "camera_angle": "none", "camera_motion": "none", "camera_shot": "none",
+                "camera_amplitude": "none", "camera_speed": "none", "style": "none",
+            },
         }
     ],
     "references": [],
@@ -163,8 +181,205 @@ DEFAULT_PROJECT = {
     "image_model": DEFAULT_IMAGE_MODEL_ID,
     "auto_run": False,
     "enhance": False,
+    "enhance_level": "none",
     "enhanced_prompt": "",
 }
+
+
+CAMERA_PRESET_PROMPTS = {
+    "camera_angle": {
+        "none": "", "eye_level": "eye-level angle", "low_angle": "low angle looking upward",
+        "high_angle": "high angle looking downward", "overhead": "overhead angle",
+        "top_down": "top-down angle looking straight downward",
+        "birds_eye": "extreme bird's-eye view", "worms_eye": "extreme worm's-eye view",
+        "ground_level": "ground-level angle", "aerial": "high aerial angle over the scene",
+        "dutch_angle": "Dutch angle with a tilted horizon",
+        "over_shoulder": "over-the-shoulder angle", "pov": "subjective point-of-view angle",
+        "three_quarter": "three-quarter angle", "profile": "profile angle from the side",
+        "rear": "rear angle viewing the subject from behind",
+    },
+    "camera_motion": {
+        "none": "", "static": "static shot with camera position and lens remaining still",
+        "zoom_in": "zoom in by changing focal length while the camera remains stationary",
+        "zoom_out": "zoom out by changing focal length while the camera remains stationary",
+        "push_in": "camera push in by moving forward", "pull_out": "camera pull out by moving backward",
+        "pan_left": "camera pan left from a fixed position", "pan_right": "camera pan right from a fixed position",
+        "truck_left": "camera truck left with horizontal translation",
+        "truck_right": "camera truck right with horizontal translation",
+        "tilt_up": "camera tilt up from a fixed position", "tilt_down": "camera tilt down from a fixed position",
+        "pedestal_up": "camera pedestal up with the entire camera moving upward",
+        "pedestal_down": "camera pedestal down with the entire camera moving downward",
+        "dolly_left": "camera dolly left with smooth lateral movement",
+        "dolly_right": "camera dolly right with smooth lateral movement",
+        "dolly_zoom_in": "dolly zoom in: move the camera forward while zooming out to create a Vertigo perspective effect",
+        "dolly_zoom_out": "dolly zoom out: move the camera backward while zooming in to create expanding spatial distortion",
+        "crane_up": "large-scale crane movement lifting the camera upward",
+        "crane_down": "large-scale crane movement lowering the camera downward",
+        "orbit_left": "orbit left around the subject while keeping the subject centered",
+        "orbit_right": "orbit right around the subject while keeping the subject centered",
+        "arc": "arc shot moving around the subject", "tracking": "tracking shot following the moving subject",
+        "follow": "follow shot continuously following the moving subject",
+        "handheld": "natural handheld camera movement with organic operator motion",
+        "shake_slightly": "slight camera shake", "shake_strongly": "strong camera shake",
+        "pov": "POV camera movement from the subject's point of view",
+        "roll_clockwise": "camera roll clockwise around the lens axis",
+        "roll_counterclockwise": "camera roll counterclockwise around the lens axis",
+    },
+    "camera_shot": {
+        "none": "",
+        "extreme_close_up": "extreme close-up isolating a small detail such as the eyes or mouth",
+        "close_up": "close-up centered on the face",
+        "medium_close_up": "medium close-up framing the subject from the chest or shoulders upward",
+        "medium_shot": "medium shot framing the subject from the waist upward",
+        "medium_wide_shot": "medium wide shot framing the subject from the thighs or knees upward with some environmental context",
+        "cowboy_shot": "cowboy shot framing the subject from mid-thigh upward, keeping the hands and waist action visible",
+        "medium_full_shot": "medium full shot framing the subject from around the knees upward to the head",
+        "full_shot": "full shot keeping the subject's entire body visible",
+        "wide_shot": "wide shot showing the full subject with substantial surrounding environment",
+        "extreme_wide_shot": "extreme wide shot dominated by the environment with the subject appearing very small",
+        "establishing_shot": "establishing shot introducing the full location and spatial layout",
+        "insert_shot": "insert shot isolating a specific object such as a phone screen, gun, or key",
+        "detail_shot": "detail shot emphasizing a fine object or body detail",
+        "two_shot": "two shot composing exactly two people together in one frame",
+        "three_shot": "three shot composing exactly three people together in one frame",
+        "group_shot": "group shot composing several people together in one frame",
+    },
+    "camera_amplitude": {
+        "none": "", "small": "with small amplitude", "large": "with large amplitude",
+    },
+    "camera_speed": {
+        "none": "", "slow": "at slow speed", "fast": "at fast speed",
+    },
+}
+
+STYLE_PRESET_PROMPTS = {
+    "none": "",
+    "animation_2d": "polished 2D animation with coherent drawn linework, layered color, readable silhouettes, and expressive character motion",
+    "animation_3d": "polished 3D animation with coherent modeled forms, consistent materials, dimensional lighting, and natural articulated motion",
+    "figurine_animation": "a crafted figurine character coming fully alive with fluid expressive animation, natural body mechanics, responsive facial acting, and material-aware secondary motion while preserving its recognizable sculpted identity and surface appearance",
+    "cinematic_live_action": "cinematic live-action film with realistic skin and materials, natural physical motion, controlled depth of field, practical lighting, and restrained filmic contrast",
+    "smartphone_video": "natural smartphone-recorded video with realistic mobile exposure, compact-sensor detail, casual composition, and authentic available light",
+    "photoreal_live_action": "photorealistic live-action footage with natural skin texture, physically plausible motion, coherent materials, realistic lighting, and grounded production detail",
+    "documentary": "observational documentary footage with available-light realism, natural color response, unembellished environments, and authentic human behavior",
+    "stop_motion": "stop-motion animation with handcrafted materials, intentional frame-by-frame movement, tactile surfaces, and consistent miniature-scale lighting",
+    "anime_1990s": "authentic 1990s Japanese hand-drawn anime with traditional 2D cel animation, painted background art, visible ink linework, layered cel shading, controlled in-betweens, restrained held-frame timing, subtle analog texture, strictly not 3D, CGI, or game-engine rendering",
+    "retro_anime_motion_graphics": "polished retro-anime motion graphics with a limited palette, clean manga linework, halftone shading, sequential graphic reveals, UI-style wipes, pixel accents, poster-like composition, and stable protected typography",
+    "retro_anime_noir_jazz": "retro Japanese anime opening artwork with a graphic noir-jazz aesthetic, bold silhouettes, moody contrast, vintage analog texture, and poster-like visual sensibility",
+    "contemporary_anime": "contemporary Japanese 2D anime with clean line art, expressive character acting, saturated color grading, strong readable key poses, crisp highlights, selective impact-frame emphasis, emotionally cinematic presentation, and polished anime-PV finish",
+    "contemporary_action_anime": "contemporary Japanese 2D action anime with sharp clean line art, dynamic perspective drawing, exaggerated but readable key poses, speed-line accents, selective impact frames, hard-edged highlights, and clear high-energy action staging",
+    "western_cartoon": "western 2D cartoon animation with simplified shapes, clean outlines, flat painted colors, expressive squash-and-stretch, readable silhouettes, and hand-drawn broadcast-cartoon timing",
+    "vhs_analog": "early-1990s VHS live-action with a soft analog image, mild tape softness, nostalgic color response, consumer-camcorder character, subtle analog imperfections, and era-authentic lighting",
+    "vhs_rental_movie": "1980s VHS rental-movie live action with low-resolution analog character, soft optical detail, era-authentic lighting and color response, restrained tape imperfections, and a worn home-video transfer mood",
+    "cyberpunk_live_action": "live-action cyberpunk with selective neon illumination, reflective and weathered materials, industrial surface detail, atmospheric haze, a green-magenta palette, and grounded cinematic realism",
+    "epic_dark_fantasy": "epic dark-fantasy trailer with mythic atmosphere, weathered fantasy materials, mystical haze, solemn cinematic lighting, dramatic scale, and grounded physical detail",
+    "dark_medieval_fantasy": "grounded dark medieval fantasy film with ancient ruins, weathered armor and cloth, candlelight and firelight, dense atmospheric fog, realistic practical materials, solemn dramatic scale, and a restrained mythic mood",
+    "high_saturation_commercial": "high-saturation commercial with photoreal subjects, a bold controlled palette, clean subject presentation, glossy textures, crisp visual hierarchy, and premium lighting",
+    "photoreal_graphic_hybrid": "photorealistic characters against flat graphic-animation design with controlled color palettes, clean commercial composition, and a cohesive hybrid live-action and graphic treatment",
+    "phone_ugc_ad": "phone-shot UGC advertisement with casual creator-led realism, natural available lighting, conversational performance, realistic micro-expressions, and short-form social-media character",
+    "authentic_smartphone_vlog": "authentic smartphone vlog with handheld selfie-camera character, natural room or available lighting, casual creator performance, realistic micro-expressions, conversational pacing, and an unpolished short-form social-media aesthetic",
+    "sprite_16bit": "16-bit retro 2D game-sprite animation with readable pixel silhouettes, low-frame game timing, short loop-friendly movement, and simple retro-console animation logic",
+    "sketch_anime": "hand-drawn sketch animation with rough textured outlines, minimalist flat coloring, loose line movement, white highlight accents, and an intentionally unfinished rough-animation finish",
+    "lineart_anime": "lineart anime with clean ink contours, contour-focused shading, minimal fill rendering, crisp outline priority, and strong graphic readability",
+    "anamorphic_cinema": "anamorphic cinematic live-action with widescreen composition, shallow depth of field, subtle anamorphic lens characteristics, practical lighting, atmospheric highlights, and restrained film grading",
+    "cinematic_35mm": "cinematic live-action photographed with a 35mm film aesthetic, natural skin texture, subtle organic film grain, soft highlight roll-off, shallow depth of field, realistic optical behavior, practical lighting, and restrained film color grading",
+    "film_noir": "classic film noir with high-contrast black-and-white cinematography, hard directional lighting, deep shadows, venetian-blind patterns, smoky atmosphere, and dramatic silhouettes",
+    "neo_noir": "modern neo-noir cinema with deep shadows, selective neon lighting, a dark desaturated palette, reflective surfaces, restrained acting, and moody cinematic composition",
+    "horror_cinema": "cinematic horror with oppressive low-key lighting, practical light sources, deep shadows, unsettling negative space, realistic textures, and grounded atmospheric tension",
+    "analog_horror_1990s": "1990s analog horror with consumer VHS recording character, dim practical lighting, empty institutional atmosphere, soft analog detail, subtle tape noise, restrained distortion, and unsettling grounded realism",
+    "scifi_mystery": "cinematic science-fiction mystery teaser with cold futuristic lighting, restrained production design, atmospheric haze, enigmatic technological accents, and realistic cinematic materials",
+    "retro_futuristic_scifi": "retro-futuristic science fiction with analog interface design, practical miniature-inspired forms, industrial surface language, tungsten instrument lights, and vintage cinematic production design",
+    "premium_product_film": "premium product film with controlled studio lighting, clean reflective surfaces, macro-level material detail, precise highlights, uncluttered composition, and luxury commercial presentation",
+    "japanese_commercial": "stylized Japanese product commercial with precise subject presentation, clean visual hierarchy, bold graphic accents, premium lighting, controlled color, and polished advertising finish",
+    "food_commercial": "premium food commercial with appetizing macro detail, glossy food textures, vivid controlled colors, crisp ingredient visibility, precise highlights, and polished advertising lighting",
+    "music_video": "stylized cinematic music video with expressive performance, bold lighting design, atmospheric color grading, graphic visual accents, and strong beat-responsive energy",
+    "anime_music_video": "high-energy anime music video with contemporary Japanese anime rendering, strong character poses, expressive facial detail, dramatic lighting changes, impact-frame styling, and rhythmic visual energy",
+    "graphic_poster_animation": "graphic poster animation with protected original layout and typography, bold poster-like composition, sequential line-art treatment, geometric graphic elements, restrained parallax, and subtle looping accents",
+    "minimalist_motion_design": "minimalist 2D motion design with clean geometric forms, a limited color palette, precise easing, simple graphic transitions, strong visual hierarchy, and smooth restrained animation",
+    "game_cinematic": "high-end game cinematic with realistic character rendering, dramatic environmental lighting, detailed production design, coherent materials, and polished real-time-render aesthetics",
+    "dark_retro_fantasy": "1970s-to-1990s dark-fantasy live-action film with a practical-effects atmosphere, weathered material detail, soft analog imagery, muted vintage color response, and mysterious mythic tone",
+    "modern_cinematic_live_action": "photorealistic live-action cinema with natural skin texture, realistic materials, physically believable movement, cinematic lighting, shallow depth of field, subtle filmic contrast, natural lens behavior, and restrained color grading",
+    "prestige_drama": "prestige live-action drama with naturalistic performances, subtle facial expressions, realistic skin texture, restrained cinematic lighting, soft contrast, shallow depth of field, carefully composed frames, slow controlled camera movement, and grounded production design",
+    "intimate_relationship_drama": "intimate live-action relationship drama with quiet restrained acting, subtle micro-expressions, natural breathing and posture shifts, warm practical interior lighting, shallow depth of field, a realistic lived-in environment, carefully matched eyelines, and understated cinematic camera work",
+    "short_form_microdrama": "grounded live-action microdrama with tight emotional pacing, medium-close framing, natural performances, shallow depth of field, warm realistic interior lighting, frequent shot-reverse-shot editing, strong but believable emotion, and a realistic everyday environment",
+    "golden_hour_road_movie": "cinematic road movie with warm golden-hour sunlight, natural backlighting, soft atmospheric haze, gentle lens flare, a nostalgic color palette, relaxed natural performances, subtle wind movement, smooth restrained camera motion, and photorealistic live action",
+    "natural_light_indie_film": "naturalistic indie film with soft available light, muted organic colors, imperfect realistic skin, understated performances, gentle handheld camera, shallow depth of field, subtle environmental movement, and intimate observational framing",
+    "mountain_adventure_cinema": "photorealistic outdoor adventure film with a vast natural landscape, natural mountain light, atmospheric depth, realistic wind, physically grounded performance, a stable horizon, detailed environmental parallax, and cinematic scale",
+    "survival_expedition_film": "realistic expedition film with a harsh natural environment, weathered clothing and equipment, cold natural daylight, wind-driven atmosphere, documentary-influenced cinematic framing, physically believable movement, and restrained color grading",
+    "blue_hour_urban_cinema": "photorealistic urban cinema at blue hour with rain-soaked streets, wet pavement reflections, glowing storefront lights, cool ambient sky light mixed with warm practical lights, shallow depth of field, realistic rain physics, and cinematic city atmosphere",
+    "rainy_city_one_take": "continuous cinematic one-take in a photorealistic rain-soaked city with low-angle tracking, realistic wet reflections, physically believable body movement, a smooth camera orbit, slow cinematic push-in, shallow depth of field, and natural rain and cloth physics",
+    "urban_editorial": "polished urban editorial film with modern city architecture, natural city light, wide-angle movement, dynamic tracking shots, clean hard cuts, restrained fashion poses, realistic motion, and crisp cinematic pacing",
+    "night_city_timelapse": "photorealistic midnight city timelapse with an elevated urban highway, persistent vehicle light trails, deep night exposure, luminous city lights, smooth temporal motion, and a realistic long-exposure photography aesthetic",
+    "modern_neo_noir": "modern neo-noir cinema with deep blacks, selective practical lighting, wet reflective streets, restrained neon accents, moody shadows, shallow depth of field, slow deliberate camera movement, and realistic live-action texture",
+    "classic_film_noir": "classic film noir with monochrome live-action cinematography, hard directional key light, deep black shadows, smoky interiors, dramatic silhouettes, venetian-blind light patterns, restrained dolly movement, and vintage film contrast",
+    "crime_thriller": "realistic cinematic crime thriller with tense low-key lighting, practical fluorescent and tungsten sources, a muted color palette, controlled handheld camera, shallow focus, restrained performances, realistic urban locations, and slow-building tension",
+    "thriller_1990s": "1990s live-action thriller with moody colored practical lighting, slightly heightened contrast, dramatic close-ups, fast purposeful cuts, subtle analog character, an unsettling atmosphere, and photorealistic cinematic texture",
+    "cinematic_horror_live_action": "photorealistic cinematic horror with oppressive low-key lighting, practical light sources, deep shadow detail, unsettling negative space, restrained camera movement, realistic environmental texture, subtle atmospheric haze, and grounded horror realism",
+    "found_footage_horror": "realistic handheld found footage with imperfect autofocus, slight exposure hunting, subtle handheld shake, fluorescent light flicker, natural sensor noise, delayed focus response, accidental framing, realistic reflections, and unpolished documentary camera behavior",
+    "consumer_camcorder_horror": "consumer camcorder horror footage with imperfect handheld framing, automatic exposure shifts, soft digital detail, autofocus breathing, practical fluorescent lighting, minor sensor noise, and realistic accidental camera movement",
+    "observational_documentary": "observational documentary live action with natural available lighting, an unobtrusive handheld camera, imperfect framing, realistic focus adjustments, natural body language, minimal cinematic polish, authentic environmental sound, and a candid unstaged atmosphere",
+    "workplace_mockumentary": "photorealistic workplace mockumentary with subtle handheld camera shake, natural office fluorescent lighting, medium documentary framing, awkward pauses, restrained reaction shots, realistic office room tone, and deadpan timing",
+    "reality_tv_documentary": "realistic reality-TV documentary with a handheld shoulder camera, reactive reframing, quick natural focus corrections, available interior lighting, spontaneous body language, imperfect composition, and realistic room ambience",
+    "grounded_martial_arts_cinema": "hyper-realistic cinematic martial-arts action with grounded human physics, realistic weight transfer, fast physical choreography, a wet reflective environment, practical industrial lighting, cinematic dolly movement, speed ramping, controlled camera shake, and realistic motion blur",
+    "gritty_close_quarters_action": "gritty close-quarters action film with physically believable combat, realistic inertia and recovery, practical lighting, a handheld cinematic camera, environmental debris and collisions, realistic impact reactions, and restrained motion blur",
+    "dark_fantasy_live_action": "hyper-realistic dark fantasy cinema with a grounded medieval environment, gritty practical lighting, candlelight and firelight, smoky atmosphere, weathered materials, realistic body momentum, a practical-effects aesthetic, and handheld cinematic camera",
+    "neon_cyberpunk_cinema": "photorealistic cyberpunk cinema with heavy neon rain, reflective wet surfaces, volumetric neon fog, glowing practical lights, subtle lens flare, dark futuristic production design, cinematic slow motion, and a dynamic orbiting camera",
+    "dark_dystopian_scifi": "dark dystopian live-action science fiction with industrial futuristic architecture, cold practical lighting, dense atmospheric haze, restrained neon accents, weathered technology, realistic materials, and grounded cinematic realism",
+    "prestige_scifi_drama": "prestige science-fiction cinema with restrained futuristic production design, natural human performances, soft volumetric atmosphere, clean practical lighting, subtle visual effects, realistic materials, and slow controlled camera movement",
+    "high_fashion_editorial": "high-fashion editorial film with a premium fashion-photography aesthetic, realistic skin texture with visible pores, dramatic model posing, controlled editorial camera movement, sculptural lighting, a minimalist luxury mood, and magazine-grade composition",
+    "korean_fashion_campaign": "premium Korean fashion campaign with international magazine editorial photography, controlled model posing, clean high-contrast composition, restrained camera motion, premium skin texture, a fashion-lookbook atmosphere, and polished editorial finish",
+    "streetwear_fashion_film": "urban streetwear fashion film with natural city light, dynamic tracking shots, wide-angle movement, architectural backgrounds, hard editorial cuts, confident restrained poses, and a polished urban fashion aesthetic",
+    "minimalist_premium_product": "minimalist premium product film with a pristine studio environment, controlled softbox lighting, precise product highlights, clean reflective surfaces, elegant macro details, restrained camera movement, and premium commercial finish",
+    "luxury_automotive_commercial": "premium luxury automotive commercial with elegant restrained cinematography, a dark architectural environment, glossy controlled body reflections, slow precision camera movement, low-angle hero shots, premium practical lighting, and realistic automotive materials",
+    "performance_car_commercial": "high-performance automotive commercial with a low tracking camera, physically realistic vehicle motion, aggressive but controlled camera movement, tire spray, realistic suspension load, detailed paint reflections, cinematic landscape, and restrained motion blur",
+    "food_macro_commercial": "premium cinematic food commercial with ultra-realistic macro photography, glossy food textures, shallow depth of field, dramatic practical lighting, controlled slow motion, detailed steam and condensation, appetizing highlights, and polished advertising finish",
+    "dark_surreal_commercial": "surreal cinematic commercial with photorealistic subjects, moody colored neon lighting, dark humor, rapid editorial cutting, exaggerated macro detail, unsettling character expressions, and a retro-thriller atmosphere",
+    "ultra_realistic_pov": "ultra-realistic first-person POV footage with realistic hands, energetic handheld camera, physically believable recoil and body movement, lens droplets, environmental reflections, subtle motion blur, and immersive spatial audio",
+    "smartphone_ugc": "photorealistic smartphone UGC video with arm's-length selfie framing, natural handheld movement, available daylight, realistic smartphone depth of field, casual creator performance, natural skin texture, conversational pacing, and authentic social-media realism",
+    "film_1970s": "1970s live-action film aesthetic with warm analog color response, soft optical contrast, practical lighting, and restrained film grain",
+    "cinema_1980s": "1980s cinematic live action with era-authentic production design, analog color response, practical lighting, and subtle film grain",
+    "cinema_1990s": "1990s live-action cinema with slightly soft optical rendering, subtle analog texture, and era-authentic lighting and color response",
+    "early_2000s_digital_cinema": "early-2000s digital cinema aesthetic with slightly harsh highlights, restrained saturation, realistic digital sensor response, and a period-accurate production look",
+    "modern_digital_cinema": "modern digital cinema with clean high dynamic range, natural skin texture, controlled highlight roll-off, and restrained cinematic grading",
+}
+
+
+def _normalize_shot_presets(value: Any) -> dict[str, str]:
+    raw = value if isinstance(value, dict) else {}
+    normalized = {}
+    for preset_name, choices in CAMERA_PRESET_PROMPTS.items():
+        selected = _clean_text(raw.get(preset_name)).lower()
+        normalized[preset_name] = selected if selected in choices else "none"
+    selected_style = _clean_text(raw.get("style")).lower()
+    normalized["style"] = selected_style if selected_style in STYLE_PRESET_PROMPTS else "none"
+    return normalized
+
+
+def _figurine_animation_system_module(
+    project: dict[str, Any], mode: str, enhance_level: str,
+) -> str:
+    """Return opt-in figurine motion rules for only the shots using that style preset."""
+    selected_shots = [
+        index
+        for index, shot in enumerate(project.get("shots", []), start=1)
+        if _normalize_shot_presets(shot.get("presets"))["style"] == "figurine_animation"
+    ]
+    if not selected_shots:
+        return ""
+
+    shot_scope = ", ".join(f"[Shot {index}]" for index in selected_shots)
+    rules = SYSTEM_PROMPT_CONFIG["static_asset_rules"]
+    modules = [
+        "FIGURINE PRESET SCOPE: This preset was explicitly selected for "
+        f"{shot_scope}. Apply the following rules only to those shots and never carry them into another shot.",
+        rules["common"],
+    ]
+    if enhance_level in {"normal", "strong"}:
+        modules.append(rules["enhanced"])
+    if mode == "FL2VA":
+        modules.append(rules["FL2VA"])
+        if enhance_level in {"normal", "strong"}:
+            modules.append(rules["FL2VA_enhanced"])
+    return "\n\n".join(module.strip() for module in modules if module.strip())
 
 
 CAMERA_SENTENCES = {
@@ -243,6 +458,7 @@ def _load_system_prompt_config(path: str = SYSTEM_PROMPTS_PATH) -> dict[str, Any
     common = config.get("common")
     common_enhanced = config.get("common_enhanced")
     enhance_addendum = config.get("enhance_addendum", "")
+    strong_enhance_addendum = config.get("strong_enhance_addendum", "")
     action_semantics = config.get("action_semantics")
     static_asset_rules = config.get("static_asset_rules")
     common_addendum = config.get("common_addendum", "")
@@ -257,6 +473,7 @@ def _load_system_prompt_config(path: str = SYSTEM_PROMPTS_PATH) -> dict[str, Any
         not isinstance(common, str)
         or not isinstance(common_enhanced, str)
         or not isinstance(enhance_addendum, str)
+        or not isinstance(strong_enhance_addendum, str)
         or not isinstance(action_semantics, str)
         or not isinstance(static_asset_rules, dict)
         or not isinstance(common_addendum, str)
@@ -270,7 +487,7 @@ def _load_system_prompt_config(path: str = SYSTEM_PROMPTS_PATH) -> dict[str, Any
     ):
         raise RuntimeError(
             "MiniMax H3 system prompt config requires strings 'common', 'common_enhanced', "
-            "'common_addendum', 'enhance_addendum', 'action_semantics', 'video_reference_common', "
+            "'common_addendum', 'enhance_addendum', 'strong_enhance_addendum', 'action_semantics', 'video_reference_common', "
             "'audio_reference_common', and 'base', objects 'video_reference_roles', "
             "'audio_reference_roles', 'static_asset_rules', 'mode_addenda', "
             f"and 'modes': {path}"
@@ -321,6 +538,7 @@ def _load_system_prompt_config(path: str = SYSTEM_PROMPTS_PATH) -> dict[str, Any
         "common": common,
         "common_enhanced": common_enhanced,
         "enhance_addendum": enhance_addendum,
+        "strong_enhance_addendum": strong_enhance_addendum,
         "action_semantics": action_semantics,
         "static_asset_rules": static_asset_rules,
         "common_addendum": common_addendum,
@@ -337,12 +555,9 @@ def _load_system_prompt_config(path: str = SYSTEM_PROMPTS_PATH) -> dict[str, Any
 SYSTEM_PROMPT_CONFIG = _load_system_prompt_config()
 COMMON_LLM_SYSTEM_RULES = SYSTEM_PROMPT_CONFIG["common"]
 COMMON_LLM_SYSTEM_RULES += SYSTEM_PROMPT_CONFIG["action_semantics"]
-COMMON_LLM_SYSTEM_RULES += SYSTEM_PROMPT_CONFIG["static_asset_rules"]["common"]
 COMMON_LLM_SYSTEM_RULES += SYSTEM_PROMPT_CONFIG["common_addendum"]
 ENHANCED_COMMON_LLM_SYSTEM_RULES = SYSTEM_PROMPT_CONFIG["common_enhanced"]
 ENHANCED_COMMON_LLM_SYSTEM_RULES += SYSTEM_PROMPT_CONFIG["action_semantics"]
-ENHANCED_COMMON_LLM_SYSTEM_RULES += SYSTEM_PROMPT_CONFIG["static_asset_rules"]["common"]
-ENHANCED_COMMON_LLM_SYSTEM_RULES += SYSTEM_PROMPT_CONFIG["static_asset_rules"]["enhanced"]
 ENHANCED_COMMON_LLM_SYSTEM_RULES += SYSTEM_PROMPT_CONFIG["common_addendum"]
 BASE_LLM_SYSTEM_RULES = SYSTEM_PROMPT_CONFIG["base"]
 MODE_LLM_SYSTEM_PROMPTS = {
@@ -350,7 +565,6 @@ MODE_LLM_SYSTEM_PROMPTS = {
     + ("" if mode == "REF2VA" else BASE_LLM_SYSTEM_RULES)
     + SYSTEM_PROMPT_CONFIG["modes"][mode]
     + SYSTEM_PROMPT_CONFIG["mode_addenda"].get(mode, "")
-    + (SYSTEM_PROMPT_CONFIG["static_asset_rules"]["FL2VA"] if mode == "FL2VA" else "")
     for mode in SUPPORTED_MODES
     if mode != "AUTO"
 }
@@ -359,9 +573,18 @@ ENHANCED_MODE_LLM_SYSTEM_PROMPTS = {
     + ("" if mode == "REF2VA" else BASE_LLM_SYSTEM_RULES)
     + SYSTEM_PROMPT_CONFIG["modes"][mode]
     + SYSTEM_PROMPT_CONFIG["mode_addenda"].get(mode, "")
-    + (SYSTEM_PROMPT_CONFIG["static_asset_rules"]["FL2VA"] if mode == "FL2VA" else "")
-    + (SYSTEM_PROMPT_CONFIG["static_asset_rules"]["FL2VA_enhanced"] if mode == "FL2VA" else "")
     + SYSTEM_PROMPT_CONFIG["enhance_addendum"]
+    for mode in SUPPORTED_MODES
+    if mode != "AUTO"
+}
+
+STRONG_ENHANCE_ADDENDUM = SYSTEM_PROMPT_CONFIG["strong_enhance_addendum"]
+STRONG_MODE_LLM_SYSTEM_PROMPTS = {
+    mode: ENHANCED_COMMON_LLM_SYSTEM_RULES
+    + ("" if mode == "REF2VA" else BASE_LLM_SYSTEM_RULES)
+    + SYSTEM_PROMPT_CONFIG["modes"][mode]
+    + SYSTEM_PROMPT_CONFIG["mode_addenda"].get(mode, "")
+    + STRONG_ENHANCE_ADDENDUM
     for mode in SUPPORTED_MODES
     if mode != "AUTO"
 }
@@ -671,6 +894,7 @@ def _normalize_shot(raw: Any, index: int) -> dict[str, Any]:
         "id": _clean_text(raw.get("id")) or f"shot-{index + 1}",
         "duration": max(MIN_SHOT_DURATION, _number(raw.get("duration"), 1.0)),
         "visual_action": visual_action,
+        "presets": _normalize_shot_presets(raw.get("presets")),
     }
 
 
@@ -770,7 +994,7 @@ def normalize_project(project_data: Any) -> tuple[dict[str, Any], list[str]]:
     raw_version = raw.get("version")
     # Version 8 is a lossless cleanup migration from version 7: cached picture
     # analysis text is discarded. Do not report that expected upgrade as a warning.
-    if raw_version is not None and raw_version != CURRENT_PROJECT_VERSION and raw_version not in {7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21}:
+    if raw_version is not None and raw_version != CURRENT_PROJECT_VERSION and raw_version not in {7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25}:
         relation = "newer than" if isinstance(raw_version, (int, float)) and raw_version > CURRENT_PROJECT_VERSION else "different from"
         parse_warnings.append(
             f"Project version {raw_version!r} is {relation} supported version {CURRENT_PROJECT_VERSION}; known fields were normalized."
@@ -781,23 +1005,30 @@ def normalize_project(project_data: Any) -> tuple[dict[str, Any], list[str]]:
     project["constraints"] = _clean_text(raw.get("constraints"))
     project["verbatim_content"] = _clean_text(raw.get("verbatim_content"))
     selected_enhance_model = _clean_text(raw.get("enhance_model"))
-    if selected_enhance_model == LEGACY_LIGHTX2V_MODEL_ID:
-        selected_enhance_model = LIGHTX2V_MODEL_ID
+    if selected_enhance_model in REMOVED_LIGHTX2V_MODEL_IDS:
+        selected_enhance_model = DEFAULT_ENHANCE_MODEL_ID
     project["enhance_model"] = (
         selected_enhance_model
-        if selected_enhance_model in {DEFAULT_ENHANCE_MODEL_ID, LIGHTX2V_MODEL_ID}
+        if selected_enhance_model in {DEFAULT_ENHANCE_MODEL_ID, OMNI_MODEL_ID}
         else DEFAULT_ENHANCE_MODEL_ID
     )
     selected_image_model = _clean_text(raw.get("image_model"))
-    if selected_image_model == LEGACY_LIGHTX2V_MODEL_ID:
-        selected_image_model = LIGHTX2V_MODEL_ID
+    if selected_image_model in REMOVED_LIGHTX2V_MODEL_IDS:
+        selected_image_model = QWEN_IMAGE_MODEL_ID
     project["image_model"] = (
         selected_image_model
-        if selected_image_model in {QWEN_IMAGE_MODEL_ID, LIGHTX2V_MODEL_ID}
+        if selected_image_model in {QWEN_IMAGE_MODEL_ID, OMNI_MODEL_ID}
         else QWEN_IMAGE_MODEL_ID
     )
     project["auto_run"] = raw.get("auto_run") is True
-    project["enhance"] = raw.get("enhance") is True
+    raw_enhance_level = _clean_text(raw.get("enhance_level")).lower()
+    project["enhance_level"] = (
+        raw_enhance_level if raw_enhance_level in {"none", "normal", "strong"}
+        else "normal" if raw.get("enhance") is True else "none"
+    )
+    # Retain the legacy boolean for old workflows and callers. Any expansion
+    # level other than None uses the enhanced prompt family.
+    project["enhance"] = project["enhance_level"] != "none"
     project["enhanced_prompt"] = _clean_text(raw.get("enhanced_prompt"))
 
     raw_shots = raw.get("shots")
@@ -806,6 +1037,10 @@ def normalize_project(project_data: Any) -> tuple[dict[str, Any], list[str]]:
     else:
         requested = min(15.0, max(MIN_SHOT_DURATION, _number(raw.get("requested_duration"), 5.0)))
         project["shots"][0]["duration"] = requested
+    # Version 24 stored one preset bundle globally. Migrate it only to Shot 1
+    # so later shots remain independently configurable.
+    if isinstance(raw.get("presets"), dict) and project["shots"]:
+        project["shots"][0]["presets"] = _normalize_shot_presets(raw["presets"])
 
     # Version 13 and earlier stored three dedicated audio UI values. Preserve
     # them once as natural-language instructions in the unified first-shot
@@ -1005,6 +1240,80 @@ def _quoted_prompt_text(text: str) -> str:
     return text.replace("\\", "\\\\").replace('"', '\\"').replace("\r", " ").replace("\n", " ")
 
 
+def _reference_applicable_shots(project: dict[str, Any], ref: dict[str, Any]) -> list[int]:
+    """Return the target shots in which a reference is expected to apply."""
+    shots = project.get("shots") or []
+    if not shots:
+        return [1]
+
+    role = ref.get("role")
+    if ref.get("type") == "picture":
+        if role == "first_frame":
+            return [1]
+        if role == "last_frame":
+            return [len(shots)]
+        if role == "frame":
+            frame_index = max(0, int(ref.get("frame_index", 0)))
+            anchor_time = frame_index / MODEL_FPS
+            cursor = 0.0
+            for index, shot in enumerate(shots, 1):
+                cursor += max(0.0, float(shot.get("duration", 0.0)))
+                if anchor_time < cursor or index == len(shots):
+                    return [index]
+
+    if ref.get("type") == "video" and ref.get("duration"):
+        start = max(0.0, float(ref.get("timeline_start", 0.0)))
+        end = start + max(0.0, float(ref.get("duration", 0.0)))
+        cursor = 0.0
+        applicable: list[int] = []
+        for index, shot in enumerate(shots, 1):
+            shot_start = cursor
+            cursor += max(0.0, float(shot.get("duration", 0.0)))
+            if start < cursor and end > shot_start:
+                applicable.append(index)
+        if applicable:
+            return applicable
+
+    alias = str(ref.get("alias") or "").lower()
+    if alias:
+        applicable = []
+        for index, shot in enumerate(shots, 1):
+            if alias in str(shot.get("visual_action") or "").lower():
+                applicable.append(index)
+        if applicable:
+            # Keep scene presence continuous between explicit mentions. A shot
+            # acting only on the other participant must not silently drop this
+            # subject from retention scope.
+            return list(range(applicable[0], applicable[-1] + 1))
+        if alias in str(project.get("user_request") or "").lower():
+            return list(range(1, len(shots) + 1))
+
+    return list(range(1, len(shots) + 1))
+
+
+def _retention_prefix(label: str, plan: dict[str, Any], ref: dict[str, Any],
+                      applicable_shots: list[int]) -> str:
+    """Build the guide-compliant portion Qwen must copy verbatim."""
+    marker = plan["marker"]
+    shot_list = ", ".join(f"[Shot {number}]" for number in applicable_shots)
+    if plan["kind"] == "Subject":
+        return f"{label} (appears in {shot_list}): {marker} -"
+    if plan["kind"] == "Picture":
+        role = ref.get("role")
+        if role == "first_frame":
+            scope = "[Shot 1] first frame"
+        elif role == "last_frame":
+            scope = f"[Shot {applicable_shots[-1]}] final frame"
+        elif role == "frame":
+            scope = f"[Shot {applicable_shots[0]}] frame {max(0, int(ref.get('frame_index', 0)))}"
+        else:
+            scope = f"applies to {shot_list}"
+        return f"{label} ({scope}): {marker} -"
+    if plan["kind"] == "Video":
+        return f"{label} (applies to {shot_list}): {marker} -"
+    return f"{label}: {marker} -"
+
+
 def _reference_model(project: dict[str, Any]) -> dict[str, Any]:
     references = _reference_labels(project["references"])
     subject_count = 0
@@ -1081,6 +1390,11 @@ def _reference_model(project: dict[str, Any]) -> dict[str, Any]:
                 "kind": "Subject", "source": source_label, "role": "subject_identity", "marker": marker,
                 "strength": strength, "contract": role_contract,
             }
+            applicable_shots = _reference_applicable_shots(project, ref)
+            label_plan[subject]["applicable_shots"] = applicable_shots
+            label_plan[subject]["retention_prefix"] = _retention_prefix(
+                subject, label_plan[subject], ref, applicable_shots
+            )
             summary_relations.append(f"{subject} as a {strength}-strength subject reference")
             add_task("reference generation")
             continue
@@ -1177,6 +1491,11 @@ def _reference_model(project: dict[str, Any]) -> dict[str, Any]:
                 else audio_contracts.get(ref["role"], f"use only as the defined {role_text} relationship")
             ),
         }
+        applicable_shots = _reference_applicable_shots(project, ref)
+        label_plan[source_label]["applicable_shots"] = applicable_shots
+        label_plan[source_label]["retention_prefix"] = _retention_prefix(
+            source_label, label_plan[source_label], ref, applicable_shots
+        )
         summary_relations.append(f"{source_label} for {role_text}")
         if not ref["alias"]:
             if ref["role"] == "reference":
@@ -1279,10 +1598,10 @@ def _single_pass_output_lock(mode: str, effective_seconds: float, final_shot: in
     if mode == "REF2VA":
         label_plan = (reference_model or {}).get("label_plan", {})
         labels = ", ".join(label_plan) or "the locked labels above"
-        retention_markers = "; ".join(
-            f"{label} uses {plan.get('marker', 'the locked marker')}"
+        retention_lines = "\n".join(
+            plan.get("retention_prefix", f"{label}: {plan.get('marker', 'weak_reference')} -")
             for label, plan in label_plan.items()
-        ) or "use the locked marker for each label"
+        ) or "use the locked prefix for each label"
         return f"""FINAL MODE LOCK — REF2VA
 Highest-priority format lock. Return one <H3_PROMPT> block with no JSON, Markdown, or commentary.
 Start exactly with `subject_definitions:` and never use `integrated_multimodal_description:`.
@@ -1293,11 +1612,12 @@ retention_analysis:
 detailed_description:
 overall_soundscape:
 non_diegetic_music:
-Define exactly these output labels in order: {labels}.
-Use exactly these labels in order: {labels}. Keep them literal where their roles apply; create no others.
-RETENTION OUTPUT MARKERS: {retention_markers}.
-In retention_analysis, print only each label, applicable shots, its marker above, and a concise description. Never print input strength names or `=`.
+Define and use exactly these output labels in order: {labels}. Keep them literal; create no others.
+RETENTION_LINE_PLAN:
+{retention_lines}
+Copy each RETENTION_LINE_PLAN prefix verbatim and in order; append one concise preservation description. Never alter its scope or marker or print strength names or `=`.
 detailed_description must contain exactly {shots}, once each in order; [Shot 1] has no timestamp.{content_lock}
+Complete every SHOT_PLAN verb and result visibly; do not stop at setup. Preserve physical state across shots; show a transition before a conflicting later action.
 Speaker IDs, exact <d> content, lip synchronization, and event order must be correct in the final output.
 Do not invent people, dialogue, vocal reactions, or music. Use N/A for unrequested non-diegetic music.
 End after non_diegetic_music and close </H3_PROMPT>."""
@@ -1327,6 +1647,7 @@ Use exactly these fields once in order: integrated_multimodal_description, overa
 For I2VA, FL2VA, and L2VA, keep the alignment line before the main field, never inside it.
 Never use REF2VA sections. The timeline must contain exactly {shots}, once each in order; [Shot 1] has no timestamp.{endpoint_lock}{content_lock}
 Preserve every explicit SHOT_PLAN action in order; omit none.
+Complete every action verb and result visibly; do not stop at setup. Preserve physical state across shots; show a transition before a conflicting later action.
 Speaker IDs, exact <d> content, lip synchronization, and event order must be correct in the final output.
 Do not invent dialogue, vocal reactions, or music. overall_soundscape must not repeat or summarize speech. Use N/A for unrequested non-diegetic music.
 End after non_diegetic_music and close </H3_PROMPT>."""
@@ -1457,6 +1778,47 @@ def _ref_prompt_sections(prompt: str) -> dict[str, str]:
         end = matches[index + 1].start() if index + 1 < len(matches) else len(prompt)
         sections[name] = prompt[match.end():end].strip()
     return sections
+
+
+def _enforce_retention_line_plan(prompt: str, label_plan: dict[str, dict[str, Any]]) -> str:
+    """Repair only REF2VA retention prefixes; preserve model-written descriptions."""
+    section_match = re.search(
+        r"(^[ \t]*retention_analysis[ \t]*:[ \t]*\n?)(.*?)(?=^[ \t]*detailed_description[ \t]*:)",
+        prompt,
+        flags=re.IGNORECASE | re.MULTILINE | re.DOTALL,
+    )
+    if not section_match or not label_plan:
+        return prompt
+
+    body = section_match.group(2)
+    source_lines = body.splitlines()
+    rebuilt: list[str] = []
+    fixed_markers = (
+        "fully_preserved|partially_preserved|attribute_transfer|weak_reference|"
+        "fully_copy|partially_copy|reference"
+    )
+    for label, plan in label_plan.items():
+        matching_line = next(
+            (line for line in source_lines if re.match(
+                rf"\s*{re.escape(label)}(?=\s|\(|:)", line, re.IGNORECASE,
+            )),
+            "",
+        )
+        description = ""
+        if matching_line:
+            marker_match = re.search(
+                rf"\b(?:{fixed_markers})\b\s*(?:[-;,:]\s*)?(.*)$",
+                matching_line,
+                flags=re.IGNORECASE,
+            )
+            if marker_match:
+                description = marker_match.group(1).strip()
+        if not description:
+            description = str(plan.get("contract") or "preserve only the defined reference relationship").strip()
+        rebuilt.append(f"{plan['retention_prefix']} {description}")
+
+    replacement = section_match.group(1) + "\n".join(rebuilt) + "\n\n"
+    return prompt[:section_match.start()] + replacement + prompt[section_match.end():]
 
 
 def _insert_ref_first_shot_header(detail: str, boundary: int) -> str:
@@ -2190,17 +2552,29 @@ def _requires_action_visibility_lock(project: dict[str, Any]) -> bool:
     return bool(_LARGE_MOTION_RE.search(_project_instruction_text(project)))
 
 
-def _enhanced_output_budget(effective_seconds: float, shot_count: int) -> str:
-    if effective_seconds <= 6.5:
-        words = "140-220" if shot_count == 1 else "180-300 total"
+def _enhanced_output_budget(effective_seconds: float, shot_count: int,
+                            level: str = "normal") -> str:
+    if level == "strong":
+        if effective_seconds <= 6.5:
+            words = "320-520" if shot_count == 1 else "420-680 total"
+        elif effective_seconds <= 12.5:
+            words = "480-720" if shot_count == 1 else "600-900 total"
+        else:
+            words = "800-1200 total"
+        priority = "substantial creative scene development with dense new observable detail and no repetitive padding"
+    elif effective_seconds <= 6.5:
+        words = "180-280" if shot_count == 1 else "240-380 total"
+        priority = "explicit action development and complete continuity resolution without creative plot expansion"
     elif effective_seconds <= 12.5:
-        words = "220-360" if shot_count == 1 else "300-480 total"
+        words = "280-440" if shot_count == 1 else "380-560 total"
+        priority = "explicit action development and complete continuity resolution without creative plot expansion"
     else:
-        words = "380-620 total"
+        words = "500-760 total"
+        priority = "explicit action development and complete continuity resolution without creative plot expansion"
     return (
         "OUTPUT_BUDGET:\n"
         f"recommended_english_words: {words}\n"
-        "priority: concise action clarity over exhaustive appearance inventory or decorative prose"
+        f"priority: {priority}"
     )
 
 
@@ -2247,17 +2621,42 @@ def build_video_prompt(project: dict[str, Any], effective_seconds: float,
         f"effective_duration_seconds: {effective_seconds:.2f}\n"
         f"shot_count: {len(project['shots'])}",
         "STYLE_POLICY:\n"
-        "target_video_style: use only when explicitly requested in TARGET_REQUEST, SHOT_PLAN visual_action, or CONSTRAINTS\n"
+        "target_video_style: use only when explicitly requested in PROMPT_PRESETS, TARGET_REQUEST, SHOT_PLAN visual_action, or CONSTRAINTS\n"
         "when_unspecified: omit any target-wide style invented beyond a concrete keyframe or Strong Subject contract\n"
         f"reference_visual_style: {reference_style_policy}",
         "CAMERA_POLICY:\n"
-        "source: infer composition, viewpoint, camera behavior, and explicit transition intent from TARGET_REQUEST and SHOT_PLAN visual_action\n"
+        "source: obey explicit PROMPT_PRESETS first; otherwise infer composition, viewpoint, camera behavior, and explicit transition intent from TARGET_REQUEST and SHOT_PLAN visual_action\n"
         "per_shot: choose framing that contains the largest required visible action and final state; use a static shot only when all required events remain inside the opening crop, otherwise use one motivated reframe\n"
         "expression: write camera behavior as natural English; add amplitude and speed only when meaningful\n"
         "shot_boundaries: each configured shot after Shot 1 is an ordinary cut at its time-range start; use cross-dissolve, fade, or wipe only when explicitly requested\n"
         "frame_anchor_editing: Picture anchor times never create cuts or transitions; interpolate continuously between anchors inside each configured shot\n"
         "restraint: do not invent decorative motion or a new cut when a static camera or a small continuous camera move presents the action clearly",
     ]
+    shot_preset_blocks = []
+    for shot_index, shot in enumerate(project["shots"], start=1):
+        shot_presets = _normalize_shot_presets(shot.get("presets"))
+        shot_preset_lines = []
+        preset_style = STYLE_PRESET_PROMPTS.get(shot_presets["style"], "")
+        if preset_style:
+            shot_preset_lines.append(f"style: {preset_style}")
+        for preset_name, choices in CAMERA_PRESET_PROMPTS.items():
+            preset_prompt = choices.get(shot_presets[preset_name], "")
+            if preset_prompt:
+                shot_preset_lines.append(f"{preset_name}: {preset_prompt}")
+        if shot_preset_lines:
+            shot_preset_blocks.append(
+                f"[Shot {shot_index}]\n" + "\n".join(shot_preset_lines)
+            )
+    if shot_preset_blocks:
+        sections.append(
+            "PROMPT_PRESETS:\n"
+            "scope: each block applies only to its named shot; never carry a preset into another shot\n"
+            "status: mandatory explicit user selections; preserve every non-none value in its named shot\n"
+            "style_expression: when a shot has style, state that style naturally in the opening sentence of that shot; never omit it, convert it into an unnamed aesthetic, or apply it to another shot\n"
+            "conflicts: only an explicit instruction inside the same shot may refine a preset; otherwise the preset controls\n"
+            "camera_expression: combine selected motion, amplitude, and speed into a natural English camera action inside that shot; do not output stacked labels\n"
+            + "\n\n".join(shot_preset_blocks)
+        )
     if user_request:
         sections.append("TARGET_REQUEST:\n" + user_request)
     if target_style:
@@ -2304,7 +2703,9 @@ def build_video_prompt(project: dict[str, Any], effective_seconds: float,
             "close crop, reveal enough of the stride to make locomotion observable."
         )
     if project.get("enhance") is True:
-        sections.append(_enhanced_output_budget(effective_seconds, len(project["shots"])))
+        sections.append(_enhanced_output_budget(
+            effective_seconds, len(project["shots"]), project.get("enhance_level", "normal")
+        ))
     sections.extend((
         _qwen_reference_plan(project, effective_seconds, visual_evidence),
         _qwen_video_timeline_plan(project, effective_seconds),
@@ -2330,9 +2731,16 @@ def build_llm_prompt(project: dict[str, Any], video_prompt: str) -> str:
     effective_seconds = align_frame_count(project["requested_duration"]) / MODEL_FPS
     reference_model = _reference_model(project) if mode == "REF2VA" else None
     content_locks = _input_content_locks(project)
+    enhance_level = project.get("enhance_level", "normal" if project.get("enhance") else "none")
+    active_prompts = (
+        STRONG_MODE_LLM_SYSTEM_PROMPTS if enhance_level == "strong"
+        else ENHANCED_MODE_LLM_SYSTEM_PROMPTS if enhance_level == "normal"
+        else MODE_LLM_SYSTEM_PROMPTS
+    )
     system_prompt = "\n\n".join((
         _mode_prompt_preamble(mode),
-        MODE_LLM_SYSTEM_PROMPTS[mode],
+        active_prompts[mode],
+        _figurine_animation_system_module(project, mode, enhance_level),
         _reference_system_modules(project) if mode == "REF2VA" else "",
         _single_pass_output_lock(
             mode, effective_seconds, final_shot, expected_shots, reference_model, content_locks,
@@ -2343,6 +2751,16 @@ def build_llm_prompt(project: dict[str, Any], video_prompt: str) -> str:
         f"{system_prompt}\n\n"
         f"USER DATA FOR ACTIVE MODE {mode}:\n"
         f"{video_prompt}"
+    )
+
+
+def _format_raw_model_prompt(system_prompt: str, user_prompt: str) -> str:
+    """Format the exact text channels supplied to the prompt-generation model for UI debugging."""
+    return (
+        "===== SYSTEM PROMPT =====\n"
+        f"{system_prompt}\n\n"
+        "===== USER PROMPT =====\n"
+        f"{user_prompt}"
     )
 
 
@@ -2375,45 +2793,47 @@ def list_enhance_models(roots: list[str] | None = None) -> list[dict[str, Any]]:
         for root in roots
         for path in glob.iglob(os.path.join(root, "**", DEFAULT_ENHANCE_MODEL_FILE), recursive=True)
     )
-    lightx2v = _lightx2v_install_state(roots)
+    omni = _omni_install_state(roots)
     return [{
         "id": DEFAULT_ENHANCE_MODEL_ID,
         "label": "Qwen3.8-27B Uncensored Q4_K_M",
         "installed": default_installed,
         "size": 0 if default_installed else DEFAULT_ENHANCE_MODEL_SIZE,
     }, {
-        "id": LIGHTX2V_MODEL_ID,
-        "label": LIGHTX2V_MODEL_DISPLAY_NAME,
-        "installed": lightx2v["installed"],
-        "size": lightx2v["missing_size"],
+        "id": OMNI_MODEL_ID,
+        "label": OMNI_MODEL_DISPLAY_NAME,
+        "installed": omni["installed"],
+        "size": omni["missing_size"],
     }]
 
 
-def _lightx2v_model_dir(roots: list[str]) -> str:
-    return os.path.join(
-        roots[0], "indhic-ai", "MiniMax_H3-Prompt_Rewriter-8B-LORA-Merged-GGUF",
-    )
+def _omni_model_dir(roots: list[str]) -> str:
+    return os.path.join(roots[0], "pytraveler", "MiniMax-H3-Prompt-Rewriter-LoRA-Omni-GGUF")
 
 
-def _lightx2v_install_state(roots: list[str]) -> dict[str, Any]:
+def _omni_install_state(roots: list[str]) -> dict[str, Any]:
     if not roots:
         return {
-            "installed": False, "model_installed": False, "mmproj_installed": False,
-            "missing_size": LIGHTX2V_TOTAL_SIZE, "model_path": "", "mmproj_path": "",
+            "installed": False, "base_installed": False, "mmproj_installed": False,
+            "adapter_installed": False, "missing_size": OMNI_TOTAL_SIZE,
+            "base_path": "", "mmproj_path": "", "adapter_path": "",
         }
-    model_dir = _lightx2v_model_dir(roots)
-    model_path = os.path.join(model_dir, LIGHTX2V_MODEL_FILE)
-    mmproj_path = os.path.join(model_dir, LIGHTX2V_MMPROJ_FILE)
-    model_installed = os.path.isfile(model_path)
+    model_dir = _omni_model_dir(roots)
+    base_path = os.path.join(model_dir, OMNI_BASE_FILE)
+    mmproj_path = os.path.join(model_dir, OMNI_MMPROJ_FILE)
+    adapter_path = os.path.join(model_dir, OMNI_ADAPTER_FILE)
+    base_installed = os.path.isfile(base_path)
     mmproj_installed = os.path.isfile(mmproj_path)
+    adapter_installed = os.path.isfile(adapter_path)
     return {
-        "installed": model_installed and mmproj_installed,
-        "model_installed": model_installed,
+        "installed": base_installed and mmproj_installed and adapter_installed,
+        "base_installed": base_installed,
         "mmproj_installed": mmproj_installed,
-        "missing_size": (0 if model_installed else LIGHTX2V_MODEL_SIZE)
-                        + (0 if mmproj_installed else LIGHTX2V_MMPROJ_SIZE),
-        "model_path": model_path,
-        "mmproj_path": mmproj_path,
+        "adapter_installed": adapter_installed,
+        "missing_size": (0 if base_installed else OMNI_BASE_SIZE)
+                        + (0 if mmproj_installed else OMNI_MMPROJ_SIZE)
+                        + (0 if adapter_installed else OMNI_ADAPTER_SIZE),
+        "base_path": base_path, "mmproj_path": mmproj_path, "adapter_path": adapter_path,
     }
 
 
@@ -2423,7 +2843,7 @@ def list_image_models(roots: list[str] | None = None) -> list[dict[str, Any]]:
     qwen_mmproj = next((path for root in roots for path in glob.iglob(os.path.join(root, "**", QWEN_IMAGE_MMPROJ_FILE), recursive=True) if os.path.isfile(path)), None)
     qwen_installed = bool(writer_model and qwen_mmproj)
     qwen_missing_size = (0 if writer_model else QWEN_IMAGE_MODEL_SIZE) + (0 if qwen_mmproj else QWEN_IMAGE_MMPROJ_SIZE)
-    lightx2v = _lightx2v_install_state(roots)
+    omni = _omni_install_state(roots)
     return [{
         "id": QWEN_IMAGE_MODEL_ID,
         "label": (
@@ -2442,28 +2862,38 @@ def list_image_models(roots: list[str] | None = None) -> list[dict[str, Any]]:
         "supported_modes": list(SUPPORTED_MODES[1:]),
         "runtime": "llama.cpp",
     }, {
-        "id": LIGHTX2V_MODEL_ID,
+        "id": OMNI_MODEL_ID,
         "label": (
-            LIGHTX2V_MODEL_DISPLAY_NAME
-            + (" · installed" if lightx2v["installed"] else f" · {lightx2v['missing_size'] / 1e9:.2f} GB missing")
-            + f" · {LIGHTX2V_MODEL_VRAM_LABEL} · R2V unsupported"
+            OMNI_MODEL_DISPLAY_NAME
+            + (" · installed" if omni["installed"] else f" · {omni['missing_size'] / 1e9:.2f} GB missing")
+            + f" · {OMNI_MODEL_VRAM_LABEL}"
         ),
-        "installed": lightx2v["installed"],
-        "size": lightx2v["missing_size"],
-        "text_installed": lightx2v["installed"],
-        "vision_installed": lightx2v["installed"],
-        "text_size": lightx2v["missing_size"],
-        "vision_size": 0,
-        "enhance_model": LIGHTX2V_MODEL_ID,
-        "image_model": LIGHTX2V_MODEL_ID,
-        "supported_modes": list(LIGHTX2V_SUPPORTED_MODES),
-        "runtime": "llama.cpp-gguf",
+        "installed": omni["installed"],
+        "size": omni["missing_size"],
+        "text_installed": omni["base_installed"] and omni["adapter_installed"],
+        "vision_installed": omni["mmproj_installed"],
+        "text_size": (0 if omni["base_installed"] else OMNI_BASE_SIZE)
+                     + (0 if omni["adapter_installed"] else OMNI_ADAPTER_SIZE),
+        "vision_size": 0 if omni["mmproj_installed"] else OMNI_MMPROJ_SIZE,
+        "enhance_model": OMNI_MODEL_ID,
+        "image_model": OMNI_MODEL_ID,
+        "supported_modes": list(SUPPORTED_MODES[1:]),
+        "runtime": "llama.cpp-mtmd-gguf-lora",
     }]
 
 
 def _download_image_component(repo_id: str, filename: str, local_dir: str, component_size: int,
                               completed_size: int, bundle_size: int, progress=None) -> str:
+    # hf_xet writes through an opaque chunk cache, so the destination file can
+    # remain at zero bytes until it is atomically completed. The regular Hub
+    # HTTP path grows a visible .incomplete file that we can report live.
+    os.environ["HF_HUB_DISABLE_XET"] = "1"
     from huggingface_hub import hf_hub_download
+    try:
+        import huggingface_hub.constants as hf_constants
+        hf_constants.HF_HUB_DISABLE_XET = True
+    except (ImportError, AttributeError):
+        pass
 
     stop_monitor = threading.Event()
 
@@ -2471,6 +2901,10 @@ def _download_image_component(repo_id: str, filename: str, local_dir: str, compo
         last_size = -1
         while not stop_monitor.wait(0.35):
             candidates = glob.glob(os.path.join(local_dir, "**", "*.incomplete"), recursive=True)
+            candidates.extend(glob.glob(os.path.join(local_dir, "**", "*.part"), recursive=True))
+            matching = [path for path in candidates if filename.lower() in os.path.basename(path).lower()]
+            if matching:
+                candidates = matching
             candidates.append(os.path.join(local_dir, filename))
             size = min(component_size, max((os.path.getsize(path) for path in candidates if os.path.isfile(path)), default=0))
             if size != last_size and progress:
@@ -2481,62 +2915,53 @@ def _download_image_component(repo_id: str, filename: str, local_dir: str, compo
     monitor = threading.Thread(target=monitor_download, name="toyxyz-h3-image-download", daemon=True)
     monitor.start()
     try:
-        return hf_hub_download(repo_id=repo_id, filename=filename, local_dir=local_dir)
+        downloaded = hf_hub_download(repo_id=repo_id, filename=filename, local_dir=local_dir)
+        if progress:
+            progress(
+                stage="downloading", message=f"Downloaded model component: {filename}",
+                downloaded=completed_size + component_size, total=bundle_size,
+            )
+        return downloaded
     finally:
         stop_monitor.set()
         monitor.join(timeout=1)
 
 
-def _resolve_lightx2v_model(progress=None) -> tuple[str, str]:
+def _resolve_omni_model(progress=None) -> tuple[str, str, str]:
     roots = _llm_roots()
     if not roots:
         raise RuntimeError("ComfyUI has no registered models/LLM directory.")
-    state = _lightx2v_install_state(roots)
+    state = _omni_install_state(roots)
     if state["installed"]:
         if progress:
-            progress(stage="model_ready", message="LightX2V merged GGUF Q8_0 + Vision F16 bundle is installed.")
-        return os.path.abspath(state["model_path"]), os.path.abspath(state["mmproj_path"])
+            progress(stage="model_ready", message="Qwen2.5-Omni-7B + MiniMax-H3 Omni GGUF LoRA bundle is installed.")
+        return tuple(os.path.abspath(state[key]) for key in ("base_path", "mmproj_path", "adapter_path"))
     try:
         import huggingface_hub  # noqa: F401
     except ImportError as exc:
-        raise RuntimeError("huggingface_hub is required to download the LightX2V GGUF bundle.") from exc
-
-    model_dir = _lightx2v_model_dir(roots)
+        raise RuntimeError("huggingface_hub is required to download the Omni GGUF bundle.") from exc
+    model_dir = _omni_model_dir(roots)
     os.makedirs(model_dir, exist_ok=True)
     total = int(state["missing_size"])
     completed = 0
-    try:
-        if progress:
-            progress(
-                stage="downloading", message="Starting LightX2V merged GGUF bundle download.",
-                downloaded=0, total=total,
-            )
-        if not state["model_installed"]:
-            _download_image_component(
-                LIGHTX2V_MODEL_REPO, LIGHTX2V_MODEL_FILE, model_dir,
-                LIGHTX2V_MODEL_SIZE, completed, total, progress,
-            )
-            completed += LIGHTX2V_MODEL_SIZE
-        if not state["mmproj_installed"]:
-            _download_image_component(
-                LIGHTX2V_MODEL_REPO, LIGHTX2V_MMPROJ_FILE, model_dir,
-                LIGHTX2V_MMPROJ_SIZE, completed, total, progress,
-            )
-        installed = _lightx2v_install_state(roots)
-        if not installed["installed"]:
-            raise RuntimeError("The LightX2V merged GGUF download completed but required files are missing.")
-        if progress:
-            progress(
-                stage="downloading", message="LightX2V merged GGUF bundle download completed.",
-                downloaded=total, total=total,
-            )
-            progress(
-                stage="model_ready", message="LightX2V merged GGUF Q8_0 + Vision F16 bundle is ready.",
-                downloaded=total, total=total,
-            )
-        return os.path.abspath(installed["model_path"]), os.path.abspath(installed["mmproj_path"])
-    finally:
-        pass
+    if progress:
+        progress(stage="downloading", message="Starting Qwen2.5-Omni + rewriter LoRA download.", downloaded=0, total=total)
+    components = (
+        ("base_installed", OMNI_BASE_REPO, OMNI_BASE_FILE, OMNI_BASE_SIZE),
+        ("mmproj_installed", OMNI_BASE_REPO, OMNI_MMPROJ_FILE, OMNI_MMPROJ_SIZE),
+        ("adapter_installed", OMNI_ADAPTER_REPO, OMNI_ADAPTER_FILE, OMNI_ADAPTER_SIZE),
+    )
+    for installed_key, repo, filename, size in components:
+        if not state[installed_key]:
+            _download_image_component(repo, filename, model_dir, size, completed, total, progress)
+            completed += size
+    installed = _omni_install_state(roots)
+    if not installed["installed"]:
+        raise RuntimeError("The Omni GGUF download completed but one or more required files are missing.")
+    if progress:
+        progress(stage="downloading", message="Omni GGUF bundle download completed.", downloaded=total, total=total)
+        progress(stage="model_ready", message="Qwen2.5-Omni-7B + MiniMax-H3 Omni GGUF LoRA bundle is ready.")
+    return tuple(os.path.abspath(installed[key]) for key in ("base_path", "mmproj_path", "adapter_path"))
 
 
 def _resolve_image_model(model_id: str, progress=None) -> tuple[str, str]:
@@ -2613,10 +3038,16 @@ def _resolve_enhance_model(model_id: str, progress=None) -> str:
         return local
     if model_id != DEFAULT_ENHANCE_MODEL_ID:
         raise FileNotFoundError("The selected enhancement model was not found.")
+    os.environ["HF_HUB_DISABLE_XET"] = "1"
     try:
         from huggingface_hub import hf_hub_download
     except ImportError as exc:
         raise RuntimeError("huggingface_hub is required to download the default enhancement model.") from exc
+    try:
+        import huggingface_hub.constants as hf_constants
+        hf_constants.HF_HUB_DISABLE_XET = True
+    except (ImportError, AttributeError):
+        pass
     os.makedirs(roots[0], exist_ok=True)
     stop_monitor = threading.Event()
 
@@ -2624,6 +3055,13 @@ def _resolve_enhance_model(model_id: str, progress=None) -> str:
         last_size = -1
         while not stop_monitor.wait(0.35):
             candidates = glob.glob(os.path.join(roots[0], "**", "*.incomplete"), recursive=True)
+            candidates.extend(glob.glob(os.path.join(roots[0], "**", "*.part"), recursive=True))
+            matching = [
+                path for path in candidates
+                if DEFAULT_ENHANCE_MODEL_FILE.lower() in os.path.basename(path).lower()
+            ]
+            if matching:
+                candidates = matching
             candidates.append(os.path.join(roots[0], DEFAULT_ENHANCE_MODEL_FILE))
             size = max((os.path.getsize(path) for path in candidates if os.path.isfile(path)), default=0)
             if size != last_size and progress:
@@ -2658,47 +3096,224 @@ def _resolve_enhance_model(model_id: str, progress=None) -> str:
         monitor.join(timeout=1)
 
 
-def _find_llama_cli() -> str:
-    configured = os.environ.get("TOYXYZ_LLAMA_CLI", "").strip()
-    candidates = [configured, shutil.which("llama-cli") or "", shutil.which("llama-cli.exe") or ""]
+def _llama_runtime_backend() -> str:
+    requested = os.environ.get("TOYXYZ_LLAMA_BACKEND", "auto").strip().lower()
+    if requested in {"cuda", "vulkan", "cpu"}:
+        return requested
+    if sys.platform == "win32":
+        try:
+            import torch
+            if torch.cuda.is_available() and tuple(torch.cuda.get_device_capability(0)) in {
+                (8, 6), (8, 9), (12, 0), (12, 1),
+            }:
+                return "cuda"
+        except (ImportError, RuntimeError, AttributeError):
+            pass
+        return "vulkan"
+    if sys.platform == "darwin":
+        return "cpu"
+    return "vulkan"
+
+
+def _llama_runtime_assets(backend: str) -> tuple[str, ...]:
+    assets = {
+        ("win32", "cuda"): (
+            f"llama-{LLAMA_RUNTIME_RELEASE}-bin-win-cuda-13.3-x64.zip",
+            "cudart-llama-bin-win-cuda-13.3-x64.zip",
+        ),
+        ("win32", "vulkan"): (f"llama-{LLAMA_RUNTIME_RELEASE}-bin-win-vulkan-x64.zip",),
+        ("win32", "cpu"): (f"llama-{LLAMA_RUNTIME_RELEASE}-bin-win-cpu-x64.zip",),
+        ("linux", "vulkan"): (f"llama-{LLAMA_RUNTIME_RELEASE}-bin-ubuntu-vulkan-x64.tar.gz",),
+        ("linux", "cpu"): (f"llama-{LLAMA_RUNTIME_RELEASE}-bin-ubuntu-x64.tar.gz",),
+        ("darwin", "cpu"): (f"llama-{LLAMA_RUNTIME_RELEASE}-bin-macos-arm64.tar.gz",),
+    }
+    selected = assets.get((sys.platform, backend))
+    if not selected:
+        raise RuntimeError(f"No managed llama.cpp {backend} runtime is available for {sys.platform}.")
+    return selected
+
+
+def _llama_runtime_root() -> str:
     try:
         import folder_paths
+        user_dir = folder_paths.get_user_directory()
+    except (ImportError, AttributeError):
+        user_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "user")
+    return os.path.join(user_dir, "toyxyz_minimax_h3", "runtime")
 
-        user_root = os.path.join(folder_paths.base_path, "user")
-        candidates.extend(glob.glob(os.path.join(user_root, "**", "llama-cli.exe"), recursive=True))
-        candidates.extend(glob.glob(os.path.join(user_root, "**", "llama-cli"), recursive=True))
-    except ImportError:
-        pass
+
+def _managed_llama_dir(backend: str) -> str:
+    return os.path.join(_llama_runtime_root(), f"{LLAMA_RUNTIME_RELEASE}-{backend}")
+
+
+def _runtime_binary(directory: str, names: tuple[str, ...]) -> str:
+    if not os.path.isdir(directory):
+        return ""
+    for current, _dirs, files in os.walk(directory):
+        for name in names:
+            if name in files:
+                return os.path.abspath(os.path.join(current, name))
+    return ""
+
+
+def _safe_extract_runtime(archive: str, destination: str) -> None:
+    root = os.path.abspath(destination)
+
+    def safe(name: str) -> bool:
+        target = os.path.abspath(os.path.join(root, name))
+        return target == root or target.startswith(root + os.sep)
+
+    if archive.lower().endswith(".zip"):
+        with zipfile.ZipFile(archive) as bundle:
+            if any(not safe(item.filename) for item in bundle.infolist()):
+                raise RuntimeError("The llama.cpp runtime archive contains an unsafe path.")
+            bundle.extractall(root)
+        return
+    with tarfile.open(archive) as bundle:
+        members = bundle.getmembers()
+        if any(not safe(item.name) for item in members):
+            raise RuntimeError("The llama.cpp runtime archive contains an unsafe path.")
+        bundle.extractall(root)
+
+
+def _download_runtime_asset(url: str, destination: str, completed: int, total: int,
+                            progress=None) -> int:
+    request = urllib.request.Request(url, headers={"User-Agent": "ComfyUI-toyxyz-Minimax-H3"})
+    with urllib.request.urlopen(request, timeout=60) as response, open(destination, "wb") as handle:
+        expected = int(response.headers.get("Content-Length") or 0)
+        received = 0
+        while True:
+            block = response.read(1024 * 1024)
+            if not block:
+                break
+            handle.write(block)
+            received += len(block)
+            if progress:
+                progress(
+                    stage="downloading", message=f"Downloading llama.cpp runtime: {os.path.basename(destination)}",
+                    downloaded=completed + received, total=total or completed + expected,
+                )
+    return received
+
+
+def _ensure_managed_llama_runtime(progress=None) -> str:
+    backend = _llama_runtime_backend()
+    directory = _managed_llama_dir(backend)
+    required = (("llama-completion.exe", "llama-completion"),
+                ("llama-mtmd-cli.exe", "llama-mtmd-cli"))
+    if all(_runtime_binary(directory, names) for names in required):
+        return directory
+    with _LLAMA_RUNTIME_LOCK:
+        if all(_runtime_binary(directory, names) for names in required):
+            return directory
+        assets = _llama_runtime_assets(backend)
+        staging = directory + ".part"
+        if os.path.isdir(staging):
+            shutil.rmtree(staging)
+        os.makedirs(staging, exist_ok=True)
+        sizes: list[int] = []
+        for name in assets:
+            try:
+                request = urllib.request.Request(f"{LLAMA_RUNTIME_URL}/{name}", method="HEAD")
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    sizes.append(int(response.headers.get("Content-Length") or 0))
+            except (OSError, urllib.error.URLError, ValueError):
+                sizes.append(0)
+        total = sum(sizes) if all(sizes) else 0
+        completed = 0
+        try:
+            if progress:
+                progress(stage="downloading", message=f"Installing llama.cpp {LLAMA_RUNTIME_RELEASE} {backend} runtime.", downloaded=0, total=total)
+            for name in assets:
+                archive = os.path.join(staging, name)
+                received = _download_runtime_asset(
+                    f"{LLAMA_RUNTIME_URL}/{name}", archive, completed, total, progress,
+                )
+                completed += received
+                _safe_extract_runtime(archive, staging)
+                os.remove(archive)
+            if not all(_runtime_binary(staging, names) for names in required):
+                raise RuntimeError("The downloaded llama.cpp archive is missing required executables.")
+            if os.path.isdir(directory):
+                shutil.rmtree(directory)
+            os.makedirs(os.path.dirname(directory), exist_ok=True)
+            os.replace(staging, directory)
+            if progress:
+                progress(stage="model_ready", message=f"llama.cpp {LLAMA_RUNTIME_RELEASE} {backend} runtime is ready.", downloaded=total or completed, total=total or completed)
+            return directory
+        except Exception:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+
+
+def _find_llama_cli(progress=None) -> str:
+    configured = os.environ.get("TOYXYZ_LLAMA_CLI", "").strip()
+    candidates = [configured]
+    if not configured:
+        directory = _ensure_managed_llama_runtime(progress)
+        candidates.extend((_runtime_binary(directory, ("llama-cli.exe", "llama-cli")),
+                           shutil.which("llama-cli") or "", shutil.which("llama-cli.exe") or ""))
     for candidate in candidates:
         if candidate and os.path.isfile(candidate):
             return os.path.abspath(candidate)
     raise RuntimeError(
-        "llama-cli was not found. Install llama.cpp, install MiniMax-H3-Prompt-Rewriter-ComfyUI, "
-        "or set TOYXYZ_LLAMA_CLI to the executable path."
+        "The managed llama.cpp runtime was installed without llama-cli. Delete its runtime folder "
+        "to reinstall it, or set TOYXYZ_LLAMA_CLI to an executable path."
     )
 
 
-def _find_llama_server() -> str:
-    configured = os.environ.get("TOYXYZ_LLAMA_SERVER", "").strip()
-    candidates = [configured, shutil.which("llama-server") or "", shutil.which("llama-server.exe") or ""]
-    try:
-        cli_path = _find_llama_cli()
-        sibling_name = "llama-server.exe" if os.name == "nt" else "llama-server"
-        candidates.append(os.path.join(os.path.dirname(cli_path), sibling_name))
-    except RuntimeError:
-        pass
-    try:
-        import folder_paths
+def _find_llama_completion(progress=None) -> str:
+    """Find llama.cpp's one-shot completion frontend.
 
-        user_root = os.path.join(folder_paths.base_path, "user")
-        candidates.extend(glob.glob(os.path.join(user_root, "**", "llama-server.exe"), recursive=True))
-        candidates.extend(glob.glob(os.path.join(user_root, "**", "llama-server"), recursive=True))
-    except ImportError:
-        pass
+    Current llama.cpp releases use ``llama-cli`` as an interactive terminal UI;
+    that program can write the rendered input prompt to stdout.  The upstream
+    MiniMax-H3 rewriter integration therefore uses ``llama-completion`` and
+    keeps ``llama-cli`` only as a compatibility fallback for older bundles.
+    """
+    configured = os.environ.get("TOYXYZ_LLAMA_COMPLETION", "").strip()
+    names = ("llama-completion.exe", "llama-completion")
+    candidates = [configured]
+    if not configured:
+        directory = _ensure_managed_llama_runtime(progress)
+        candidates.append(_runtime_binary(directory, names))
+        candidates.extend(shutil.which(name) or "" for name in names)
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            return os.path.abspath(candidate)
+    # Old llama.cpp packages shipped only llama-cli, when it still behaved as
+    # the non-interactive completion frontend.
+    return _find_llama_cli(progress)
+
+
+def _find_llama_server(progress=None) -> str:
+    configured = os.environ.get("TOYXYZ_LLAMA_SERVER", "").strip()
+    names = ("llama-server.exe", "llama-server")
+    candidates = [configured]
+    if not configured:
+        directory = _ensure_managed_llama_runtime(progress)
+        candidates.append(_runtime_binary(directory, names))
+        candidates.extend(shutil.which(name) or "" for name in names)
     for candidate in candidates:
         if candidate and os.path.isfile(candidate):
             return os.path.abspath(candidate)
     raise RuntimeError("llama-server was not found; image analysis will use llama-cli instead.")
+
+
+def _find_llama_mtmd_cli(progress=None) -> str:
+    configured = os.environ.get("TOYXYZ_LLAMA_MTMD_CLI", "").strip()
+    names = ("llama-mtmd-cli.exe", "llama-mtmd-cli")
+    candidates = [configured]
+    if not configured:
+        directory = _ensure_managed_llama_runtime(progress)
+        candidates.append(_runtime_binary(directory, names))
+        candidates.extend(shutil.which(name) or "" for name in names)
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            return os.path.abspath(candidate)
+    raise RuntimeError(
+        "The managed llama.cpp runtime was installed without llama-mtmd-cli. Delete its runtime folder "
+        "to reinstall it, or set TOYXYZ_LLAMA_MTMD_CLI to an executable path."
+    )
 
 
 def _available_local_port() -> int:
@@ -2826,7 +3441,7 @@ class _LlamaServerSession:
 
 
 def _start_persistent_image_server(image_model_id: str, progress=None) -> _LlamaServerSession:
-    executable = _find_llama_server()
+    executable = _find_llama_server(progress)
     model_path, mmproj_path = _resolve_image_model(image_model_id or DEFAULT_IMAGE_MODEL_ID, progress)
     session = _LlamaServerSession(executable, model_path, mmproj_path, image_model_id, context_size=16384)
     try:
@@ -2850,12 +3465,114 @@ def _clean_llm_output(text: str) -> str:
         text = text.rsplit("\n> ", 1)[1]
         # The first line is llama-cli's echoed (often truncated) user prompt.
         text = text.partition("\n")[2]
+    elif re.search(r"\btask:\s*(?:T2AV|I2AV|FL2AV|L2AV|REF2AV)\b", text, re.IGNORECASE) \
+            and re.search(r"\braw_prompt:\s*", text, re.IGNORECASE):
+        # llama.cpp can also echo the complete short prompt inline, without a
+        # truncation marker or response delimiter. Select the task-specific
+        # final schema start. rfind avoids mistaking schema-shaped text inside
+        # a user-supplied raw prompt for the actual assistant response.
+        task_match = re.search(r"\btask:\s*(\w+)", text, re.IGNORECASE)
+        task = task_match.group(1).upper() if task_match else ""
+        starts = {
+            "T2AV": "integrated_multimodal_description:",
+            "I2AV": "For the target video,",
+            "FL2AV": "How the reference pictures align with the target video",
+            "L2AV": "How the reference pictures align with the target video",
+            "REF2AV": "subject_definitions:",
+        }
+        marker = starts.get(task, "")
+        start = text.rfind(marker) if marker else -1
+        if start >= 0:
+            text = text[start:]
+    elif re.search(r"\(truncated\)", text, flags=re.IGNORECASE):
+        # Some llama.cpp/mtmd builds echo a long --prompt without the legacy
+        # "> " delimiter, terminate that echo with "(truncated)", and then
+        # print the actual assistant response. Keep the first valid H3 schema
+        # start after the final truncation marker. Include alignment lines so
+        # I2AV/FL2AV/L2AV do not lose their required opening instruction.
+        tail = re.split(r"\(truncated\)", text, flags=re.IGNORECASE)[-1]
+        schema_start = re.search(
+            r"(?:^|\s)(?:For the target video,|How the reference pictures align with "
+            r"the target video|integrated_multimodal_description:|subject_definitions:)",
+            tail, flags=re.MULTILINE,
+        )
+        if schema_start:
+            text = tail[schema_start.start():].lstrip()
     text = re.sub(r"(?:^|\n)Exiting\.\.\.\s*$", "", text, flags=re.IGNORECASE).strip()
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE).strip()
+    # Never expose an unfinished reasoning trace when generation reaches its
+    # token limit before </think>. Recover a valid schema if one follows the
+    # trace; otherwise return empty so the caller reports generation failure.
+    if re.search(r"<think\b[^>]*>", text, flags=re.IGNORECASE):
+        schema = re.search(
+            r"(?:For the target video,|How the reference pictures align with "
+            r"the target video|integrated_multimodal_description:|subject_definitions:)",
+            text, flags=re.IGNORECASE,
+        )
+        text = text[schema.start():].strip() if schema else ""
+    # Some llama-completion builds render the model's textual end sentinel
+    # instead of consuming it as a stop token. It is runtime metadata, not part
+    # of a MiniMax-H3 prompt.
+    text = re.sub(
+        r"(?:\s*\[(?:end of text|end_of_text)\]\s*)+$", "", text,
+        flags=re.IGNORECASE,
+    ).strip()
+    # llama-completion may print a generated chat/EOG token literally when
+    # --special is enabled for pre-rendered ChatML input. These are transport
+    # delimiters and must never become part of the H3 prompt.
+    text = re.sub(
+        r"(?:\s*<\|(?:im_end|endoftext|eot_id|end_of_text)\|>\s*)+$", "", text,
+        flags=re.IGNORECASE,
+    ).strip()
     fence = re.fullmatch(r"```(?:text)?\s*(.*?)\s*```", text, flags=re.DOTALL | re.IGNORECASE)
     if fence:
         text = fence.group(1).strip()
     return text
+
+
+def _render_omni_text_prompt(system_prompt: str, user_prompt: str) -> str:
+    """Render one Qwen2.5-Omni text turn without enabling conversation mode.
+
+    This is the text-only equivalent of the reference rewriter's GGUF chat
+    template path.  Passing ``-sysf`` and ``-p`` separately lets recent
+    llama-cli builds treat the request as an interactive turn and echo the
+    ``task``/``raw_prompt`` block as generated text.
+    """
+    def safe(value: str) -> str:
+        return value.replace("<|im_end|>", "").replace("<|im_start|>", "")
+
+    return (
+        "<|im_start|>system\n" + safe(system_prompt).strip() + "<|im_end|>\n"
+        "<|im_start|>user\n" + safe(user_prompt).strip() + "<|im_end|>\n"
+        "<|im_start|>assistant\n"
+    )
+
+
+def _render_qwen3_text_prompt(system_prompt: str, user_prompt: str) -> str:
+    """Render a non-interactive Qwen3 chat turn for llama-completion.
+
+    Supplying ``-sysf``/``-p`` together with llama.cpp conversation mode has
+    proven fragile on Windows CUDA builds, especially with long contexts.  A
+    fully rendered ChatML turn avoids that frontend state machine. Qwen3's
+    native non-thinking template ends an empty thinking block before generation.
+    The caller must pass ``--special`` so these ChatML markers are tokenized as
+    control tokens rather than ordinary text.
+    """
+    def safe(value: str) -> str:
+        return value.replace("<|im_end|>", "").replace("<|im_start|>", "")
+
+    return (
+        "<|im_start|>system\n" + safe(system_prompt).strip() + "<|im_end|>\n"
+        "<|im_start|>user\n" + safe(user_prompt).strip() + "<|im_end|>\n"
+        "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    )
+
+
+def _qwen_thinking_args(executable: str) -> list[str]:
+    """Reasoning-off flags for the selected llama.cpp frontend generation."""
+    if os.path.basename(executable).lower().startswith("llama-completion"):
+        return ["--reasoning", "off"]
+    return ["--chat-template-kwargs", '{"enable_thinking":false}']
 
 
 def _resolve_uploaded_image(image: dict[str, Any]) -> str:
@@ -3120,7 +3837,7 @@ def analyze_reference_video(video: dict[str, Any], role: str, duration: float,
             model_path, mmproj_path = session.model_path, session.mmproj_path
         else:
             model_path, mmproj_path = _resolve_image_model(image_model_id or DEFAULT_IMAGE_MODEL_ID, progress)
-            command = [_find_llama_cli(), "-m", model_path, "--mmproj", mmproj_path]
+            command = [_find_llama_cli(progress), "-m", model_path, "--mmproj", mmproj_path]
             for frame_path in frame_paths:
                 command.extend(("--image", frame_path))
             command.extend((
@@ -3257,7 +3974,7 @@ def analyze_reference_image(image: dict[str, Any], role: str = "subject_identity
     prompt = _reference_analysis_prompt(role)
     with _vision_compatible_image(image_path) as vision_path:
         command = [
-            _find_llama_cli(), "-m", model_path, "--mmproj", mmproj_path, "--image", vision_path,
+            _find_llama_cli(progress), "-m", model_path, "--mmproj", mmproj_path, "--image", vision_path,
             "-p", prompt, "--single-turn", "--no-display-prompt", "--no-show-timings", "--simple-io",
             "--no-context-shift", "--log-disable", "--color", "off", "-c", "8192", "-n", "700",
             "-ngl", "all", "--temp", "0.2", "--top-p", "0.9", "--top-k", "40", "--jinja",
@@ -3305,107 +4022,151 @@ def _prompt_shot_numbers(prompt: str) -> list[int]:
     return numbers
 
 
-def _build_lightx2v_original_prompt(project: dict[str, Any], effective_seconds: float) -> str:
-    lines = [
-        f"Create exactly {len(project['shots'])} shot(s) in the supplied order.",
-        f"The target video ends at {effective_seconds:.2f} seconds.",
-    ]
-    elapsed = 0.0
+def _omni_system_prompt(mode: str) -> str:
+    with open(OMNI_SYSTEM_PROMPTS_PATH, "r", encoding="utf-8") as handle:
+        config = json.load(handle)
+    return str(config["ref2av" if mode == "REF2VA" else "base"])
+
+
+def _build_omni_raw_prompt(project: dict[str, Any], effective_seconds: float) -> str:
+    reference_model = _reference_model(project) if project["mode"] == "REF2VA" else None
+    aliases = reference_model["aliases"] if reference_model else {}
+    applications = reference_model["applications"] if reference_model else []
+    lines = [_shot_description(project, effective_seconds, aliases, applications)]
     for index, shot in enumerate(project["shots"], 1):
-        start = elapsed
-        elapsed += float(shot["duration"])
-        action = _clean_text(shot.get("visual_action")) or "Maintain a coherent visible state."
-        if index == 1:
-            lines.append(f"[Shot 1] 0.000-{elapsed:.3f} seconds: {action}")
-        else:
-            lines.append(f"[Shot {index}] begins at {start:.3f} seconds with a cut: {action}")
-    if project.get("user_request"):
-        lines.append(f"Overall request: {project['user_request']}")
-    if project.get("constraints"):
-        lines.append(f"Constraints: {project['constraints']}")
-    if project.get("verbatim_content"):
-        lines.append(f"Verbatim dialogue or visible text to preserve exactly: {project['verbatim_content']}")
+        presets = _normalize_shot_presets(shot.get("presets"))
+        selected: list[str] = []
+        style = STYLE_PRESET_PROMPTS.get(presets["style"], "")
+        if style:
+            selected.append(style)
+        for name, choices in CAMERA_PRESET_PROMPTS.items():
+            value = choices.get(presets[name], "")
+            if value:
+                selected.append(value)
+        if selected:
+            lines.append(f"[Shot {index}] Required presets: " + "; ".join(selected) + ".")
     return "\n".join(lines)
 
 
-def _lightx2v_reference_paths(project: dict[str, Any], mode: str) -> list[str]:
-    pictures = [ref for ref in project["references"] if ref["type"] == "picture"]
-    expected_roles = {
-        "T2VA": (), "I2VA": ("first_frame",), "L2VA": ("last_frame",),
-        "FL2VA": ("first_frame", "last_frame"),
-    }[mode]
-    paths: list[str] = []
-    for role in expected_roles:
-        reference = next((ref for ref in pictures if ref["role"] == role), None)
-        if not reference or not reference.get("image_filename"):
-            raise ValueError(f"LightX2V {mode} requires an uploaded {role.replace('_', ' ')} image.")
-        paths.append(_resolve_uploaded_image({
-            "filename": reference["image_filename"], "subfolder": reference["image_subfolder"],
-        }))
-    return paths
-
-
-def _lightx2v_messages(prompt: str, task: str, resolution: str, duration: int,
-                       image_paths: list[str]) -> list[dict[str, Any]]:
-    with open(LIGHTX2V_SYSTEM_PROMPTS_PATH, "r", encoding="utf-8") as handle:
-        config = json.load(handle)
-    content: list[dict[str, Any]] = []
-    image_index = 0
-    for item in config["task_messages"][task]:
-        if item == "image":
-            image_path = image_paths[image_index]
-            image_index += 1
-            mime_type = mimetypes.guess_type(image_path)[0] or "image/png"
-            with open(image_path, "rb") as image_handle:
-                encoded = base64.b64encode(image_handle.read()).decode("ascii")
-            content.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:{mime_type};base64,{encoded}"},
-            })
+def _omni_reference_inputs(project: dict[str, Any], mode: str, temp_dir: str
+                           ) -> tuple[list[tuple[str, str]], str]:
+    labeled = _reference_labels(project["references"])
+    if mode != "REF2VA":
+        wanted = {
+            "T2VA": set(), "I2VA": {"first_frame"}, "L2VA": {"last_frame"},
+            "FL2VA": {"first_frame", "last_frame"},
+        }[mode]
+        labeled = [ref for ref in labeled if ref["type"] == "picture" and ref["role"] in wanted]
+    attachments: list[tuple[str, str]] = []
+    lines = ["Ordered MiniMax-H3 references:"] if mode == "REF2VA" else []
+    effective = align_frame_count(float(project["requested_duration"])) / MODEL_FPS
+    for index, ref in enumerate(labeled, 1):
+        label = ref["label"]
+        if mode == "I2VA":
+            heading = f"{label} — exact first frame at 0.00 seconds:"
+        elif mode == "L2VA":
+            heading = f"{label} — exact final frame at {effective:.2f}s:"
+        elif mode == "FL2VA" and ref["role"] == "first_frame":
+            heading = f"{label} — exact first frame at 0.00 seconds:"
+        elif mode == "FL2VA":
+            heading = f"{label} — exact final frame at {effective:.2f}s:"
         else:
-            content.append({"type": "text", "text": item})
-    request = (
-        f"task: {task}\nresolution: {resolution}\nduration: {duration}s\n"
-        f"original_prompt: {prompt.strip()}"
+            heading = f"{label}:"
+        lines.append(heading)
+        if ref["type"] == "picture":
+            path = _resolve_uploaded_image({
+                "filename": ref.get("image_filename"), "subfolder": ref.get("image_subfolder"),
+            })
+            attachments.append(("image", path))
+            lines.append("<__media__>")
+        elif ref["type"] == "video":
+            path = _resolve_uploaded_video({
+                "filename": ref.get("video_filename"), "subfolder": ref.get("video_subfolder"),
+            })
+            clip_dir = os.path.join(temp_dir, f"video-{index}")
+            os.makedirs(clip_dir, exist_ok=True)
+            duration = max(REF_VIDEO_MIN_SECONDS, float(ref.get("duration") or effective))
+            start = max(0.0, float(ref.get("trim_start") or 0.0))
+            frames, timestamps = _extract_video_analysis_frames(path, duration, clip_dir, start)
+            lines.append(
+                f"The following {len(frames)} images are chronological samples of the selected "
+                f"source interval; relative timestamps: "
+                + ", ".join(f"{value:.3f}s" for value in timestamps) + "."
+            )
+            for frame in frames:
+                attachments.append(("image", frame))
+                lines.append("<__media__>")
+        elif ref["type"] == "audio":
+            path = _resolve_uploaded_audio({
+                "filename": ref.get("audio_filename"), "subfolder": ref.get("audio_subfolder"),
+            })
+            attachments.append(("audio", path))
+            lines.append("<__media__>")
+    return attachments, "\n".join(lines)
+
+
+def _run_omni_process(command: list[str], cancel_event: threading.Event | None,
+                      job_id: str) -> str:
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    process = subprocess.Popen(
+        command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace", creationflags=creationflags,
     )
-    content.append({"type": "text", "text": ("\n" if content else "") + request})
-    timeline_editing_lock = _clean_text(config.get("timeline_editing_lock"))
-    system_prompt = config["system"] + (f"\n\n{timeline_editing_lock}" if timeline_editing_lock else "")
-    return [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": content},
-    ]
+    if job_id:
+        _set_enhance_stopper(job_id, process.terminate)
+    deadline = time.monotonic() + 1800
+    try:
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                process.terminate()
+                raise EnhancementCancelled("Prompt generation was stopped by the user.")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                process.terminate()
+                raise RuntimeError("Omni prompt generation exceeded the 30-minute timeout.")
+            try:
+                stdout, stderr = process.communicate(timeout=min(0.25, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                continue
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+        if job_id:
+            _set_enhance_stopper(job_id, None)
+    if process.returncode != 0:
+        tail = "\n".join(stderr.splitlines()[-16:])
+        raise RuntimeError(f"Omni llama.cpp runtime exited with code {process.returncode}.\n{tail}")
+    return _clean_llm_output(stdout)
 
 
-def _enhance_project_lightx2v(result: dict[str, Any], model_id: str, progress=None,
-                              cancel_event: threading.Event | None = None,
-                              job_id: str = "") -> dict[str, Any]:
+def _enhance_project_omni(result: dict[str, Any], model_id: str, progress=None,
+                          cancel_event: threading.Event | None = None,
+                          job_id: str = "") -> dict[str, Any]:
     project = result["project"]
     mode = project["mode"]
-    if mode == "REF2VA":
-        raise ValueError(
-            "lightx2v/MiniMax-H3-Prompt-Rewriter-LoRA-8B does not support R2V/REF2VA. "
-            "Select Qwen3.8 + Vision F16 or use T2VA, I2VA, L2VA, or FL2VA."
-        )
-    if mode not in LIGHTX2V_SUPPORTED_MODES:
-        raise ValueError(f"The LightX2V 8B rewriter does not support mode {mode}.")
-    image_paths = _lightx2v_reference_paths(project, mode)
-    if progress and image_paths:
-        progress(
-            stage="reference_analysis",
-            message=(f"Passing {len(image_paths)} reference frame{'s' if len(image_paths) != 1 else ''} "
-                     "directly to the LightX2V multimodal rewriter in role order."),
-        )
-    with _ENHANCE_LOCK:
+    if mode not in SUPPORTED_MODES[1:]:
+        raise ValueError(f"The Omni rewriter does not support mode {mode}.")
+    with _ENHANCE_LOCK, tempfile.TemporaryDirectory(prefix="toyxyz_h3_omni_") as temp_dir:
         if cancel_event is not None and cancel_event.is_set():
             raise EnhancementCancelled("Prompt generation was stopped by the user.")
-        model_path, mmproj_path = _resolve_lightx2v_model(progress)
-        original_prompt = _build_lightx2v_original_prompt(project, result["effective_duration"])
-        task = {"T2VA": "t2va", "I2VA": "i2va", "L2VA": "l2va", "FL2VA": "fl2va"}[mode]
-        adapter_task = {"t2va": "t2av", "i2va": "i2av", "l2va": "l2av", "fl2va": "fl2av"}[task]
-        duration = min(15, max(4, int(round(float(project["requested_duration"])))))
+        base_path, mmproj_path, adapter_path = _resolve_omni_model(progress)
+        system_prompt = _omni_system_prompt(mode)
+        raw_prompt = _build_omni_raw_prompt(project, result["effective_duration"])
+        task = {"T2VA": "T2AV", "I2VA": "I2AV", "L2VA": "L2AV", "FL2VA": "FL2AV", "REF2VA": "REF2AV"}[mode]
         resolution = "16:9" if mode == "T2VA" else "adaptive"
-        messages = _lightx2v_messages(original_prompt, adapter_task, resolution, duration, image_paths)
+        attachments, reference_block = _omni_reference_inputs(project, mode, temp_dir)
+        user_prompt = (
+            (reference_block + "\n\n" if reference_block else "")
+            + "Rewrite request:\n"
+            + f"task: {task}\nresolution: {resolution}\n"
+            + f"effective_duration: {result['effective_duration']:.2f}s\nraw_prompt: {raw_prompt}"
+        )
         try:
             import comfy.model_management as model_management
             model_management.unload_all_models()
@@ -3413,35 +4174,43 @@ def _enhance_project_lightx2v(result: dict[str, Any], model_id: str, progress=No
         except (ImportError, AttributeError):
             pass
         if progress:
-            progress(stage="generating", message="Loading LightX2V merged Qwen3-VL-8B GGUF Q8_0 + Vision F16.")
-        session = _LlamaServerSession(
-            _find_llama_server(), model_path, mmproj_path, LIGHTX2V_MODEL_ID,
-            context_size=16384,
-            extra_args=[
-                "--chat-template-kwargs", '{"enable_thinking":false}',
-                "--reasoning", "off", "--image-min-tokens", "1024",
-            ],
-        )
-        try:
-            if job_id:
-                _set_enhance_stopper(job_id, session.close)
-            session.start()
-            if cancel_event is not None and cancel_event.is_set():
-                raise EnhancementCancelled("Prompt generation was stopped by the user.")
-            enhanced = _clean_llm_output(session.chat(messages, max_tokens=4096, temperature=0.0))
-            if cancel_event is not None and cancel_event.is_set():
-                raise EnhancementCancelled("Prompt generation was stopped by the user.")
-        finally:
-            session.close()
-            if job_id:
-                _set_enhance_stopper(job_id, None)
+            progress(
+                stage="generating",
+                message=(f"Loading Qwen2.5-Omni-7B with the Omni rewriter LoRA and "
+                         f"{len(attachments)} ordered media input(s)."),
+            )
+        if attachments:
+            command = [
+                _find_llama_mtmd_cli(progress), "--model", base_path, "--mmproj", mmproj_path,
+                "--lora", adapter_path, "--n-gpu-layers", "999", "--ctx-size", "16384",
+                "--predict", "4096", "--temp", "0", "--system-prompt", system_prompt,
+            ]
+            for kind, path in attachments:
+                command.extend(["--audio" if kind == "audio" else "--image", path])
+            command.extend(["--prompt", user_prompt])
+        else:
+            # Match the reference GGUF backend: render the complete chat turn
+            # first, pass it through a file, and disable conversation mode.
+            # Modern llama-cli is an interactive UI and may otherwise echo the
+            # task/resolution/raw_prompt request block into stdout.
+            prompt_file = os.path.join(temp_dir, "omni_prompt.txt")
+            with open(prompt_file, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(_render_omni_text_prompt(system_prompt, user_prompt))
+            command = [
+                _find_llama_completion(progress), "--model", base_path, "--lora", adapter_path,
+                "--file", prompt_file, "--n-gpu-layers", "999", "--ctx-size", "16384",
+                "--predict", "4096", "--temp", "0", "-no-cnv", "-st",
+                "--no-display-prompt", "--no-warmup", "--simple-io",
+            ]
+        enhanced = _run_omni_process(command, cancel_event, job_id)
         if not enhanced:
-            raise RuntimeError("The LightX2V rewriter returned an empty prompt.")
+            raise RuntimeError("The Omni rewriter returned an empty prompt.")
         if progress:
-            progress(stage="complete", message="LightX2V prompt generation completed.")
+            progress(stage="complete", message="Omni prompt generation completed.")
         return {
-            "enhanced_prompt": enhanced, "model": model_id, "model_path": model_path,
+            "enhanced_prompt": enhanced, "model": model_id, "model_path": base_path,
             "reference_analyses": [],
+            "raw_model_prompt": _format_raw_model_prompt(system_prompt, user_prompt),
         }
 
 
@@ -3460,11 +4229,13 @@ def enhance_project(project_data: Any, model_id: str, image_model_id: str = DEFA
         raise ValueError("Fix project validation errors before generating the prompt.")
     project = result["project"]
     selected_model = model_id or DEFAULT_ENHANCE_MODEL_ID
-    if selected_model == LIGHTX2V_MODEL_ID:
-        return _enhance_project_lightx2v(
+    if selected_model == OMNI_MODEL_ID:
+        return _enhance_project_omni(
             result, selected_model, progress, cancel_event=cancel_event, job_id=job_id,
         )
-    rich_enhance = project.get("enhance") is True
+    enhance_level = project.get("enhance_level", "normal" if project.get("enhance") is True else "none")
+    rich_enhance = enhance_level in {"normal", "strong"}
+    strong_enhance = enhance_level == "strong"
     reference_analyses: list[dict[str, str]] = []
     analysis_lines: list[str] = []
     picture_labels = {
@@ -3618,8 +4389,17 @@ def enhance_project(project_data: Any, model_id: str, image_model_id: str = DEFA
     expected_shots = list(range(1, len(result["project"]["shots"]) + 1))
     shot_headers = ", ".join(f"[Shot {number}]" for number in expected_shots)
     mode = result["project"]["mode"]
-    active_mode_prompts = ENHANCED_MODE_LLM_SYSTEM_PROMPTS if rich_enhance else MODE_LLM_SYSTEM_PROMPTS
+    active_mode_prompts = (
+        STRONG_MODE_LLM_SYSTEM_PROMPTS if strong_enhance
+        else ENHANCED_MODE_LLM_SYSTEM_PROMPTS if rich_enhance
+        else MODE_LLM_SYSTEM_PROMPTS
+    )
     system_prompt = _mode_prompt_preamble(mode) + "\n\n" + active_mode_prompts[mode]
+    figurine_module = _figurine_animation_system_module(
+        result["project"], mode, enhance_level,
+    )
+    if figurine_module:
+        system_prompt += "\n\n" + figurine_module
     reference_model = _reference_model(result["project"]) if mode == "REF2VA" else None
     system_prompt += (
         f"\n\nEXACT SHOTS: Use only {shot_headers}, once each in that order. "
@@ -3690,11 +4470,11 @@ def enhance_project(project_data: Any, model_id: str, image_model_id: str = DEFA
         if progress:
             progress(stage="model_check", message="Checking the selected GGUF model.")
         model_path = _resolve_enhance_model(model_id or DEFAULT_ENHANCE_MODEL_ID, progress)
-        llama_cli = _find_llama_cli()
-        system_file = os.path.join(temp_dir, "system.txt")
+        # llama-completion is the stable one-shot frontend in current
+        # llama.cpp releases.  The complete Qwen3 turn is rendered below and
+        # passed as a file so llama.cpp never enters conversation mode.
+        llama_completion = _find_llama_completion(progress)
         user_file = os.path.join(temp_dir, "user.txt")
-        with open(system_file, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(system_prompt)
         with open(user_file, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(user_prompt)
         try:
@@ -3713,20 +4493,23 @@ def enhance_project(project_data: Any, model_id: str, image_model_id: str = DEFA
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         def run_generation(prompt_text: str, temperature: float = 0.22) -> str:
             max_new_tokens = (
-                REF_ENHANCE_MAX_NEW_TOKENS if mode == "REF2VA"
+                STRONG_ENHANCE_MAX_NEW_TOKENS if strong_enhance
+                else REF_ENHANCE_MAX_NEW_TOKENS if mode == "REF2VA"
                 else RICH_ENHANCE_MAX_NEW_TOKENS if rich_enhance
                 else BASE_ENHANCE_MAX_NEW_TOKENS
             )
-            top_p = 0.93 if rich_enhance else 0.88
-            top_k = 40 if rich_enhance else 20
+            top_p = 0.95 if strong_enhance else 0.93 if rich_enhance else 0.88
+            top_k = 50 if strong_enhance else 40 if rich_enhance else 20
             repeat_penalty = 1.03 if rich_enhance else 1.05
+            with open(user_file, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(_render_qwen3_text_prompt(system_prompt, prompt_text))
             command = [
-                llama_cli, "-m", model_path, "-sysf", system_file, "-p", prompt_text,
-                "--jinja", "--chat-template-kwargs", '{"enable_thinking":false}',
-                "--single-turn", "--no-display-prompt", "--no-show-timings", "--simple-io", "--no-context-shift",
-                "--log-disable", "--color", "off",
+                llama_completion, "-m", model_path, "--file", user_file,
+                "--special", "-no-cnv", "-st",
+                "--no-display-prompt", "--simple-io", "--no-context-shift",
+                "--no-warmup", "--color", "off",
                 "-c", str(ENHANCE_CONTEXT_SIZE), "-n", str(max_new_tokens),
-                "-ngl", "all", "--temp", str(temperature), "--top-p", str(top_p), "--top-k", str(top_k),
+                "-ngl", "999", "--temp", str(temperature), "--top-p", str(top_p), "--top-k", str(top_k),
                 "--repeat-penalty", str(repeat_penalty),
             ]
             if cancel_event is None:
@@ -3771,16 +4554,20 @@ def enhance_project(project_data: Any, model_id: str, image_model_id: str = DEFA
                 completed = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
             if completed.returncode != 0:
                 tail = "\n".join(completed.stderr.splitlines()[-12:])
-                raise RuntimeError(f"llama-cli exited with code {completed.returncode}.\n{tail}")
+                frontend = os.path.basename(command[0]) or "llama.cpp frontend"
+                raise RuntimeError(f"{frontend} exited with code {completed.returncode}.\n{tail}")
             return _clean_llm_output(completed.stdout)
 
-        # Enhancement is intentionally single-pass. The system prompt carries
-        # the H3 structure and fidelity rules, while the generated text is
-        # returned as-is after transport-noise removal. Do not normalize,
-        # validate, sanitize, or send the output through a correction call.
-        enhanced = run_generation(user_prompt, temperature=0.38 if rich_enhance else 0.22)
+        # Enhancement is intentionally single-pass. Keep generated prose as-is;
+        # REF2VA receives only deterministic retention-prefix repair.
+        enhanced = run_generation(
+            user_prompt,
+            temperature=0.48 if strong_enhance else 0.38 if rich_enhance else 0.22,
+        )
         if not enhanced:
             raise RuntimeError("The selected model returned an empty prompt.")
+        if mode == "REF2VA" and reference_model:
+            enhanced = _enforce_retention_line_plan(enhanced, reference_model["label_plan"])
         if progress:
             progress(stage="complete", message="Prompt generation completed.")
         return {
@@ -3788,6 +4575,7 @@ def enhance_project(project_data: Any, model_id: str, image_model_id: str = DEFA
             "model": model_id,
             "model_path": model_path,
             "reference_analyses": reference_analyses,
+            "raw_model_prompt": _format_raw_model_prompt(system_prompt, user_prompt),
         }
 
 
@@ -4220,6 +5008,7 @@ try:
                     "raw_prompt": result["draft_video_prompt"],
                     "video_prompt": result["video_prompt"],
                     "enhanced_prompt": result["enhanced_prompt"],
+                    "llm_prompt": result["llm_prompt"],
                     "validation_report": result["validation_report"],
                     "errors": result["errors"],
                     "warnings": result["warnings"],

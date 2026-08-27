@@ -80,12 +80,26 @@ audio references. Supported modes are `Auto`, `T2VA`, `I2VA`, `FL2VA`, `L2VA`, a
 1. Select a mode, duration, and model. `Auto` chooses a mode from the reference layout.
 2. Describe each shot naturally in **Prompt**, including actions, camera direction, dialogue,
    visible text, sound, and music.
-3. Add assets with **+ Image**, **+ Video**, or **+ Audio**. Enter aliases as plain words, then
+3. Optionally use the preset menu below Prompt. **Camera** provides angle, motion, shot framing, motion-amplitude,
+   and motion-speed presets using the H3 camera vocabulary;
+   **Style** groups detailed presets by general cinema/drama, natural-light/outdoor, urban,
+   noir/thriller, horror/found footage, documentary/reality, action/fantasy, science fiction,
+   fashion/editorial, commercial/product, POV/social video, film era, physical-character animation,
+   animation/graphic,
+   and music/game/hybrid categories. Every preset defaults to
+   `None`. Presets are stored per shot and apply only to the currently
+   selected shot, so each shot can use independent camera and style instructions. Select
+   **Figurine animation** for a figurine, doll, puppet, or collectible that must retain its
+   physical materials and supports while performing visible articulated character motion.
+4. Enable **Raw Prompt** below Generated Prompt to inspect the complete system and user prompt channels
+   supplied to the prompt-generation model. After generation this includes the exact role-aware reference
+   evidence used by Qwen; before generation it shows the currently compiled model input.
+4. Add assets with **+ Image**, **+ Video**, or **+ Audio**. Enter aliases as plain words, then
    type `@` in Prompt to insert one from the alias menu.
-4. Arrange and resize shots on the timeline. Shot badges show the actual time range and inclusive frame
+5. Arrange and resize shots on the timeline. Shot badges show the actual time range and inclusive frame
    range. Cuts and transitions are created only at shot boundaries; an image anchor inside a shot is a
    continuous in-shot state, not a cut.
-5. Edit reference placement on the tracks below the shot timeline:
+6. Edit reference placement on the tracks below the shot timeline:
    - First/last images are fixed to the first/final output frame. A `Frame` image can be dragged to an
      exact zero-based output frame. The track uses a solid anchor line, with a small preview beside its
      frame/time label. Subject images remain untimed.
@@ -94,7 +108,7 @@ audio references. Supported modes are `Auto`, `T2VA`, `I2VA`, `FL2VA`, `L2VA`, a
      interval. The minimum visible trim is 10 frames.
    - Timeline rulers, shot badges, image anchors, and clip overlays use the H3-aligned duration and
      `length`, for example `5.17s / 124f` for a requested 5.00 seconds.
-6. Press **Generate Prompt**. Press it again while it displays **Stop** to cancel generation.
+7. Press **Generate Prompt**. Press it again while it displays **Stop** to cancel generation.
 
 The last successful prompt remains available while inputs are edited and is replaced only after a
 new generation succeeds.
@@ -103,12 +117,28 @@ new generation succeeds.
 
 - **JonathanColetti/Qwen3.8-27B-Uncensored-GGUF · Q4_K_M + Vision F16:** supports every mode,
   including `REF2VA`, and analyzes image references and selected video intervals.
-- **LightX2V MiniMax-H3 Prompt Rewriter 8B Q8_0 + Vision F16:** supports `T2VA`, `I2VA`,
-  `FL2VA`, and `L2VA`; it does not support `REF2VA/R2V`.
+- **pytraveler MiniMax-H3 Prompt Rewriter LoRA Omni GGUF Q8_0 + Qwen2.5-Omni-7B Q4_K_M:**
+  supports every mode, including `REF2VA/R2V`, and reads ordered image, selected video-frame,
+  and audio references directly. It downloads the matching Omni base, projector, and LoRA adapter
+  and uses its dedicated trained rewriter profile (about 9 GB VRAM at a 12k-class context).
 
-Missing model files download only after confirmation. With Qwen3.8, enable **Enhance** for a richer
-single-pass expansion or disable it for a shorter, fidelity-first result. LightX2V uses its own
-expansion behavior.
+Missing model files download only after confirmation. With Qwen3.8, **Enhance** provides three detail levels:
+**None** keeps generation concise, **Normal** explicitly develops action steps and resolves hand, object, camera, and keyframe continuity, and **Strong** performs a substantially
+longer creative rewriter-style expansion. Strong preserves explicit actions, references, timing, dialogue, and shot
+structure while actively creating compatible staging, production design, lighting, micro-performance, physical
+responses, layered sound, and, unless prohibited, a fitting music treatment. Omni uses its own trained
+expansion behavior, so the Qwen3.8 enhancement-level selector is disabled for that bundle.
+
+### Managed llama.cpp runtime
+
+The node installs its own pinned llama.cpp `b10310` runtime on first use instead of depending on
+another custom node. Files are stored under
+`ComfyUI/user/toyxyz_minimax_h3/runtime/b10310-<backend>` and survive custom-node updates.
+Supported NVIDIA GPUs use the CUDA 13.3 package; other Windows GPUs use Vulkan by default, with
+CPU available through `TOYXYZ_LLAMA_BACKEND=cpu`. Download progress appears in the execution log,
+and the runtime is published only after all required executables have been extracted successfully.
+Set `TOYXYZ_LLAMA_COMPLETION`, `TOYXYZ_LLAMA_CLI`, `TOYXYZ_LLAMA_SERVER`, or
+`TOYXYZ_LLAMA_MTMD_CLI` only when intentionally overriding the managed runtime.
 
 ### References
 
@@ -133,6 +163,31 @@ the node must match the downstream H3 reference-slot order.
 - `video_N` — the visible selected interval as a ComfyUI VIDEO object containing 24fps images,
   synchronized trimmed audio when available, and video metadata; output does not exceed `length`
 - `audio_N` — uploaded audio reference trimmed to the aligned target duration
+
+## Cut Video
+
+Trims a ComfyUI `VIDEO` with one signed frame count while keeping its embedded audio aligned.
+
+- `frame_count`: positive values keep that many frames from the beginning; negative values keep that
+  many frames from the end (`-1` returns only the final frame and `-22` returns the final 22 frames);
+  `0` keeps the complete connected media
+- `invert`: when enabled, a positive value excludes that many frames from the beginning and a
+  negative value excludes that many frames from the end
+- `video`: required source `VIDEO`, including its embedded audio and frame-rate metadata
+- outputs: trimmed `video`, `images`, `audio`, and the original input `fps`, in that order
+
+VIDEO FPS is preserved. The image and audio outputs are extracted from the same selected VIDEO
+interval. If the absolute `frame_count` exceeds available frames, the complete source is returned
+without padding.
+
+## Connect Video
+
+Connects two compatible ComfyUI `VIDEO` inputs into one longer VIDEO. `video_1` plays first and
+`video_2` follows it. Both videos must have matching FPS and frame dimensions. Embedded audio is
+joined in the same order; when only one input contains audio, silence is inserted for the other
+video so synchronization is preserved. Set `smooth_transition` above `0` to overlap that many ending
+frames of `video_1` with the opening frames of `video_2`. During the overlap, video and audio from
+`video_1` fade from 100% to 0% while `video_2` fades in. A value of `0` performs a direct join.
 
 ## Visual area mask
 
@@ -472,5 +527,3 @@ If you want ComfyUI to run continuously, use Auto Queue.
 For maximum speed, set the VAE to taesd.
 
 ![image](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/c14ad91e-f2c5-4bbb-a26b-fdc6583a8c88)
-
-

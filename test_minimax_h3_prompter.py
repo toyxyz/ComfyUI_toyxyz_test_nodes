@@ -39,6 +39,23 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertIn("SHOT_PLAN:\n[Shot 1]", result["video_prompt"])
         self.assertIn("when_music_unspecified: output non_diegetic_music: N/A", result["video_prompt"])
 
+    def test_korean_shot_text_is_preserved_in_qwen_input(self):
+        action = "여자가 식탁에서 즐겁게 웃고 있다."
+        result = self.compile({
+            "mode": "T2VA",
+            "shots": [{"duration": 5, "visual_action": action}],
+        })
+        self.assertIn(f"visual_action: {action}", result["video_prompt"])
+        self.assertIn(f"visual_action: {action}", result["llm_prompt"])
+        self.assertNotIn("\ufffd", result["llm_prompt"])
+
+    def test_unicode_replacement_character_is_rejected_before_generation(self):
+        result = self.compile({
+            "mode": "T2VA",
+            "shots": [{"duration": 5, "visual_action": "damaged \ufffd text"}],
+        })
+        self.assertTrue(any("Unicode replacement character" in error for error in result["errors"]))
+
     def test_saved_enhancement_survives_subsequent_input_changes(self):
         saved = "integrated_multimodal_description: [Shot 1] Saved enhanced result."
         result = self.compile({
@@ -503,7 +520,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
             "mode": "REF2VA",
             "shots": [
                 {"duration": 2.5, "visual_action": "@hero enters."},
-                {"duration": 2.5, "visual_action": "The room remains empty."},
+                {"duration": 2.5, "visual_action": "The camera holds on the room."},
             ],
             "references": [{
                 "type": "picture", "role": "subject_identity",
@@ -522,7 +539,37 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         )
         self.assertNotIn("RETENTION OUTPUT MARKERS:", result["llm_prompt"])
 
-    def test_ref2va_subject_scope_stays_continuous_between_later_mentions(self):
+    def test_ref2va_unused_aliased_subject_is_excluded_from_the_label_plan(self):
+        result = self.compile({
+            "mode": "REF2VA",
+            "shots": [{"duration": 5, "visual_action": "@hero walks through the room."}],
+            "references": [
+                {"type": "picture", "role": "subject_identity", "alias": "unused"},
+                {"type": "picture", "role": "subject_identity", "alias": "hero"},
+            ],
+        })
+        model = MODULE._reference_model(result["project"])
+        self.assertEqual(list(model["label_plan"]), ["<Subject 1>"])
+        self.assertEqual(model["label_plan"]["<Subject 1>"]["source"], "<Picture 2>")
+        self.assertNotIn("@unused", result["draft_video_prompt"])
+
+    def test_ref2va_environment_subject_persists_after_its_last_alias_mention(self):
+        result = self.compile({
+            "mode": "REF2VA",
+            "shots": [
+                {"duration": 2, "visual_action": "@place contains @hero."},
+                {"duration": 2, "visual_action": "@hero crosses the room."},
+                {"duration": 2, "visual_action": "@hero sits down."},
+            ],
+            "references": [
+                {"type": "picture", "role": "subject_identity", "alias": "place"},
+                {"type": "picture", "role": "subject_identity", "alias": "hero"},
+            ],
+        })
+        plan = MODULE._reference_model(result["project"])["label_plan"]
+        self.assertEqual(plan["<Subject 1>"]["applicable_shots"], [1, 2, 3])
+
+    def test_ref2va_character_scope_uses_only_authored_visible_shots(self):
         result = self.compile({
             "mode": "REF2VA",
             "shots": [
@@ -539,11 +586,11 @@ class MinimaxH3PrompterTests(unittest.TestCase):
             ],
         })
         plan = MODULE._reference_model(result["project"])["label_plan"]
-        self.assertEqual(plan["<Subject 1>"]["applicable_shots"], [2, 3, 4, 5, 6])
+        self.assertEqual(plan["<Subject 1>"]["applicable_shots"], [2, 3, 5, 6])
         self.assertEqual(plan["<Subject 2>"]["applicable_shots"], [1, 2, 3, 4, 5, 6])
         self.assertEqual(
             plan["<Subject 1>"]["retention_prefix"],
-            "<Subject 1> (appears in [Shot 2], [Shot 3], [Shot 4], [Shot 5], [Shot 6]): partially_preserved -",
+            "<Subject 1> (appears in [Shot 2], [Shot 3], [Shot 5], [Shot 6]): partially_preserved -",
         )
 
     def test_ref2va_retention_line_plan_formats_picture_video_and_audio_roles(self):
@@ -2365,7 +2412,8 @@ class MinimaxH3PrompterTests(unittest.TestCase):
             self.assertTrue(system_text.startswith("ACTIVE MODE: T2VA"))
             self.assertIn("Minimal detail needed to make the request renderable", system_text)
             self.assertIn("FINAL MODE LOCK — T2VA", system_text)
-            self.assertIn("<H3_PROMPT>", system_text)
+            self.assertNotIn("<H3_PROMPT>", system_text)
+            self.assertIn("Return plain text with no wrapper", system_text)
             user_data = rendered.split("<|im_start|>user\n", 1)[1].split("<|im_end|>", 1)[0]
             self.assertTrue(user_data.startswith("INPUT DATA ONLY"))
             self.assertIn("mode: T2VA", user_data)
@@ -2983,6 +3031,32 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         )
         issues = MODULE._ref_prompt_structure_issues(prompt, plan)
         self.assertTrue(any("must cite its source asset <Picture 1>" in issue for issue in issues))
+
+    def test_ref_structure_validator_requires_subject_in_every_declared_shot(self):
+        compiled = self.compile({
+            "mode": "REF2VA",
+            "shots": [
+                {"duration": 2.5, "visual_action": "@hero waits."},
+                {"duration": 2.5, "visual_action": "@hero watches the door."},
+            ],
+            "references": [{
+                "type": "picture", "role": "subject_identity", "alias": "hero",
+                "strength": "normal",
+            }],
+        })
+        plan = MODULE._reference_model(compiled["project"])["label_plan"]
+        prompt = (
+            "subject_definitions:\n<Subject 1> is a person derived from <Picture 1>.\n\n"
+            "summary:\n[reference generation] <Subject 1> waits and watches the door.\n\n"
+            "retention_analysis:\n<Subject 1>: partially_preserved - preserve core identity.\n\n"
+            "detailed_description:\n[Shot 1] <Subject 1> waits.\n"
+            "[Shot 2] At 00:02.500, the camera shows the door.\n\n"
+            "overall_soundscape:\nQuiet room tone.\n\nnon_diegetic_music:\nN/A"
+        )
+        issues = MODULE._ref_prompt_structure_issues(prompt, plan)
+        self.assertTrue(any(
+            "<Subject 1> is declared visible in [Shot 2]" in issue for issue in issues
+        ))
 
     def test_ref_normalizer_restores_the_required_six_section_order(self):
         shuffled = (

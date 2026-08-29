@@ -1159,6 +1159,11 @@ def validate_project(project: dict[str, Any], parse_warnings: list[str] | None =
         *(shot["visual_action"] for shot in project["shots"]),
         *(ref["description"] for ref in project["references"]),
     ]
+    if any("\ufffd" in text for text in descriptive_text):
+        errors.append(
+            "Prompt text contains the Unicode replacement character (U+FFFD), indicating that text was "
+            "damaged before compilation. Re-enter the affected text as UTF-8."
+        )
     if any(_contains_hangul(text) for text in descriptive_text):
         warnings.append(
             "Direct compilation does not translate descriptive Korean text; English is recommended outside dialogue and visible text."
@@ -1240,6 +1245,17 @@ def _quoted_prompt_text(text: str) -> str:
     return text.replace("\\", "\\\\").replace('"', '\\"').replace("\r", " ").replace("\n", " ")
 
 
+def _reference_alias_is_environment(ref: dict[str, Any]) -> bool:
+    """Recognize aliases intentionally naming a reusable place or setting."""
+    alias = str(ref.get("alias") or "").lstrip("@").replace("-", "_").casefold()
+    parts = {part for part in alias.split("_") if part}
+    return bool(parts.intersection({
+        "place", "location", "environment", "setting", "background", "scene",
+        "room", "interior", "exterior", "restaurant", "street", "beach",
+        "장소", "환경", "배경", "공간", "방", "식당", "거리", "해변",
+    }))
+
+
 def _reference_applicable_shots(project: dict[str, Any], ref: dict[str, Any]) -> list[int]:
     """Return the target shots in which a reference is expected to apply."""
     shots = project.get("shots") or []
@@ -1281,12 +1297,20 @@ def _reference_applicable_shots(project: dict[str, Any], ref: dict[str, Any]) ->
             if alias in str(shot.get("visual_action") or "").lower():
                 applicable.append(index)
         if applicable:
-            # Keep scene presence continuous between explicit mentions. A shot
-            # acting only on the other participant must not silently drop this
-            # subject from retention scope.
-            return list(range(applicable[0], applicable[-1] + 1))
+            # A named environment persists as the scene context after its
+            # first mention. Character Subjects use authored visible shots;
+            # physical continuity must not falsely claim an off-camera actor
+            # appears in an intervening shot.
+            if (ref.get("type") == "picture" and role == "subject_identity"
+                    and _reference_alias_is_environment(ref)):
+                return list(range(applicable[0], len(shots) + 1))
+            return applicable
         if alias in str(project.get("user_request") or "").lower():
             return list(range(1, len(shots) + 1))
+        # An explicitly aliased Subject that is never requested is unused.
+        # Exclude it instead of inventing an all-shot retention relationship.
+        if ref.get("type") == "picture" and role == "subject_identity":
+            return []
 
     return list(range(1, len(shots) + 1))
 
@@ -1359,6 +1383,9 @@ def _reference_model(project: dict[str, Any]) -> dict[str, Any]:
         }[ref["type"]]
         description = _sentence(ref["description"])
         if ref["type"] == "picture" and ref["role"] in {"reference", "subject_identity"}:
+            applicable_shots = _reference_applicable_shots(project, ref)
+            if not applicable_shots:
+                continue
             subject_count += 1
             subject = f"<Subject {subject_count}>"
             if ref["alias"]:
@@ -1390,7 +1417,6 @@ def _reference_model(project: dict[str, Any]) -> dict[str, Any]:
                 "kind": "Subject", "source": source_label, "role": "subject_identity", "marker": marker,
                 "strength": strength, "contract": role_contract,
             }
-            applicable_shots = _reference_applicable_shots(project, ref)
             label_plan[subject]["applicable_shots"] = applicable_shots
             label_plan[subject]["retention_prefix"] = _retention_prefix(
                 subject, label_plan[subject], ref, applicable_shots
@@ -1603,7 +1629,7 @@ def _single_pass_output_lock(mode: str, effective_seconds: float, final_shot: in
             for label, plan in label_plan.items()
         ) or "use the locked prefix for each label"
         return f"""FINAL MODE LOCK — REF2VA
-Highest-priority format lock. Return one <H3_PROMPT> block with no JSON, Markdown, or commentary.
+Highest-priority format lock. Return plain text with no wrapper, JSON, Markdown, or commentary.
 Start exactly with `subject_definitions:` and never use `integrated_multimodal_description:`.
 Use these headers once in this order:
 subject_definitions:
@@ -1616,11 +1642,12 @@ Define and use exactly these output labels in order: {labels}. Keep them literal
 RETENTION_LINE_PLAN:
 {retention_lines}
 Copy each RETENTION_LINE_PLAN prefix verbatim and in order; append one concise preservation description. Never alter its scope or marker or print strength names or `=`.
+Every Subject listed as appearing in a shot must be visibly present and named in that shot's detailed_description.
 detailed_description must contain exactly {shots}, once each in order; [Shot 1] has no timestamp.{content_lock}
 Complete every SHOT_PLAN verb and result visibly; do not stop at setup. Preserve physical state across shots; show a transition before a conflicting later action.
 Speaker IDs, exact <d> content, lip synchronization, and event order must be correct in the final output.
 Do not invent people, dialogue, vocal reactions, or music. Use N/A for unrequested non-diegetic music.
-End after non_diegetic_music and close </H3_PROMPT>."""
+End after the non_diegetic_music value."""
 
     if mode == "I2VA":
         opening = I2VA_ALIGNMENT_INSTRUCTION
@@ -1641,7 +1668,7 @@ End after non_diegetic_music and close </H3_PROMPT>."""
         opening = "integrated_multimodal_description:"
         endpoint_lock = ""
     return f"""FINAL MODE LOCK — {mode}
-Highest-priority format lock. Return one <H3_PROMPT> block with no JSON, Markdown, or commentary.
+Highest-priority format lock. Return plain text with no wrapper, JSON, Markdown, or commentary.
 Begin exactly with: {opening}
 Use exactly these fields once in order: integrated_multimodal_description, overall_soundscape, non_diegetic_music.
 For I2VA, FL2VA, and L2VA, keep the alignment line before the main field, never inside it.
@@ -1650,7 +1677,7 @@ Preserve every explicit SHOT_PLAN action in order; omit none.
 Complete every action verb and result visibly; do not stop at setup. Preserve physical state across shots; show a transition before a conflicting later action.
 Speaker IDs, exact <d> content, lip synchronization, and event order must be correct in the final output.
 Do not invent dialogue, vocal reactions, or music. overall_soundscape must not repeat or summarize speech. Use N/A for unrequested non-diegetic music.
-End after non_diegetic_music and close </H3_PROMPT>."""
+End after the non_diegetic_music value."""
 
 
 _BASE_FIELD_PATTERN = re.compile(
@@ -1963,6 +1990,23 @@ def _ref_prompt_structure_issues(prompt: str, label_plan: dict[str, dict[str, st
     missing_visual = [label for label in visual_labels if label not in detailed_labels]
     if missing_visual:
         issues.append("detailed_description must apply every defined visual relationship: " + ", ".join(missing_visual) + ".")
+    detail = sections["detailed_description"]
+    shot_headers = list(_SHOT_HEADER_PATTERN.finditer(detail))
+    shot_blocks: dict[int, str] = {}
+    for index, header in enumerate(shot_headers):
+        shot_number = int(header.group(1) or header.group(2))
+        block_end = shot_headers[index + 1].start() if index + 1 < len(shot_headers) else len(detail)
+        shot_blocks[shot_number] = detail[header.start():block_end]
+    for label, plan in label_plan.items():
+        if plan["kind"] != "Subject":
+            continue
+        missing_shots = [
+            number for number in plan.get("applicable_shots", [])
+            if label.casefold() not in shot_blocks.get(number, "").casefold()
+        ]
+        if missing_shots:
+            shots = ", ".join(f"[Shot {number}]" for number in missing_shots)
+            issues.append(f"{label} is declared visible in {shots}; name it visibly in each corresponding shot.")
     audio_labels = [
         label for label, plan in label_plan.items() if plan["kind"] == "Audio"
     ]
@@ -4448,8 +4492,8 @@ def enhance_project(project_data: Any, model_id: str, image_model_id: str = DEFA
         )
         system_prompt += _reference_system_modules(result["project"])
     system_prompt += (
-        "\n\nOUTPUT: Return only the finished English H3 prompt, enclosed exactly once between "
-        "<H3_PROMPT> and </H3_PROMPT>, with no commentary or Markdown fence."
+        "\n\nOUTPUT: Return only the finished English H3 prompt as plain text with no wrapper, "
+        "commentary, or Markdown fence."
     )
     system_prompt += "\n\n" + _single_pass_output_lock(
         mode,

@@ -620,10 +620,11 @@ function installStyles() {
     .mmh3p-mention-wrap:focus-within { border-color:var(--accent); }
     .mmh3p-mention-wrap textarea { position:relative; z-index:2; display:block; width:100%; min-height:56px;
       margin:0; border:0; border-radius:0; background:transparent; resize:vertical; caret-color:var(--text); }
-    .mmh3p-mention-backdrop { position:absolute; z-index:1; inset:0; padding:7px; overflow:hidden;
-      color:transparent; white-space:pre-wrap; overflow-wrap:anywhere; pointer-events:none; line-height:1.35; }
+    .mmh3p-mention-backdrop { position:absolute; z-index:1; left:0; top:0; width:100%; height:100%; padding:7px;
+      overflow:hidden; color:transparent; white-space:pre-wrap; overflow-wrap:anywhere; pointer-events:none; line-height:1.35; }
     .mmh3p-mention-backdrop mark { color:transparent; background:rgba(101,185,255,.28);
-      border:1px solid rgba(101,185,255,.75); border-radius:4px; box-shadow:0 0 0 1px rgba(9,31,47,.45); }
+      border:0; border-radius:4px; box-shadow:0 0 0 1px rgba(101,185,255,.75),0 0 0 2px rgba(9,31,47,.45);
+      font:inherit; letter-spacing:inherit; line-height:inherit; }
     .mmh3p-caret-mirror { position:absolute; z-index:-1; left:0; top:0; visibility:hidden;
       pointer-events:none; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; }
     .mmh3p-caret-marker { display:inline; }
@@ -932,6 +933,11 @@ class PrompterUI {
 
   bindMentionEditor() {
     const editor = this.els["visual-action"];
+    if (typeof ResizeObserver !== "undefined") {
+      this.mentionResizeObserver?.disconnect();
+      this.mentionResizeObserver = new ResizeObserver(() => this.syncMentionHighlight());
+      this.mentionResizeObserver.observe(editor);
+    }
     let composing = false;
     const updateShot = (commitChange = true) => {
       const shot = this.selectedShot();
@@ -1123,6 +1129,21 @@ class PrompterUI {
     const editor = this.els["visual-action"];
     const backdrop = this.els["visual-action-highlight"];
     if (!editor || !backdrop) return;
+    const style = getComputedStyle(editor);
+    backdrop.style.width = `${editor.clientWidth}px`;
+    backdrop.style.height = `${editor.clientHeight}px`;
+    backdrop.style.font = style.font;
+    backdrop.style.letterSpacing = style.letterSpacing;
+    backdrop.style.lineHeight = style.lineHeight;
+    backdrop.style.padding = style.padding;
+    backdrop.style.tabSize = style.tabSize;
+    backdrop.style.textAlign = style.textAlign;
+    backdrop.style.textIndent = style.textIndent;
+    backdrop.style.textTransform = style.textTransform;
+    backdrop.style.wordSpacing = style.wordSpacing;
+    backdrop.style.whiteSpace = style.whiteSpace;
+    backdrop.style.overflowWrap = style.overflowWrap;
+    backdrop.style.wordBreak = style.wordBreak;
     const text = editor.value;
     const regex = /@[\p{L}\p{N}_-]+/gu;
     let cursor = 0;

@@ -1226,6 +1226,14 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertNotIn("ref.description = item.analysis", source)
         self.assertIn('description: type === "picture" ? ""', source)
 
+    def test_mention_highlight_does_not_change_text_wrapping_metrics(self):
+        source = (MODULE_PATH.parent.parent / "web" / "minimax_h3_prompter.js").read_text(encoding="utf-8")
+        self.assertIn(".mmh3p-mention-backdrop mark { color:transparent", source)
+        self.assertIn("border:0; border-radius:4px", source)
+        self.assertIn("backdrop.style.width = `${editor.clientWidth}px`", source)
+        self.assertIn("backdrop.style.height = `${editor.clientHeight}px`", source)
+        self.assertIn("new ResizeObserver(() => this.syncMentionHighlight())", source)
+
     def test_system_prompt_forbids_unrequested_video_style_in_every_mode(self):
         for mode in ("T2VA", "I2VA", "FL2VA", "L2VA", "REF2VA"):
             with self.subTest(mode=mode):

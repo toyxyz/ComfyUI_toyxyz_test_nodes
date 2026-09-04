@@ -23,8 +23,9 @@ from typing import Any
 
 
 MODEL_FPS = 24
-MIN_SHOT_DURATION = 0.25
-CURRENT_PROJECT_VERSION = 26
+MIN_TIMELINE_ITEM_FRAMES = 2
+MIN_SHOT_DURATION = MIN_TIMELINE_ITEM_FRAMES / MODEL_FPS
+CURRENT_PROJECT_VERSION = 28
 SUPPORTED_MODES = ("AUTO", "T2VA", "I2VA", "FL2VA", "L2VA", "REF2VA")
 SUPPORTED_DIALOGUE_MODES = ("spoken", "voiceover", "singing")
 SUPPORTED_TRANSITIONS = ("cut", "cross-dissolve", "fade", "wipe")
@@ -33,14 +34,17 @@ SUPPORTED_LANGUAGES = (
     "Japanese", "Korean", "Portuguese", "Russian", "Spanish",
 )
 REFERENCE_ROLES = {
-    "picture": ("first_frame", "last_frame", "frame", "subject_identity"),
-    "video": ("none", "video_editing", "video_continuation", "motion", "camera", "cuts_rhythm"),
+    "picture": ("first_frame", "last_frame", "frame", "storyboard", "subject_identity"),
+    "video": (
+        "none", "video_editing", "video_continuation", "subject_visual", "visual_style",
+        "motion", "motion_camera", "camera", "cuts_rhythm",
+    ),
     "audio": (
         "none", "full_signal_copy", "partial_signal_copy", "voice_delivery",
         "dialogue_lyrics", "sound_ambience", "music_rhythm",
     ),
 }
-SUBJECT_STRENGTHS = ("weak", "normal", "strong")
+SUBJECT_STRENGTHS = ("weak", "normal", "strong", "attribute_transfer", "style_transfer")
 MAX_REF_IMAGES = 9
 MAX_REF_VIDEOS = 3
 MAX_REF_AUDIOS = 3
@@ -166,6 +170,7 @@ DEFAULT_PROJECT = {
     "shots": [
         {
             "id": "shot-1",
+            "kind": "shot",
             "duration": 5.0,
             "visual_action": "",
             "presets": {
@@ -209,16 +214,25 @@ CAMERA_PRESET_PROMPTS = {
         "tilt_up": "camera tilt up from a fixed position", "tilt_down": "camera tilt down from a fixed position",
         "pedestal_up": "camera pedestal up with the entire camera moving upward",
         "pedestal_down": "camera pedestal down with the entire camera moving downward",
-        "dolly_left": "camera dolly left with smooth lateral movement",
-        "dolly_right": "camera dolly right with smooth lateral movement",
-        "dolly_zoom_in": "dolly zoom in: move the camera forward while zooming out to create a Vertigo perspective effect",
-        "dolly_zoom_out": "dolly zoom out: move the camera backward while zooming in to create expanding spatial distortion",
+        # Keep legacy keys loadable, but describe them with the less ambiguous
+        # H3 vocabulary used by the current UI.
+        "dolly_left": "camera truck left with smooth horizontal translation",
+        "dolly_right": "camera truck right with smooth horizontal translation",
+        "dolly_zoom_in": (
+            "experimental dolly zoom: physically move the camera forward while zooming out at a matched rate, "
+            "keeping the subject exactly the same size in frame while the background perspective visibly expands"
+        ),
+        "dolly_zoom_out": (
+            "experimental dolly zoom: physically move the camera backward while zooming in at a matched rate, "
+            "keeping the subject exactly the same size in frame while the background perspective visibly compresses"
+        ),
         "crane_up": "large-scale crane movement lifting the camera upward",
         "crane_down": "large-scale crane movement lowering the camera downward",
-        "orbit_left": "orbit left around the subject while keeping the subject centered",
-        "orbit_right": "orbit right around the subject while keeping the subject centered",
-        "arc": "arc shot moving around the subject", "tracking": "tracking shot following the moving subject",
-        "follow": "follow shot continuously following the moving subject",
+        "orbit_left": "orbit smoothly to the camera's left around the subject while keeping the subject centered and revealing changing background parallax",
+        "orbit_right": "orbit smoothly to the camera's right around the subject while keeping the subject centered and revealing changing background parallax",
+        "arc": "arc smoothly around the subject along one continuous curved camera path",
+        "tracking": "track the moving subject while maintaining a stable relative framing",
+        "follow": "track the moving subject continuously while maintaining a stable relative framing",
         "handheld": "natural handheld camera movement with organic operator motion",
         "shake_slightly": "slight camera shake", "shake_strongly": "strong camera shake",
         "pov": "POV camera movement from the subject's point of view",
@@ -232,8 +246,8 @@ CAMERA_PRESET_PROMPTS = {
         "medium_close_up": "medium close-up framing the subject from the chest or shoulders upward",
         "medium_shot": "medium shot framing the subject from the waist upward",
         "medium_wide_shot": "medium wide shot framing the subject from the thighs or knees upward with some environmental context",
-        "cowboy_shot": "cowboy shot framing the subject from mid-thigh upward, keeping the hands and waist action visible",
-        "medium_full_shot": "medium full shot framing the subject from around the knees upward to the head",
+        "cowboy_shot": "medium-long framing from mid-thigh to slightly above the head, with both hands and the waist fully visible",
+        "medium_full_shot": "medium-long framing from around the knees to slightly above the head",
         "full_shot": "full shot keeping the subject's entire body visible",
         "wide_shot": "wide shot showing the full subject with substantial surrounding environment",
         "extreme_wide_shot": "extreme wide shot dominated by the environment with the subject appearing very small",
@@ -254,15 +268,41 @@ CAMERA_PRESET_PROMPTS = {
 
 STYLE_PRESET_PROMPTS = {
     "none": "",
-    "animation_2d": "polished 2D animation with coherent drawn linework, layered color, readable silhouettes, and expressive character motion",
-    "animation_3d": "polished 3D animation with coherent modeled forms, consistent materials, dimensional lighting, and natural articulated motion",
+    "animation_2d": "polished hand-drawn 2D animation with coherent linework, layered flat color, readable silhouettes, expressive character acting, and continuously interpolated configured camera travel",
+    "animation_3d": "polished feature-quality 3D animation with appealing sculpted geometry, consistent PBR materials, global illumination, expressive facial acting, natural articulated motion, and physically coherent secondary motion",
+    "rough_hand_drawn_2d": "loose hand-drawn 2D animation with visible pencil strokes, rough construction lines, uneven organic contours, expressive smears, hand-drawn in-betweens, and energetic frame-by-frame character movement",
+    "watercolor_2d": "hand-painted watercolor 2D animation with soft bleeding pigments, textured watercolor paper, delicate ink outlines, translucent color layering, painterly backgrounds, and gentle frame-by-frame character motion",
+    "ink_wash_2d": "traditional ink-wash 2D animation with expressive black brush strokes, diluted grey ink gradients, handmade rice-paper texture, minimal color accents, and flowing brush-like character motion",
+    "modern_flat_cartoon": "modern flat 2D cartoon animation with bold clean outlines, simplified geometric character shapes, flat colors, minimal shading, highly readable facial expressions, and snappy pose-to-pose character animation",
+    "vintage_western_cartoon": "vintage hand-painted Western 2D cartoon animation with inked outlines, painted cel colors, watercolor backgrounds, slightly imperfect registration, subtle film grain, and lively frame-by-frame character acting",
+    "comic_book_2d": "2D comic-book animation with bold black ink outlines, halftone-dot shading, flat spot colors, dramatic panel composition, speed lines, impact frames, and animated graphic transitions",
+    "manga_monochrome_2d": "black-and-white manga animation with crisp pen-and-ink linework, screentone shading, cross-hatching, pure black shadows, white negative space, speed lines, and restrained panel-like motion",
+    "paper_cutout_2d": "handcrafted paper-cutout 2D animation with layered paper shapes, visible fibers and cut edges, flat articulated pieces, practical-looking shadows, and deliberately stepped frame-by-frame motion",
+    "anime_1980s_ova": "late-1980s Japanese OVA animation with detailed hand-drawn linework, dramatic painted shadows, muted analog colors, hand-painted backgrounds, subtle film grain, elaborate mechanical detail, and cinematic cel character animation",
+    "anime_early_2000s_tv": "early-2000s Japanese TV anime with clean digital line art, simple cel shading, bright flat colors, restrained gradients, painted 2D backgrounds, and economical television character-animation timing",
+    "theatrical_anime_2d": "high-budget theatrical Japanese 2D animation with finely drawn characters, detailed hand-painted environments, sophisticated cel shading, atmospheric painted depth, expressive facial acting, and fluid character motion",
+    "stylized_feature_3d": "stylized feature-quality 3D animation with appealing sculpted character geometry, soft PBR materials, global illumination, cinematic rim lighting, physically believable cloth and hair response, and smooth expressive character animation",
+    "photorealistic_3d_cg": "photorealistic cinematic 3D CG with physically based materials, detailed surface imperfections, global illumination, accurate reflections, volumetric atmospheric lighting, natural depth cues, and physically believable animation",
+    "semi_realistic_3d": "semi-realistic stylized 3D character animation with anatomically grounded sculpted forms, softened proportions, detailed PBR materials, natural skin response, cinematic lighting, and expressive but physically coherent motion",
+    "cel_shaded_3d": "anime-inspired cel-shaded 3D animation with clean toon outlines, hard-edged two-tone shading, simplified PBR materials, controlled specular highlights, expressive anime facial acting, and smooth dynamic character motion",
+    "game_cinematic_3d": "high-end real-time 3D game cinematic with detailed character models, physically based materials, cinematic volumetric lighting, polished environment rendering, realistic simulation, and weighty motion-captured character animation",
+    "low_poly_3d": "stylized low-poly 3D animation with faceted geometry, simplified silhouettes, restrained polygon detail, clean color blocking, lightweight materials, graphic lighting, and readable character motion",
+    "ps1_retro_3d": "PlayStation-era retro 3D animation with low-poly geometry, affine texture warping, low-resolution hand-painted textures, vertex lighting, limited draw distance, subtle pixel jitter, and period-authentic game animation",
+    "ps2_retro_3d": "early-2000s console-style 3D animation with moderately low-poly models, baked lighting, compressed textures, simple specular materials, restrained effects, and period-authentic real-time character motion",
+    "voxel_3d": "voxel-based 3D animation with block-built geometry, crisp cubic silhouettes, grid-aligned materials, simple directional lighting, readable volumetric environments, and clean stepped character motion",
+    "product_visualization_3d": "premium CGI product visualization with precise modeled geometry, physically based materials, controlled studio lighting, accurate reflections, macro surface detail, clean presentation, and smooth restrained object animation",
+    "architectural_visualization_3d": "photorealistic architectural 3D visualization with accurate spatial scale, physically based building materials, global illumination, natural daylight, realistic reflections, atmospheric depth, and coherent environmental motion",
+    "fantasy_stylized_3d": "stylized fantasy 3D animation with sculpted organic forms, richly detailed costumes and environments, tactile PBR materials, luminous atmospheric lighting, restrained magical effects, and expressive feature-quality motion",
+    "chibi_3d": "cute chibi 3D animation with compact proportions, oversized expressive eyes, rounded sculpted forms, soft clean materials, bright gentle lighting, highly readable poses, and playful character motion",
+    "dark_fantasy_cgi_3d": "dark fantasy cinematic 3D CG with weathered sculpted forms, detailed PBR materials, moody volumetric lighting, dense atmospheric effects, grounded physical simulation, and weighty character animation",
+    "scifi_cgi_3d": "cinematic science-fiction 3D CG with precise hard-surface modeling, advanced PBR materials, emissive interface accents, volumetric lighting, coherent reflections, detailed environments, and physically believable animation",
     "figurine_animation": "a crafted figurine character coming fully alive with fluid expressive animation, natural body mechanics, responsive facial acting, and material-aware secondary motion while preserving its recognizable sculpted identity and surface appearance",
     "cinematic_live_action": "cinematic live-action film with realistic skin and materials, natural physical motion, controlled depth of field, practical lighting, and restrained filmic contrast",
     "smartphone_video": "natural smartphone-recorded video with realistic mobile exposure, compact-sensor detail, casual composition, and authentic available light",
     "photoreal_live_action": "photorealistic live-action footage with natural skin texture, physically plausible motion, coherent materials, realistic lighting, and grounded production detail",
     "documentary": "observational documentary footage with available-light realism, natural color response, unembellished environments, and authentic human behavior",
     "stop_motion": "stop-motion animation with handcrafted materials, intentional frame-by-frame movement, tactile surfaces, and consistent miniature-scale lighting",
-    "anime_1990s": "authentic 1990s Japanese hand-drawn anime with traditional 2D cel animation, painted background art, visible ink linework, layered cel shading, controlled in-betweens, restrained held-frame timing, subtle analog texture, strictly not 3D, CGI, or game-engine rendering",
+    "anime_1990s": "authentic 1990s Japanese hand-drawn anime with traditional 2D cel animation, painted background art, visible ink linework, two-tone cel shading, restrained held-frame timing for character acting, subtle analog film texture, continuously interpolated configured camera travel, and strictly no 3D, CGI, or game-engine rendering",
     "retro_anime_motion_graphics": "polished retro-anime motion graphics with a limited palette, clean manga linework, halftone shading, sequential graphic reveals, UI-style wipes, pixel accents, poster-like composition, and stable protected typography",
     "retro_anime_noir_jazz": "retro Japanese anime opening artwork with a graphic noir-jazz aesthetic, bold silhouettes, moody contrast, vintage analog texture, and poster-like visual sensibility",
     "contemporary_anime": "contemporary Japanese 2D anime with clean line art, expressive character acting, saturated color grading, strong readable key poses, crisp highlights, selective impact-frame emphasis, emotionally cinematic presentation, and polished anime-PV finish",
@@ -358,11 +398,14 @@ def _figurine_animation_system_module(
     project: dict[str, Any], mode: str, enhance_level: str,
 ) -> str:
     """Return opt-in figurine motion rules for only the shots using that style preset."""
-    selected_shots = [
-        index
-        for index, shot in enumerate(project.get("shots", []), start=1)
-        if _normalize_shot_presets(shot.get("presets"))["style"] == "figurine_animation"
-    ]
+    selected_shots: list[int] = []
+    shot_number = 0
+    for item in project.get("shots", []):
+        if not _is_move(item):
+            shot_number += 1
+        if (_normalize_shot_presets(item.get("presets"))["style"] == "figurine_animation"
+                and shot_number not in selected_shots):
+            selected_shots.append(shot_number)
     if not selected_shots:
         return ""
 
@@ -428,7 +471,7 @@ CAMERA_FRAMING_SENTENCES = {
     "Close-Up Shot": "The composition uses a close-up, filling the frame with the subject's face or primary detail.",
     "Medium Close-Up Shot": "The composition uses a medium close-up, framing the subject approximately from the chest upward.",
     "Medium Shot": "The composition uses a medium shot, framing the subject approximately from the waist upward.",
-    "Cowboy Shot": "The composition uses a cowboy shot, framing the subject approximately from mid-thigh upward.",
+    "Cowboy Shot": "The composition frames the subject from mid-thigh to slightly above the head, with both hands and the waist fully visible.",
     "Medium Long Shot": "The composition uses a medium long shot, framing most of the subject while retaining environmental context.",
     "Long Shot": "The composition uses a long shot, showing the full subject with substantial surrounding environment.",
     "Full Shot": "The composition uses a full shot, keeping the subject's entire body visible in frame.",
@@ -534,6 +577,21 @@ def _load_system_prompt_config(path: str = SYSTEM_PROMPTS_PATH) -> dict[str, Any
         raise RuntimeError(
             f"MiniMax H3 mode addenda must be strings for supported modes only: {path}"
         )
+    legacy_camera_rule = (
+        "Otherwise select framing that contains the whole action and use one motivated camera "
+        "behavior per shot, described naturally with motion type and, when useful, amplitude and speed."
+    )
+    move_camera_rule = (
+        "Otherwise select framing that contains the whole action and use one coherent physical camera "
+        "path per Shot; configured Moves are consecutive phases of that path and must be described naturally."
+    )
+    common = common.replace(legacy_camera_rule, move_camera_rule)
+    common_enhanced = common_enhanced.replace(legacy_camera_rule, move_camera_rule)
+    modes = dict(modes)
+    modes["REF2VA"] = modes["REF2VA"].replace(
+        "Do not define a standalone Picture unless it is a configured frame anchor.",
+        "Do not define a standalone Picture unless it is a configured frame anchor or a storyboard/shot-planning reference mapped to configured Shots.",
+    )
     return {
         "common": common,
         "common_enhanced": common_enhanced,
@@ -680,7 +738,10 @@ def _input_content_locks(project: dict[str, Any]) -> list[str]:
     """Extract lightweight pre-generation locks without adding another LLM pass."""
     detected: list[dict[str, Any]] = []
     generic_vocal_shots: list[int] = []
-    for shot_number, shot in enumerate(project.get("shots", []), 1):
+    shot_number = 0
+    for shot in project.get("shots", []):
+        if not _is_move(shot):
+            shot_number += 1
         action = _clean_text(shot.get("visual_action"))
         if not action:
             continue
@@ -814,6 +875,97 @@ def format_timestamp(seconds: float) -> str:
     return f"{minutes:02d}:{remainder:06.3f}"
 
 
+def _move_output_cues(project: dict[str, Any], effective_seconds: float) -> list[str]:
+    """Return range-based inline timing phrases for Moves without creating headers."""
+    cues: list[str] = []
+    for take in _compile_timeline_takes(project, effective_seconds):
+        for beat in take["beats"]:
+            connector = (
+                "without a cut"
+                if beat["move_number"] == 1
+                else "continuing the same uninterrupted camera path"
+            )
+            cues.append(
+                f"From {format_timestamp(beat['start'])} to {format_timestamp(beat['end'])}, "
+                f"{connector},"
+            )
+    return cues
+
+
+def _compile_timeline_takes(project: dict[str, Any], effective_seconds: float) -> list[dict[str, Any]]:
+    """Compile flat UI Shot/Move items into Shot-scoped takes and continuous beats.
+
+    This is the shared timing representation used by prompt serialization and
+    validation. A Shot starts a take; following Moves are beats inside that take.
+    """
+    items = project.get("shots", [])
+    requested_seconds = sum(float(item.get("duration", 0.0)) for item in items)
+    scale = effective_seconds / requested_seconds if requested_seconds > 0 else 1.0
+    cursor = 0.0
+    takes: list[dict[str, Any]] = []
+    shot_number = 0
+    for item_index, item in enumerate(items):
+        start = cursor
+        end = start + float(item.get("duration", 0.0)) * scale
+        if not _is_move(item):
+            shot_number += 1
+            takes.append({
+                "shot_number": shot_number,
+                "start": start,
+                "opening_end": end,
+                "end": end,
+                "opening": item,
+                "beats": [],
+            })
+        elif takes:
+            beats = takes[-1]["beats"]
+            beats.append({
+                "move_number": len(beats) + 1,
+                "item_index": item_index,
+                "start": start,
+                "end": end,
+                "duration": end - start,
+                "item": item,
+            })
+            takes[-1]["end"] = end
+        cursor = end
+    return takes
+
+
+def _camera_take_plan(project: dict[str, Any], effective_seconds: float) -> str:
+    """Describe Shot-scoped camera takes and their owned Move intervals compactly."""
+    items = project.get("shots", [])
+    if not any(_is_move(item) for item in items):
+        return ""
+    requested_seconds = sum(float(item["duration"]) for item in items)
+    scale = effective_seconds / requested_seconds if requested_seconds > 0 else 1.0
+    cursor = 0.0
+    shot_number = 0
+    takes: list[dict[str, Any]] = []
+    for item in items:
+        start = cursor
+        cursor += float(item["duration"]) * scale
+        if _is_move(item):
+            if takes:
+                takes[-1]["moves"].append(start)
+                takes[-1]["end"] = cursor
+            continue
+        shot_number += 1
+        takes.append({"shot": shot_number, "start": start, "end": cursor, "moves": []})
+    lines = ["CAMERA_TAKE_PLAN:"]
+    for take in takes:
+        start = format_timestamp(take["start"])
+        end = format_timestamp(take["end"])
+        opening = "opens the first camera take" if take["shot"] == 1 else "starts a new camera take with an intentional cut"
+        if take["moves"]:
+            move_times = ", ".join(format_timestamp(value) for value in take["moves"])
+            ownership = f"owns continuous Moves beginning at {move_times}; no cut is allowed inside this take"
+        else:
+            ownership = "contains no Moves"
+        lines.append(f"- [Shot {take['shot']}] {opening} at {start}; {ownership}; take ends at {end}.")
+    return "\n".join(lines)
+
+
 def _normalize_shot(raw: Any, index: int) -> dict[str, Any]:
     raw = raw if isinstance(raw, dict) else {}
     visual_action = _clean_text(raw.get("visual_action"))
@@ -892,6 +1044,7 @@ def _normalize_shot(raw: Any, index: int) -> dict[str, Any]:
 
     return {
         "id": _clean_text(raw.get("id")) or f"shot-{index + 1}",
+        "kind": "move" if index > 0 and _clean_text(raw.get("kind")).lower() == "move" else "shot",
         "duration": max(MIN_SHOT_DURATION, _number(raw.get("duration"), 1.0)),
         "visual_action": visual_action,
         "presets": _normalize_shot_presets(raw.get("presets")),
@@ -906,13 +1059,13 @@ def _normalize_reference(raw: Any, index: int) -> dict[str, Any]:
     role = _clean_text(raw.get("role")).lower()
     strength = _clean_text(raw.get("strength")).lower()
     if ref_type == "picture":
-        if role in {"reference", "environment", "style", "storyboard"}:
+        if role in {"reference", "environment", "style"}:
             role = "subject_identity"
             strength = "weak"
         elif role == "subject_identity":
             # Version 9 and earlier used Subject as an implicit strong role.
             strength = strength if strength in SUBJECT_STRENGTHS else "strong"
-        elif role not in {"first_frame", "last_frame", "frame"}:
+        elif role not in {"first_frame", "last_frame", "frame", "storyboard"}:
             role = "subject_identity"
             strength = strength if strength in SUBJECT_STRENGTHS else "normal"
         else:
@@ -924,6 +1077,8 @@ def _normalize_reference(raw: Any, index: int) -> dict[str, Any]:
             "pacing": "cuts_rhythm",
         }
         role = role if role in REFERENCE_ROLES["video"] else legacy_video_roles.get(role, "none")
+        if role == "subject_visual":
+            strength = strength if strength in SUBJECT_STRENGTHS else "normal"
     elif ref_type == "audio":
         legacy_audio_roles = {
             "reference": "none",
@@ -937,8 +1092,12 @@ def _normalize_reference(raw: Any, index: int) -> dict[str, Any]:
     description = _clean_text(raw.get("description"))
     # Picture analysis is transient enhancement evidence, never persisted
     # project input. Older versions wrote it here and thereby changed Raw Prompt.
-    if ref_type == "picture":
+    if ref_type == "picture" and role != "storyboard":
         description = ""
+    storyboard_shot_ids = [
+        _clean_text(value) for value in raw.get("storyboard_shot_ids", [])
+        if _clean_text(value)
+    ] if isinstance(raw.get("storyboard_shot_ids"), list) else []
     return {
         "id": _clean_text(raw.get("id")) or f"ref-{index + 1}",
         "type": ref_type,
@@ -951,6 +1110,7 @@ def _normalize_reference(raw: Any, index: int) -> dict[str, Any]:
         "trim_start": max(0.0, _number(raw.get("trim_start"), 0.0)),
         "timeline_start": _number(raw.get("timeline_start"), 0.0),
         "frame_index": max(0, int(round(_number(raw.get("frame_index"), 0.0)))),
+        "storyboard_shot_ids": storyboard_shot_ids,
         "image_filename": os.path.basename(_clean_text(raw.get("image_filename"))),
         "image_subfolder": _clean_text(raw.get("image_subfolder")).replace("\\", "/").strip("/"),
         "image_type": "input" if _clean_text(raw.get("image_type")).lower() != "input" else "input",
@@ -994,7 +1154,7 @@ def normalize_project(project_data: Any) -> tuple[dict[str, Any], list[str]]:
     raw_version = raw.get("version")
     # Version 8 is a lossless cleanup migration from version 7: cached picture
     # analysis text is discarded. Do not report that expected upgrade as a warning.
-    if raw_version is not None and raw_version != CURRENT_PROJECT_VERSION and raw_version not in {7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25}:
+    if raw_version is not None and raw_version != CURRENT_PROJECT_VERSION and raw_version not in {7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27}:
         relation = "newer than" if isinstance(raw_version, (int, float)) and raw_version > CURRENT_PROJECT_VERSION else "different from"
         parse_warnings.append(
             f"Project version {raw_version!r} is {relation} supported version {CURRENT_PROJECT_VERSION}; known fields were normalized."
@@ -1069,12 +1229,12 @@ def normalize_project(project_data: Any) -> tuple[dict[str, Any], list[str]]:
         for index, shot in enumerate(project["shots"]):
             share = weights[index] / weight_total if weight_total else 1.0 / len(project["shots"])
             shot["duration"] = MIN_SHOT_DURATION + distributable * share
-    project["requested_duration"] = round(requested_duration, 3)
+    # Preserve frame-derived timeline minima such as 2 / 24 seconds. Display
+    # timestamps remain millisecond-formatted, but internal fitting should not
+    # shorten a two-frame item through three-decimal rounding.
+    project["requested_duration"] = round(requested_duration, 6)
     effective_duration = align_frame_count(requested_duration) / MODEL_FPS
     effective_frames = align_frame_count(requested_duration)
-    for ref in project["references"]:
-        if ref["type"] == "picture" and ref["role"] == "frame":
-            ref["frame_index"] = min(ref["frame_index"], effective_frames - 1)
     raw_refs = raw.get("references")
     project["references"] = (
         [_normalize_reference(item, i) for i, item in enumerate(raw_refs)]
@@ -1082,13 +1242,18 @@ def normalize_project(project_data: Any) -> tuple[dict[str, Any], list[str]]:
         else []
     )
     for ref in project["references"]:
+        if ref["type"] == "picture" and ref["role"] == "frame":
+            ref["frame_index"] = min(ref["frame_index"], effective_frames - 1)
+    for ref in project["references"]:
         if ref["type"] != "video":
             continue
         source_duration = max(ref["source_duration"], ref["duration"])
         ref["source_duration"] = source_duration
         ref["trim_start"] = min(ref["trim_start"], max(0.0, source_duration - MIN_SHOT_DURATION))
         available = max(0.0, source_duration - ref["trim_start"])
-        ref["duration"] = min(ref["duration"], available, REF_VIDEO_MAX_SECONDS)
+        # Preserve the complete source clip. Only its intersection with the
+        # target timeline is decoded and sent downstream.
+        ref["duration"] = min(ref["duration"], available)
         minimum_visible = min(REF_VIDEO_MIN_SECONDS, ref["duration"])
         ref["timeline_start"] = min(
             max(-ref["duration"] + minimum_visible, ref["timeline_start"]),
@@ -1100,7 +1265,7 @@ def normalize_project(project_data: Any) -> tuple[dict[str, Any], list[str]]:
             if supplied and supplied.lower() != ref["role"]:
                 expected_picture_migration = (
                     ref["type"] == "picture"
-                    and supplied.lower() in {"reference", "environment", "style", "storyboard"}
+                    and supplied.lower() in {"reference", "environment", "style"}
                 )
                 expected_video_migration = (
                     ref["type"] == "video"
@@ -1134,11 +1299,31 @@ def _reference_labels(references: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return labeled
 
 
+def _is_move(item: dict[str, Any]) -> bool:
+    return item.get("kind") == "move"
+
+
+def _shot_items(project: dict[str, Any]) -> list[dict[str, Any]]:
+    return [item for item in project.get("shots", []) if not _is_move(item)]
+
+
+def _shot_groups(project: dict[str, Any]) -> list[list[dict[str, Any]]]:
+    """Group each Shot with the following continuous Move intervals."""
+    groups: list[list[dict[str, Any]]] = []
+    for item in project.get("shots", []):
+        if not _is_move(item) or not groups:
+            groups.append([item])
+        else:
+            groups[-1].append(item)
+    return groups
+
+
 def validate_project(project: dict[str, Any], parse_warnings: list[str] | None = None) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings = list(parse_warnings or [])
     duration = float(project["requested_duration"])
     shot_total = sum(float(shot["duration"]) for shot in project["shots"])
+    semantic_shots = _shot_items(project)
     refs = _reference_labels(project["references"])
     aliases = [ref["alias"].lower() for ref in refs if ref["alias"]]
     pictures = [ref for ref in refs if ref["type"] == "picture"]
@@ -1152,6 +1337,8 @@ def validate_project(project: dict[str, Any], parse_warnings: list[str] | None =
         errors.append(f"H3 output duration must be between 4 and 15 seconds; received {duration:.2f}s.")
     if not math.isclose(shot_total, duration, abs_tol=0.001):
         errors.append(f"Shot durations total {shot_total:.3f}s and must equal the {duration:.3f}s timeline duration.")
+    if not semantic_shots or _is_move(project["shots"][0]):
+        errors.append("The timeline must begin with a Shot; a Move cannot exist without a preceding Shot.")
     if not project["user_request"] and not any(shot["visual_action"] for shot in project["shots"]):
         warnings.append("No overall request or shot action has been entered.")
     descriptive_text = [
@@ -1175,7 +1362,7 @@ def validate_project(project: dict[str, Any], parse_warnings: list[str] | None =
     if project["mode"] == "FL2VA":
         if len(pictures) < 2 or pictures[0]["role"] != "first_frame" or pictures[1]["role"] != "last_frame":
             errors.append("FL2VA requires <Picture 1> role=first_frame and <Picture 2> role=last_frame, in that order.")
-        if len(project["shots"]) > 1:
+        if len(semantic_shots) > 1:
             warnings.append("FL2VA usually works best as one continuous shot unless cuts are intentional.")
     if project["mode"] == "L2VA" and (not pictures or pictures[0]["role"] != "last_frame"):
         errors.append("L2VA requires <Picture 1> to have role=last_frame.")
@@ -1189,14 +1376,25 @@ def validate_project(project: dict[str, Any], parse_warnings: list[str] | None =
         errors.append(f"REF2VA accepts at most {MAX_REF_AUDIOS} reference audio clips; received {len(audios)}.")
     if len(refs) > MAX_REF_FILES:
         errors.append(f"REF2VA accepts at most {MAX_REF_FILES} reference files in total; received {len(refs)}.")
-    video_total = sum(ref["duration"] for ref in videos)
-    for ref in videos:
-        if ref["duration"] and not REF_VIDEO_MIN_SECONDS <= ref["duration"] <= REF_VIDEO_MAX_SECONDS:
-            errors.append(f"{ref['label']} duration must be 2-15 seconds; received {ref['duration']:.2f}s.")
-        elif not ref["duration"] and ref.get("video_filename"):
+    effective_duration = align_frame_count(duration) / MODEL_FPS
+    visible_video_durations = [
+        _visible_video_selection(ref, effective_duration)[1] for ref in videos
+    ]
+    video_total = sum(visible_video_durations)
+    for ref, visible_duration in zip(videos, visible_video_durations):
+        if visible_duration and not REF_VIDEO_MIN_SECONDS <= visible_duration <= effective_duration:
+            errors.append(
+                f"{ref['label']} visible timeline segment must be 2-{effective_duration:.2f} seconds; "
+                f"received {visible_duration:.2f}s."
+            )
+        elif not visible_duration and ref.get("video_filename"):
             warnings.append(f"{ref['label']} has no duration metadata; the 2-15 second limit cannot be verified.")
-    if video_total > REF_VIDEO_TOTAL_SECONDS:
-        errors.append(f"Reference-video duration totals {video_total:.2f}s; the maximum is 15.00s.")
+    reference_total_limit = max(REF_VIDEO_TOTAL_SECONDS, effective_duration)
+    if video_total > reference_total_limit:
+        errors.append(
+            f"Reference-video duration totals {video_total:.2f}s; "
+            f"the maximum is {reference_total_limit:.2f}s."
+        )
     for ref in audios:
         role = ref.get("role", "none")
         description = _clean_text(ref.get("description"))
@@ -1258,8 +1456,8 @@ def _reference_alias_is_environment(ref: dict[str, Any]) -> bool:
 
 def _reference_applicable_shots(project: dict[str, Any], ref: dict[str, Any]) -> list[int]:
     """Return the target shots in which a reference is expected to apply."""
-    shots = project.get("shots") or []
-    if not shots:
+    groups = _shot_groups(project)
+    if not groups:
         return [1]
 
     role = ref.get("role")
@@ -1267,24 +1465,34 @@ def _reference_applicable_shots(project: dict[str, Any], ref: dict[str, Any]) ->
         if role == "first_frame":
             return [1]
         if role == "last_frame":
-            return [len(shots)]
+            return [len(groups)]
         if role == "frame":
             frame_index = max(0, int(ref.get("frame_index", 0)))
             anchor_time = frame_index / MODEL_FPS
             cursor = 0.0
-            for index, shot in enumerate(shots, 1):
-                cursor += max(0.0, float(shot.get("duration", 0.0)))
-                if anchor_time < cursor or index == len(shots):
+            for index, group in enumerate(groups, 1):
+                cursor += sum(max(0.0, float(item.get("duration", 0.0))) for item in group)
+                if anchor_time < cursor or index == len(groups):
                     return [index]
+        if role == "storyboard":
+            selected = set(ref.get("storyboard_shot_ids") or [])
+            if selected:
+                mapped = [
+                    index for index, group in enumerate(groups, 1)
+                    if str(group[0].get("id") or "") in selected
+                ]
+                if mapped:
+                    return mapped
+            return list(range(1, len(groups) + 1))
 
     if ref.get("type") == "video" and ref.get("duration"):
         start = max(0.0, float(ref.get("timeline_start", 0.0)))
         end = start + max(0.0, float(ref.get("duration", 0.0)))
         cursor = 0.0
         applicable: list[int] = []
-        for index, shot in enumerate(shots, 1):
+        for index, group in enumerate(groups, 1):
             shot_start = cursor
-            cursor += max(0.0, float(shot.get("duration", 0.0)))
+            cursor += sum(max(0.0, float(item.get("duration", 0.0))) for item in group)
             if start < cursor and end > shot_start:
                 applicable.append(index)
         if applicable:
@@ -1293,8 +1501,8 @@ def _reference_applicable_shots(project: dict[str, Any], ref: dict[str, Any]) ->
     alias = str(ref.get("alias") or "").lower()
     if alias:
         applicable = []
-        for index, shot in enumerate(shots, 1):
-            if alias in str(shot.get("visual_action") or "").lower():
+        for index, group in enumerate(groups, 1):
+            if any(alias in str(item.get("visual_action") or "").lower() for item in group):
                 applicable.append(index)
         if applicable:
             # A named environment persists as the scene context after its
@@ -1303,16 +1511,17 @@ def _reference_applicable_shots(project: dict[str, Any], ref: dict[str, Any]) ->
             # appears in an intervening shot.
             if (ref.get("type") == "picture" and role == "subject_identity"
                     and _reference_alias_is_environment(ref)):
-                return list(range(applicable[0], len(shots) + 1))
+                return list(range(applicable[0], len(groups) + 1))
             return applicable
         if alias in str(project.get("user_request") or "").lower():
-            return list(range(1, len(shots) + 1))
+            return list(range(1, len(groups) + 1))
         # An explicitly aliased Subject that is never requested is unused.
         # Exclude it instead of inventing an all-shot retention relationship.
-        if ref.get("type") == "picture" and role == "subject_identity":
+        if ((ref.get("type") == "picture" and role == "subject_identity")
+                or (ref.get("type") == "video" and role in {"subject_visual", "visual_style"})):
             return []
 
-    return list(range(1, len(shots) + 1))
+    return list(range(1, len(groups) + 1))
 
 
 def _retention_prefix(label: str, plan: dict[str, Any], ref: dict[str, Any],
@@ -1330,6 +1539,8 @@ def _retention_prefix(label: str, plan: dict[str, Any], ref: dict[str, Any],
             scope = f"[Shot {applicable_shots[-1]}] final frame"
         elif role == "frame":
             scope = f"[Shot {applicable_shots[0]}] frame {max(0, int(ref.get('frame_index', 0)))}"
+        elif role == "storyboard":
+            scope = f"storyboard planning for {shot_list}"
         else:
             scope = f"applies to {shot_list}"
         return f"{label} ({scope}): {marker} -"
@@ -1340,6 +1551,7 @@ def _retention_prefix(label: str, plan: dict[str, Any], ref: dict[str, Any],
 
 def _reference_model(project: dict[str, Any]) -> dict[str, Any]:
     references = _reference_labels(project["references"])
+    target_duration = align_frame_count(float(project.get("requested_duration") or 5.0)) / MODEL_FPS
     subject_count = 0
     aliases: dict[str, str] = {}
     definitions: list[str] = []
@@ -1348,7 +1560,7 @@ def _reference_model(project: dict[str, Any]) -> dict[str, Any]:
     task_types: list[str] = []
     label_plan: dict[str, dict[str, str]] = {}
     summary_relations: list[str] = []
-    final_shot = len(project["shots"])
+    final_shot = len(_shot_items(project))
 
     def add_task(task_type: str):
         if task_type not in task_types:
@@ -1362,7 +1574,10 @@ def _reference_model(project: dict[str, Any]) -> dict[str, Any]:
                 "none": "user-defined video relationship",
                 "video_editing": "source video editing",
                 "video_continuation": "source video continuation",
+                "subject_visual": "subject and visible-content reference",
+                "visual_style": "visual-style reference",
                 "motion": "motion and action timing",
+                "motion_camera": "motion, action timing, and camera behavior",
                 "camera": "camera movement and viewpoint behavior",
                 "cuts_rhythm": "cuts, pacing, rhythm, and temporal structure",
             }.get(ref["role"], role_text)
@@ -1382,7 +1597,9 @@ def _reference_model(project: dict[str, Any]) -> dict[str, Any]:
             "audio": "general audio reference",
         }[ref["type"]]
         description = _sentence(ref["description"])
-        if ref["type"] == "picture" and ref["role"] in {"reference", "subject_identity"}:
+        is_picture_subject = ref["type"] == "picture" and ref["role"] in {"reference", "subject_identity"}
+        is_video_subject = ref["type"] == "video" and ref["role"] in {"subject_visual", "visual_style"}
+        if is_picture_subject or is_video_subject:
             applicable_shots = _reference_applicable_shots(project, ref)
             if not applicable_shots:
                 continue
@@ -1390,19 +1607,36 @@ def _reference_model(project: dict[str, Any]) -> dict[str, Any]:
             subject = f"<Subject {subject_count}>"
             if ref["alias"]:
                 aliases[ref["alias"]] = subject
-            strength = "weak" if ref["role"] == "reference" else ref.get("strength", "strong")
-            definition = f"{subject} is the reusable visible subject derived from {source_label}"
+            if ref["role"] == "visual_style":
+                strength = "weak"
+            else:
+                strength = "weak" if ref["role"] == "reference" else ref.get("strength", "normal")
+            if ref["role"] == "visual_style" or strength == "style_transfer":
+                definition = f"{subject} is the reusable visual style derived from {source_label}"
+            else:
+                definition = f"{subject} is the reusable visible subject derived from {source_label}"
             if description:
                 definition += f", described as {description.rstrip('.')}"
+            if ref["type"] == "video" and ref["duration"]:
+                source_start, selected_duration, _target_start = _visible_video_selection(
+                    ref, target_duration,
+                )
+                definition += f", sampled only from the selected {selected_duration:.2f}-second source interval"
+                if source_start > 0.0005:
+                    definition += f" beginning at {source_start:.2f} seconds"
             definitions.append(definition + ".")
             marker = {
                 "weak": "weak_reference",
                 "normal": "partially_preserved",
+                "attribute_transfer": "attribute_transfer",
+                "style_transfer": "attribute_transfer",
                 "strong": "fully_preserved",
             }[strength]
             retention_detail = {
                 "weak": "retain only broad similarity in a small set of target-relevant visible characteristics",
                 "normal": "retain core identity and primary visible appearance while allowing secondary details to vary",
+                "attribute_transfer": "transfer only the explicitly requested visible attributes to a different identifiable target subject without copying the source identity",
+                "style_transfer": "transfer only the explicitly requested visual medium and rendering treatment without copying source identity, appearance, clothing, or scene content",
                 "strong": "preserve the complete visible subject identity, appearance, and source visual medium/rendering style wherever it appears",
             }[strength]
             retention.append(f"{subject}: {marker} - {retention_detail}.")
@@ -1411,17 +1645,31 @@ def _reference_model(project: dict[str, Any]) -> dict[str, Any]:
             role_contract = {
                 "weak": "broad subject appearance similarity only; exclude source setting, style, composition, camera, lighting, palette, pose, and action",
                 "normal": "core subject identity and primary visible appearance; secondary details may vary; exclude source setting, style, composition, camera, lighting, palette, pose, and action",
+                "attribute_transfer": "transfer only explicitly requested visible attributes to a different identifiable target subject; preserve the target subject's identity and exclude source identity, setting, style, composition, camera, lighting, palette, pose, and action",
+                "style_transfer": "transfer only the explicitly requested source visual medium and rendering treatment to the identifiable target subject or target video; preserve the target identity, face, body, hairstyle, clothing, accessories, objects, and action; exclude source identity, appearance, wardrobe, props, environment, composition, camera, pose, action, and audio; do not infer physical attributes from the style source",
                 "strong": "complete visible subject identity and appearance plus that subject's source visual medium/rendering style; preserve the style independently per subject; exclude source setting, composition, camera, lighting setup, scene-wide palette, pose, and action",
             }[strength]
+            if ref["role"] == "visual_style":
+                retention_detail = "reference only the requested visual medium, palette, lighting treatment, materials, and texture"
+                role_contract = (
+                    "visual style only: rendering medium, palette, lighting treatment, materials, and texture; "
+                    "exclude source identity, face, body, hair, clothing, action, environment layout, composition, camera, cuts, and audio"
+                )
+            elif ref["type"] == "video":
+                role_contract += "; exclude source motion, action timing, camera, cuts, and audio"
             label_plan[subject] = {
-                "kind": "Subject", "source": source_label, "role": "subject_identity", "marker": marker,
+                "kind": "Subject", "source": source_label, "role": ref["role"], "marker": marker,
                 "strength": strength, "contract": role_contract,
             }
             label_plan[subject]["applicable_shots"] = applicable_shots
             label_plan[subject]["retention_prefix"] = _retention_prefix(
                 subject, label_plan[subject], ref, applicable_shots
             )
-            summary_relations.append(f"{subject} as a {strength}-strength subject reference")
+            summary_relations.append(
+                f"{subject} as a visual-style reference"
+                if ref["role"] == "visual_style"
+                else f"{subject} as a {strength}-strength subject reference"
+            )
             add_task("reference generation")
             continue
 
@@ -1433,6 +1681,13 @@ def _reference_model(project: dict[str, Any]) -> dict[str, Any]:
             definition = f"{source_label} is the final frame of [Shot {final_shot}]"
         elif ref["type"] == "picture" and ref["role"] == "frame":
             definition = f"{source_label} is the exact target frame at output frame {ref.get('frame_index', 0)}"
+        elif ref["type"] == "picture" and ref["role"] == "storyboard":
+            applicable = _reference_applicable_shots(project, ref)
+            shot_text = " and ".join(f"[Shot {number}]" for number in applicable)
+            definition = (
+                f"{source_label} is a storyboard reference for {shot_text}, defining their viewpoint, "
+                "subject placement, approximate framing, explicitly depicted action beats, and shot order"
+            )
         elif ref["type"] == "video" and ref["role"] == "video_editing":
             definition = f"{source_label} is the source video for the target video edit"
         elif ref["type"] == "video" and ref["role"] == "video_continuation":
@@ -1453,10 +1708,15 @@ def _reference_model(project: dict[str, Any]) -> dict[str, Any]:
             definition += f", described as {description.rstrip('.')}"
         if ref["duration"]:
             if ref["type"] == "video":
-                definition += (
-                    f", using only the first {ref['duration']:.2f} seconds as the configured "
-                    "analysis and reference segment"
+                source_start, selected_duration, _target_start = _visible_video_selection(
+                    ref, target_duration,
                 )
+                definition += (
+                    f", using the selected {selected_duration:.2f}-second source interval"
+                )
+                if source_start > 0.0005:
+                    definition += f" beginning at {source_start:.2f} seconds"
+                definition += " as the configured analysis and reference segment"
             else:
                 definition += f", with a source duration of {ref['duration']:.2f} seconds"
         definitions.append(definition + ".")
@@ -1495,7 +1755,10 @@ def _reference_model(project: dict[str, Any]) -> dict[str, Any]:
             "none": "follow only the user-written relationship; do not infer an editing, continuation, motion, camera, or timing role",
             "video_editing": "treat as the source video being directly edited; preserve source timeline elements except those the user explicitly changes",
             "video_continuation": "continue from the source video's ending state, preserving final composition, positions, movement direction and momentum, camera behavior, lighting, and continuity unless changed",
-            "motion": "reference only subject motion, action sequence, movement timing, and physical rhythm; do not copy identity, setting, style, camera, cuts, or audio",
+            "subject_visual": "reference only the specified reusable visible subject content; do not copy source motion, action timing, camera, cuts, or audio",
+            "visual_style": "reference only rendering medium, palette, lighting treatment, materials, and visual texture; do not copy source identity, action, environment layout, composition, camera, cuts, or audio",
+            "motion": "transfer only actor-neutral pose progression, movement paths, direction, speed, contacts, interaction timing, and physical rhythm to the target subject; never copy or describe the source performer's identity, face, age, gender, body shape or proportions, skin, hair, clothing, accessories, materials, texture, rendering style, environment, camera, cuts, or audio",
+            "motion_camera": "transfer only actor-neutral pose progression, movement paths, direction, speed, contacts, interaction timing, weight transfer, physical rhythm, camera path, viewpoint and framing progression, camera timing, and the synchronization between performance and camera; never copy or describe source identity, face, age, gender, body shape or proportions, skin, hair, clothing, accessories, props or visible content, materials, texture, rendering style, environment, lighting, cuts, visible text, or audio",
             "camera": "reference only camera movement, viewpoint, framing progression, and camera timing; do not copy identity, setting, action content, style, or audio",
             "cuts_rhythm": "reference only cut placement, pacing, rhythm, and temporal structure; do not copy identity, setting, action content, visual style, or audio",
         }
@@ -1508,13 +1771,25 @@ def _reference_model(project: dict[str, Any]) -> dict[str, Any]:
             "sound_ambience": "reference only user-described sound effects, ambience, room tone, and acoustic character; do not copy dialogue, lyrics, or music",
             "music_rhythm": "reference only user-described instrumentation, tempo, meter, rhythm, dynamics, structure, and musical mood; do not claim source-signal reuse",
         }
+        picture_contracts = {
+            "storyboard": (
+                "use only storyboard panel order, shot order, viewpoint, approximate framing, subject placement, "
+                "and explicitly depicted action beats for the applicable Shots; preserve every distinct panel "
+                "viewpoint or shot-size change in order instead of collapsing them into generic tracking; do not treat it as an exact frame "
+                "or transfer identity, clothing, visual style, lighting, palette, exact timing, or pose; inside each "
+                "configured Shot, panel boundaries are chronological action beats within that one take and never "
+                "create cuts or camera resets; cuts are allowed only at configured later Shot boundaries"
+            ),
+        }
         label_plan[source_label] = {
             "kind": ref["type"].title(), "source": source_label,
             "role": ref["role"], "marker": marker,
             "contract": (
                 video_contracts.get(ref["role"], f"use only as the defined {role_text} relationship")
                 if ref["type"] == "video"
-                else audio_contracts.get(ref["role"], f"use only as the defined {role_text} relationship")
+                else picture_contracts.get(ref["role"], audio_contracts.get(
+                    ref["role"], f"use only as the defined {role_text} relationship"
+                ))
             ),
         }
         applicable_shots = _reference_applicable_shots(project, ref)
@@ -1522,12 +1797,22 @@ def _reference_model(project: dict[str, Any]) -> dict[str, Any]:
         label_plan[source_label]["retention_prefix"] = _retention_prefix(
             source_label, label_plan[source_label], ref, applicable_shots
         )
+        if ref["type"] == "picture" and ref["role"] == "frame":
+            frame_index = max(0, int(ref.get("frame_index", 0)))
+            label_plan[source_label]["frame_index"] = frame_index
+            label_plan[source_label]["anchor_time_seconds"] = frame_index / MODEL_FPS
         summary_relations.append(f"{source_label} for {role_text}")
         if not ref["alias"]:
             if ref["role"] == "reference":
                 applications.append(f"Apply {source_label} only as a {generic_reference_text}.")
             else:
                 applications.append(f"Apply {source_label} only as the {role_text} reference.")
+
+    if any(plan.get("kind") == "Picture" and plan.get("role") == "frame" for plan in label_plan.values()):
+        effective_seconds = align_frame_count(project.get("requested_duration", 5.0)) / MODEL_FPS
+        for anchor in _frame_anchor_schedule(project, effective_seconds):
+            if anchor["label"] in label_plan:
+                label_plan[anchor["label"]]["anchor_kind"] = anchor["anchor_kind"]
 
     return {
         "definitions": definitions,
@@ -1546,20 +1831,36 @@ def _shot_description(project: dict[str, Any], effective_seconds: float, aliases
     scale = effective_seconds / requested_seconds if requested_seconds > 0 else 1.0
     cursor = 0.0
     blocks: list[str] = []
-    for index, shot in enumerate(project["shots"], 1):
+    shot_number = 0
+    move_number = 0
+    for item_index, shot in enumerate(project["shots"]):
+        is_move = _is_move(shot)
+        if is_move:
+            move_number += 1
+        else:
+            shot_number += 1
+            move_number = 0
         fragments: list[str] = []
-        if index == 1 and project["user_request"]:
+        if item_index == 0 and project["user_request"]:
             fragments.append(_sentence(_replace_aliases(project["user_request"], aliases)))
-        if index == 1 and reference_applications:
+        if item_index == 0 and reference_applications:
             fragments.extend(reference_applications)
         if shot["visual_action"]:
             fragments.append(_sentence(_replace_aliases(shot["visual_action"], aliases)))
-        if index == 1:
+        if is_move:
+            end = cursor + float(shot["duration"]) * scale
+            prefix = (
+                f"From {format_timestamp(cursor)} to {format_timestamp(end)}, without a cut, the same physical "
+                "camera continues through the uninterrupted take while "
+            )
+            if not fragments:
+                fragments.append("the camera continues smoothly from its preceding state.")
+        elif shot_number == 1:
             prefix = "[Shot 1] "
             if not fragments:
                 fragments.append("The scene begins with no additional shot-specific action specified.")
         else:
-            prefix = f"[Shot {index}] At {format_timestamp(cursor)}, cut to a new shot. "
+            prefix = f"[Shot {shot_number}] At {format_timestamp(cursor)}, cut to a new shot. "
             if not fragments:
                 fragments.append("The scene continues with no additional shot-specific action specified.")
         blocks.append(prefix + " ".join(fragment for fragment in fragments if fragment))
@@ -1613,7 +1914,8 @@ def _mode_prompt_preamble(mode: str) -> str:
 def _single_pass_output_lock(mode: str, effective_seconds: float, final_shot: int,
                              expected_shots: list[int],
                              reference_model: dict[str, Any] | None = None,
-                             content_locks: list[str] | None = None) -> str:
+                             content_locks: list[str] | None = None,
+                             move_cues: list[str] | None = None) -> str:
     shots = ", ".join(f"[Shot {number}]" for number in expected_shots)
     content_lock = ""
     if content_locks:
@@ -1621,9 +1923,134 @@ def _single_pass_output_lock(mode: str, effective_seconds: float, final_shot: in
             "\nINPUT-DERIVED CONTENT LOCKS — these are binding, not output headings:\n- "
             + "\n- ".join(content_locks)
         )
+    move_lock = ""
+    if move_cues:
+        move_lock = (
+            "\nMandatory inline Move cues, in order: " + " | ".join(move_cues)
+            + "\nCopy each range cue literally once at its chronological position inside its owning Shot, but "
+              "embed it within the ongoing action paragraph or applicable frame-to-frame bridge instead of opening a new scene paragraph. "
+              "A Move changes action or camera behavior inside the existing take; it does not require a new "
+              "composition, completed state, pause, camera restatement, or cut. Only a later Shot header may cut."
+        )
     if mode == "REF2VA":
         label_plan = (reference_model or {}).get("label_plan", {})
         labels = ", ".join(label_plan) or "the locked labels above"
+        frame_definition_lock = ""
+        role_definition_lock = ""
+        label_lock = f"Define and use exactly these output labels in order: {labels}. Keep them literal; create no others."
+        storyboard_plans = [
+            (label, plan) for label, plan in label_plan.items()
+            if plan.get("kind") == "Picture" and plan.get("role") == "storyboard"
+        ]
+        if storyboard_plans:
+            storyboard_definitions = " | ".join(
+                f"{label} is a storyboard reference for "
+                + " and ".join(f"[Shot {number}]" for number in (plan.get("applicable_shots") or [1]))
+                + ", defining their viewpoint, subject placement, approximate framing, explicitly depicted action beats, and shot order."
+                for label, plan in storyboard_plans
+            )
+            role_definition_lock = (
+                "\nMandatory storyboard definitions: " + storyboard_definitions
+                + " Copy each definition literally once in subject_definitions. Storyboard Pictures plan only their "
+                  "listed Shots and are never exact frames, Subjects, identity/style sources, or reasons to add cuts. "
+                  "Within each listed Shot, interpret consecutive storyboard panels as chronological action beats "
+                  "inside one uninterrupted take; panel boundaries never create cuts, transitions, viewpoint jumps, "
+                  "or camera resets. Preserve each distinct panel viewpoint, shot size, screen direction, and subject "
+                  "placement in order by translating it into continuous physical camera travel. Adjacent panels may "
+                  "be merged only when their framing and action are materially the same. Never replace the ordered "
+                  "framing progression with only `coherent framing`, `the camera tracks`, `the camera follows`, or an "
+                  "equivalent generic summary. Only a configured later Shot header may cut."
+            )
+        frame_plans = [
+            (label, plan) for label, plan in label_plan.items()
+            if plan.get("kind") == "Picture" and plan.get("role") == "frame"
+        ]
+        if frame_plans:
+            allow_dynamic_subjects = _allows_frame_continuity_subjects(label_plan)
+            if allow_dynamic_subjects:
+                label_lock = (
+                    f"Define and use these locked Picture labels in order: {labels}. Keep them literal. "
+                    "Only the recurring frame-continuity Subjects permitted below may be added before them."
+                )
+            frame_plans.sort(key=lambda item: (item[1].get("frame_index", 0), item[0]))
+            anchor_schedule = " | ".join(
+                f"{label}@{plan.get('anchor_time_seconds', 0.0):.3f}s/frame {plan.get('frame_index', 0)}"
+                for label, plan in frame_plans
+            )
+            max_frame = max(0, int(round(effective_seconds * MODEL_FPS)) - 1)
+            scheduled_anchors = []
+            for label, plan in frame_plans:
+                frame_index = int(plan.get("frame_index", 0))
+                scheduled_anchors.append({
+                    "label": label,
+                    "frame_index": frame_index,
+                    "time": float(plan.get("anchor_time_seconds", 0.0)),
+                    "anchor_kind": (
+                        plan.get("anchor_kind") or (
+                            "opening" if frame_index == 0 else
+                            "final" if frame_index == max_frame else
+                            "intermediate"
+                        )
+                    ),
+                })
+            anchor_sentences = " | ".join(_frame_anchor_sentence(anchor) for anchor in scheduled_anchors)
+            bridge_sentences_list = []
+            by_shot: dict[int, list[tuple[str, dict[str, Any]]]] = {}
+            for label, plan in frame_plans:
+                shot_number = (plan.get("applicable_shots") or [1])[0]
+                by_shot.setdefault(shot_number, []).append((label, plan))
+            for shot_anchors in by_shot.values():
+                shot_anchors.sort(key=lambda item: item[1].get("frame_index", 0))
+                for (start_label, start_plan), (end_label, end_plan) in zip(shot_anchors, shot_anchors[1:]):
+                    bridge_sentences_list.append(
+                        f"From {format_timestamp(start_plan.get('anchor_time_seconds', 0.0))} to "
+                        f"{format_timestamp(end_plan.get('anchor_time_seconds', 0.0))}, the same uninterrupted "
+                        f"take develops continuously from {start_label} toward {end_label}."
+                    )
+            bridge_sentences = " | ".join(bridge_sentences_list)
+            frame_definition_lock = (
+                "\nFor every Picture frame anchor, subject_definitions must use its required_definition "
+                "from REFERENCE_PLAN; never write that a Picture is derived from itself."
+                + (
+                    " Before those Picture definitions, create the smallest sequential set of <Subject N> definitions "
+                    "needed to bind people, persistent objects, and environments demonstrably recurring across two or "
+                    "more Picture anchors. Derive each such Subject from all supporting Pictures, never from speculation; "
+                    "do not create a Subject for a one-frame-only element. Use the same Subjects throughout summary, "
+                    "retention_analysis, and detailed_description."
+                    if allow_dynamic_subjects else ""
+                )
+                + f"\nExact in-shot anchor schedule: {anchor_schedule}."
+                " In detailed_description, preserve every Picture at its exact scheduled frame, even when that "
+                "frame falls inside a Move. Write observable From-to action bridges between consecutive anchors. "
+                "The opening anchor begins the shot exactly, intermediate anchors are states the ongoing motion "
+                "passes through, and only an anchor assigned to the Shot's actual end is its final state. Pictures in one Shot remain "
+                "states of one camera take and never open, reset, replace, or cut the scene."
+                f"\nMandatory exact anchor sentences, in order: {anchor_sentences}"
+                " Copy each sentence literally once in detailed_description at its chronological position."
+                + (
+                    f"\nMandatory frame-bridge sentences, in order: {bridge_sentences} "
+                    "Copy each sentence literally once between its two anchor sentences, then describe the "
+                    "overlapping Move actions inside that same bridge."
+                    if bridge_sentences else ""
+                )
+            )
+            if move_cues:
+                move_schedule = " | ".join(
+                    re.sub(
+                        r"^From\s+([^,]+),.*$",
+                        r"\1",
+                        cue,
+                        flags=re.IGNORECASE,
+                    )
+                    for cue in move_cues
+                )
+                move_lock = (
+                    "\nInternal Move schedule, in order: " + move_schedule
+                    + "\nPreserve every Move's action and timing, but do not copy its full range as a new From-to "
+                      "paragraph. Mention a Move onset inline only where needed inside the already active Picture "
+                      "bridge. A Move boundary never completes the scene, settles the image, restates the camera "
+                      "contract, or interrupts the ongoing take."
+                )
         retention_lines = "\n".join(
             plan.get("retention_prefix", f"{label}: {plan.get('marker', 'weak_reference')} -")
             for label, plan in label_plan.items()
@@ -1638,12 +2065,12 @@ retention_analysis:
 detailed_description:
 overall_soundscape:
 non_diegetic_music:
-Define and use exactly these output labels in order: {labels}. Keep them literal; create no others.
+{label_lock}{role_definition_lock}{frame_definition_lock}
 RETENTION_LINE_PLAN:
 {retention_lines}
 Copy each RETENTION_LINE_PLAN prefix verbatim and in order; append one concise preservation description. Never alter its scope or marker or print strength names or `=`.
 Every Subject listed as appearing in a shot must be visibly present and named in that shot's detailed_description.
-detailed_description must contain exactly {shots}, once each in order; [Shot 1] has no timestamp.{content_lock}
+detailed_description must contain exactly {shots}, once each in order; [Shot 1] has no header timestamp.{move_lock}{content_lock}
 Complete every SHOT_PLAN verb and result visibly; do not stop at setup. Preserve physical state across shots; show a transition before a conflicting later action.
 Speaker IDs, exact <d> content, lip synchronization, and event order must be correct in the final output.
 Do not invent people, dialogue, vocal reactions, or music. Use N/A for unrequested non-diegetic music.
@@ -1672,7 +2099,7 @@ Highest-priority format lock. Return plain text with no wrapper, JSON, Markdown,
 Begin exactly with: {opening}
 Use exactly these fields once in order: integrated_multimodal_description, overall_soundscape, non_diegetic_music.
 For I2VA, FL2VA, and L2VA, keep the alignment line before the main field, never inside it.
-Never use REF2VA sections. The timeline must contain exactly {shots}, once each in order; [Shot 1] has no timestamp.{endpoint_lock}{content_lock}
+Never use REF2VA sections. The timeline must contain exactly {shots}, once each in order; [Shot 1] has no header timestamp.{move_lock}{endpoint_lock}{content_lock}
 Preserve every explicit SHOT_PLAN action in order; omit none.
 Complete every action verb and result visibly; do not stop at setup. Preserve physical state across shots; show a transition before a conflicting later action.
 Speaker IDs, exact <d> content, lip synchronization, and event order must be correct in the final output.
@@ -1725,6 +2152,500 @@ def _move_preamble_after_shot_one(text: str) -> str:
     # Alignment paraphrases and conversational lead-ins before the first shot
     # are transport noise, not scene content. The Base schema starts at Shot 1.
     return "[Shot 1]" + (" " + remainder if remainder else "")
+
+
+_CAMERA_SHOT_SCALE = {
+    "extreme_close_up": 0, "detail_shot": 0, "insert_shot": 0,
+    "close_up": 1, "medium_close_up": 2, "medium_shot": 3,
+    "cowboy_shot": 4, "medium_wide_shot": 4, "medium_full_shot": 5,
+    "full_shot": 6, "two_shot": 6, "three_shot": 6, "group_shot": 6,
+    "wide_shot": 7, "establishing_shot": 7, "extreme_wide_shot": 8,
+}
+_ZOOM_CAMERA_MOTIONS = {"zoom_in", "zoom_out", "dolly_zoom_in", "dolly_zoom_out"}
+
+# Decompose angle presets into spatial dimensions so camera continuity does not
+# depend on special cases for particular preset pairs.
+_CAMERA_ANGLE_STATE = {
+    "none": ("unspecified", 0, "level", "external"),
+    "eye_level": ("front", 0, "level", "external"),
+    "low_angle": ("front", -1, "level", "external"),
+    "high_angle": ("front", 1, "level", "external"),
+    "overhead": ("front", 2, "level", "external"),
+    "top_down": ("front", 3, "level", "external"),
+    "birds_eye": ("front", 4, "level", "external"),
+    "worms_eye": ("front", -3, "level", "external"),
+    "ground_level": ("front", -2, "level", "external"),
+    "aerial": ("front", 4, "level", "external"),
+    "dutch_angle": ("front", 0, "rolled", "external"),
+    "over_shoulder": ("rear_quarter", 0, "level", "over_shoulder"),
+    "pov": ("front", 0, "level", "subjective"),
+    "three_quarter": ("three_quarter", 0, "level", "external"),
+    "profile": ("profile", 0, "level", "external"),
+    "rear": ("rear", 0, "level", "external"),
+}
+
+
+def _camera_angle_motion_components(source_angle: str, target_angle: str) -> list[str]:
+    """Return generic physical motion components between camera-angle states."""
+    if source_angle == target_angle or target_angle == "none":
+        return []
+    source = _CAMERA_ANGLE_STATE.get(source_angle, _CAMERA_ANGLE_STATE["none"])
+    target = _CAMERA_ANGLE_STATE.get(target_angle, _CAMERA_ANGLE_STATE["none"])
+    components: list[str] = []
+    if source[0] != target[0] and "unspecified" not in {source[0], target[0]}:
+        components.append("arcing continuously around the subject toward the configured viewing side")
+    if source[1] != target[1]:
+        vertical = "raising" if target[1] > source[1] else "lowering"
+        components.append(
+            f"{vertical} its position and translating continuously as needed while coordinating its tilt"
+        )
+    if source[2] != target[2]:
+        components.append("rolling smoothly around its optical axis toward the configured horizon")
+    if source[3] != target[3]:
+        components.append("translating continuously into the configured viewing relationship")
+    if not components:
+        components.append("travelling continuously into the configured camera position")
+    return components
+
+
+def _append_simultaneous_camera_components(base: str, components: list[str]) -> str:
+    if not components:
+        return base
+    addition = (
+        components[0] if len(components) == 1
+        else ", ".join(components[:-1]) + ", and " + components[-1]
+    )
+    return f"{base}, while simultaneously {addition}"
+
+
+def _shot_move_camera_specs(project: dict[str, Any], effective_seconds: float) -> list[dict[str, Any]]:
+    """Compile deterministic camera endpoints and physical paths for every Move."""
+    items = project.get("shots", [])
+    requested_seconds = sum(float(item["duration"]) for item in items)
+    scale = effective_seconds / requested_seconds if requested_seconds > 0 else 1.0
+    cursor = 0.0
+    shot_number = 0
+    move_number = 0
+    current_shot_size = "none"
+    current_angle = "none"
+    travel_direction: str | None = None
+    specs: list[dict[str, Any]] = []
+    for item_index, item in enumerate(items):
+        start = cursor
+        end = start + float(item["duration"]) * scale
+        presets = _normalize_shot_presets(item.get("presets"))
+        if not _is_move(item):
+            shot_number += 1
+            move_number = 0
+            current_shot_size = presets["camera_shot"]
+            current_angle = presets["camera_angle"]
+            travel_direction = None
+            cursor = end
+            continue
+        move_number += 1
+        target_shot_size = presets["camera_shot"] if presets["camera_shot"] != "none" else current_shot_size
+        target_angle = presets["camera_angle"] if presets["camera_angle"] != "none" else current_angle
+        explicit_motion = presets["camera_motion"]
+        shot_size_changed = target_shot_size != current_shot_size
+        angle_changed = target_angle != current_angle
+        camera_state_changed = shot_size_changed or angle_changed or explicit_motion != "none"
+        previous_direction = travel_direction
+        is_last_move = item_index == len(items) - 1 or not _is_move(items[item_index + 1])
+        angle_motion = _camera_angle_motion_components(current_angle, target_angle)
+        if explicit_motion != "none":
+            motion_text = CAMERA_PRESET_PROMPTS["camera_motion"].get(explicit_motion, "continuous camera movement")
+            physical = f"the same camera performs a {motion_text}"
+            if explicit_motion in {"push_in", "zoom_in", "dolly_zoom_in"}:
+                travel_direction = "forward"
+            elif explicit_motion in {"pull_out", "zoom_out", "dolly_zoom_out"}:
+                travel_direction = "backward"
+        else:
+            source_scale = _CAMERA_SHOT_SCALE.get(current_shot_size)
+            target_scale = _CAMERA_SHOT_SCALE.get(target_shot_size)
+            if source_scale is not None and target_scale is not None and target_scale > source_scale:
+                travel_direction = "backward"
+                physical = (
+                    "the same camera continues dollying backward along the same physical path"
+                    if previous_direction == "backward" else
+                    "the same camera begins a smooth physical dolly backward along a continuous path"
+                )
+            elif source_scale is not None and target_scale is not None and target_scale < source_scale:
+                travel_direction = "forward"
+                physical = (
+                    "the same camera continues dollying forward along the same physical path"
+                    if previous_direction == "forward" else
+                    "the same camera smoothly decelerates, reverses direction without a pause, and begins a controlled dolly forward along the same physical path"
+                    if previous_direction == "backward" else
+                    "the same camera begins a smooth physical dolly forward along a continuous path"
+                )
+            else:
+                physical = (
+                    "the same camera preserves its current framing distance"
+                    if angle_motion else
+                    "the uninterrupted image continues directly from the preceding frame; the camera position, "
+                    "lens, orientation, framing, subject scale, and background perspective remain unchanged"
+                )
+        physical = _append_simultaneous_camera_components(physical, angle_motion)
+        target_description = CAMERA_PRESET_PROMPTS["camera_shot"].get(target_shot_size, "")
+        angle_description = CAMERA_PRESET_PROMPTS["camera_angle"].get(target_angle, "")
+        endpoint_parts = []
+        if target_description and (shot_size_changed or angle_changed):
+            endpoint_verb = "reaching and settling into a stable" if is_last_move else "naturally reaching a"
+            endpoint_parts.append(f"{endpoint_verb} {target_description} by {format_timestamp(end)}")
+        if angle_description and target_angle != current_angle:
+            article = "an" if angle_description[:1].lower() in "aeiou" else "a"
+            endpoint_parts.append(f"progressively settling into {article} {angle_description}")
+        endpoint = " and ".join(endpoint_parts)
+        if endpoint:
+            physical += ", " + endpoint
+        elif not camera_state_changed:
+            physical += (
+                f" through {format_timestamp(end)}; only the requested subject action changes, unfolding "
+                f"progressively across this interval and reaching its completed visible state by {format_timestamp(end)}"
+            )
+        elif is_last_move:
+            physical += f", settling into a stable framing by {format_timestamp(end)}"
+        else:
+            physical += f", maintaining the established framing through {format_timestamp(end)}"
+        if not camera_state_changed:
+            physical += (
+                ". The camera does not reframe to follow the action; the inherited composition and background "
+                "geometry stay visually continuous."
+            )
+        elif explicit_motion in _ZOOM_CAMERA_MOTIONS:
+            physical += (
+                ", preserving the inherited compositional anchor, spatial axis, and continuous screen position."
+            )
+        elif is_last_move and previous_direction and travel_direction != previous_direction:
+            physical += (
+                ", coordinating camera height and tilt in one fluid motion only as needed to continuously "
+                "track the subject and preserve natural background parallax."
+            )
+        else:
+            physical += (
+                ", keeping the inherited compositional anchor on a continuous screen path with continuous "
+                "perspective and visible background parallax."
+            )
+        if camera_state_changed:
+            boundary_bridge = (
+                "the camera motion begins visibly from the exact preceding frame with no pose, framing, or "
+                "viewpoint discontinuity, and "
+                if move_number == 1 else
+                "beginning from the fully reached camera and subject state of the preceding interval, "
+            )
+            physical = boundary_bridge + physical
+        cue = (
+            f"From {format_timestamp(start)} to {format_timestamp(end)}, without a cut,"
+            if move_number == 1 else
+            f"From {format_timestamp(start)} to {format_timestamp(end)}, continuing the same uninterrupted camera path,"
+        )
+        specs.append({
+            "shot": shot_number, "move": move_number, "start": start, "end": end,
+            "cue": cue, "camera_sentence": physical,
+            "allows_zoom": explicit_motion in _ZOOM_CAMERA_MOTIONS,
+            "camera_state_changed": camera_state_changed,
+            "is_first_move": move_number == 1,
+        })
+        current_shot_size = target_shot_size
+        current_angle = target_angle
+        cursor = end
+    return specs
+
+
+def _shot_numbers_owning_moves(project: dict[str, Any]) -> set[int]:
+    owners: set[int] = set()
+    shot_number = 0
+    for item in project.get("shots", []):
+        if _is_move(item):
+            if shot_number:
+                owners.add(shot_number)
+        else:
+            shot_number += 1
+    return owners
+
+
+def _repair_move_transition_language(text: str) -> str:
+    """Remove edit-like camera wording only inside a known Move interval."""
+    text = re.sub(
+        r"^\s*(?:During|Within)\s+this\s+(?:movement|interval),\s*"
+        r"(?:maintaining|remaining|holding|executing|reframing)\b[^;]*;\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if text and text[:1].islower():
+        text = text[:1].upper() + text[1:]
+    text = re.sub(
+        r"\bthe\s+(?:same\s+)?camera\s+(?:cuts?|switches)\s+to\b",
+        "the same camera continues physically toward",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"\b(?:the\s+)?(?:camera|framing|view|composition)\s+transitions?\s+(?:into|to)\b",
+        "the camera progressively moves into",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"\bto\s+transition\s+into\s+(?=an?\s+(?:extreme\s+)?(?:close-up|medium|cowboy|full|wide|establishing)\b)",
+        "to progressively reach ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return text
+
+
+def _remove_leading_generated_camera_clause(text: str) -> str:
+    """Drop a model-written Move camera clause while retaining its attached subject action."""
+    stripped = text.lstrip()
+    if not re.match(
+        r"(?i)(?:(?:the|a)\s+)?(?:same\s+)?(?:camera|lens|dolly|framing|view|composition)\b",
+        stripped,
+    ):
+        return stripped
+    sentence_end = re.search(r"[.!?](?=\s|$)", stripped)
+    if sentence_end:
+        sentence = stripped[:sentence_end.start()]
+        remainder = stripped[sentence_end.end():].lstrip()
+    else:
+        sentence = stripped
+        remainder = ""
+    connector = re.search(r"(?i)\b(as|while)\s+(.+)$", sentence)
+    if connector:
+        action = connector.group(2).strip()
+        if connector.group(1).lower() == "while":
+            action = "During this movement, " + action
+        elif action:
+            action = action[0].upper() + action[1:]
+        remainder = action + "." + (" " + remainder if remainder else "")
+    return remainder
+
+
+def _move_take_contract(allows_zoom: bool, start: float, end: float,
+                        camera_moves: bool = True) -> str:
+    scope = f"From {format_timestamp(start)} to {format_timestamp(end)}, "
+    if not camera_moves:
+        return scope + (
+            "one locked camera holds a continuous take; only the requested subject action changes."
+        )
+    if not allows_zoom:
+        return scope + (
+            "one stabilized camera and one consistent lens maintain a single uninterrupted physical path, "
+            "continuous perspective, and natural background parallax."
+        )
+    return scope + (
+        "one stabilized camera maintains a single uninterrupted physical path; focal length changes only in an "
+        "explicit optical-zoom or dolly-zoom beat."
+    )
+
+
+def _enforce_move_camera_continuity(prompt: str, project: dict[str, Any],
+                                    effective_seconds: float) -> str:
+    """Deterministically preserve Shot-scoped continuous camera takes in final H3 prose."""
+    owners = _shot_numbers_owning_moves(project)
+    if not owners:
+        return prompt
+    mode = project.get("mode", "T2VA")
+    field_name = "detailed_description" if mode == "REF2VA" else "integrated_multimodal_description"
+    field_pattern = re.compile(
+        rf"(^[ \t]*{field_name}[ \t]*:[ \t]*)(.*?)(?=^[ \t]*(?:overall_soundscape|non_diegetic_music)\s*:)",
+        flags=re.IGNORECASE | re.MULTILINE | re.DOTALL,
+    )
+    field_match = field_pattern.search(prompt)
+    if not field_match:
+        return prompt
+    main = field_match.group(2).strip()
+
+    # Replace only each Move's leading camera clause with a deterministic path;
+    # retain the model-written subject action and all intentional Shot cuts.
+    specs = _shot_move_camera_specs(project, effective_seconds)
+    anchor_counts: dict[int, int] = {}
+    for anchor in _frame_anchor_schedule(project, effective_seconds):
+        number = int(anchor.get("shot", 1))
+        anchor_counts[number] = anchor_counts.get(number, 0) + 1
+    frame_driven_shots = {number for number, count in anchor_counts.items() if count >= 2}
+    cue_positions = []
+    search_from = 0
+    for spec in specs:
+        # Multiple Picture anchors define the chronology of this Shot. Its Moves are
+        # internal action cues, not independent endpoint paragraphs; rewriting every
+        # Move as a completed camera state encourages H3 to synthesize a hidden cut.
+        if spec["shot"] in frame_driven_shots:
+            continue
+        position = main.find(spec["cue"], search_from)
+        if position >= 0:
+            cue_positions.append((position, spec))
+            search_from = position + len(spec["cue"])
+    for index in range(len(cue_positions) - 1, -1, -1):
+        position, spec = cue_positions[index]
+        cue = spec["cue"]
+        boundary = cue_positions[index + 1][0] if index + 1 < len(cue_positions) else len(main)
+        next_shot = re.search(r"\[Shot\s+\d+\]", main[position + len(cue):boundary], re.IGNORECASE)
+        if next_shot:
+            boundary = position + len(cue) + next_shot.start()
+        model_tail = main[position + len(cue):boundary]
+        preserved_action = _repair_move_transition_language(
+            _remove_leading_generated_camera_clause(model_tail)
+        )
+        replacement = cue + " " + spec["camera_sentence"]
+        if preserved_action:
+            replacement += " " + preserved_action
+        suffix = main[boundary:]
+        separator = " " if suffix else ""
+        main = main[:position] + replacement.rstrip() + separator + suffix.lstrip()
+
+    # Scope the take contract and opening hold to each Shot that owns Moves. A later Shot header
+    # still represents an intentional cut and starts an independent contract.
+    specs_by_shot = {
+        number: [spec for spec in specs if spec["shot"] == number]
+        for number in owners
+    }
+    shot_starts: dict[int, float] = {}
+    shot_opening_presets: dict[int, dict[str, str]] = {}
+    cursor = 0.0
+    requested_seconds = sum(float(item["duration"]) for item in project.get("shots", []))
+    scale = effective_seconds / requested_seconds if requested_seconds > 0 else 1.0
+    shot_counter = 0
+    for item in project.get("shots", []):
+        if not _is_move(item):
+            shot_counter += 1
+            shot_starts[shot_counter] = cursor
+            shot_opening_presets[shot_counter] = _normalize_shot_presets(item.get("presets"))
+        cursor += float(item["duration"]) * scale
+    for number in sorted(owners, reverse=True):
+        header = re.compile(
+            rf"(\[Shot\s+{number}\](?:\s+At\s+\d{{2}}:\d{{2}}\.\d{{3}},)?)",
+            flags=re.IGNORECASE,
+        )
+        match = header.search(main)
+        if not match:
+            continue
+        shot_specs = specs_by_shot[number]
+        opening_presets = shot_opening_presets.get(number, _normalize_shot_presets(None))
+        contract = _move_take_contract(
+            opening_presets["camera_motion"] in _ZOOM_CAMERA_MOTIONS
+            or any(spec["allows_zoom"] for spec in shot_specs),
+            shot_starts[number], shot_specs[-1]["end"],
+            camera_moves=(
+                opening_presets["camera_motion"] not in {"none", "static"}
+                or any(spec["camera_state_changed"] for spec in shot_specs)
+            ),
+        )
+        opening_description = CAMERA_PRESET_PROMPTS["camera_shot"].get(
+            opening_presets["camera_shot"], "opening framing",
+        ) or "opening framing"
+        opening_motion = opening_presets["camera_motion"]
+        if opening_motion not in {"none", "static"}:
+            motion_description = CAMERA_PRESET_PROMPTS["camera_motion"].get(
+                opening_motion, "continuous camera movement",
+            )
+            opening = (
+                f"From {format_timestamp(shot_starts[number])} to {format_timestamp(shot_specs[0]['start'])}, "
+                f"the same camera executes the configured motion: {motion_description}, as one continuous physical "
+                f"movement while maintaining the {opening_description}, the inherited compositional anchor, and "
+                "continuous background geometry."
+            )
+        else:
+            opening = (
+                f"From {format_timestamp(shot_starts[number])} to {format_timestamp(shot_specs[0]['start'])}, "
+                f"the same camera holds the {opening_description} with subtle stabilized drift."
+            )
+        following = main[match.end():match.end() + len(contract) + len(opening) + 500]
+        additions = []
+        if contract.lower() not in following.lower():
+            additions.append(contract)
+        if opening.lower() not in following.lower():
+            additions.append(opening)
+        if additions:
+            # Keep a configured later-Shot cut sentence intact. Insert after
+            # the opening sentence, before the first Move begins.
+            sentence_end = re.search(r"[.!?](?=\s|$)", main[match.end():])
+            insert_at = match.end() + sentence_end.end() if sentence_end else match.end()
+            main = main[:insert_at] + " " + " ".join(additions) + main[insert_at:]
+
+    rebuilt = field_match.group(1) + main + "\n\n"
+    return prompt[:field_match.start()] + rebuilt + prompt[field_match.end():]
+
+
+def _enforce_ref_frame_anchor_timing(prompt: str, project: dict[str, Any],
+                                     effective_seconds: float) -> str:
+    """Ensure every REF2VA frame label carries its exact in-shot time in final prose."""
+    if project.get("mode") != "REF2VA":
+        return prompt
+    anchors = _frame_anchor_schedule(project, effective_seconds)
+    if not anchors:
+        return prompt
+    field_pattern = re.compile(
+        r"(^[ \t]*detailed_description[ \t]*:[ \t]*)(.*?)"
+        r"(?=^[ \t]*(?:overall_soundscape|non_diegetic_music)\s*:)",
+        flags=re.IGNORECASE | re.MULTILINE | re.DOTALL,
+    )
+    field_match = field_pattern.search(prompt)
+    if not field_match:
+        return prompt
+    main = field_match.group(2).strip()
+    search_from = 0
+    for anchor in anchors:
+        label = anchor["label"]
+        exact = _frame_anchor_sentence(anchor)
+        legacy_pattern = re.compile(
+            rf"At\s+{re.escape(format_timestamp(anchor['time']))},\s*the\s+same\s+uninterrupted\s+take\s+"
+            rf"exactly\s+reaches\s+{re.escape(label)}\.",
+            flags=re.IGNORECASE,
+        )
+        legacy_match = legacy_pattern.search(main, search_from)
+        if legacy_match:
+            main = main[:legacy_match.start()] + exact + main[legacy_match.end():]
+        existing = main.find(exact, search_from)
+        if existing >= 0:
+            search_from = existing + len(exact)
+            continue
+        state_pattern = re.compile(
+            rf"At\s+(?:the\s+)?exact\s+state\s+of\s+{re.escape(label)}\s*,?",
+            flags=re.IGNORECASE,
+        )
+        state_match = state_pattern.search(main, search_from)
+        if state_match:
+            replacement = exact + " Continuing from that exact anchored state,"
+            main = main[:state_match.start()] + replacement + main[state_match.end():]
+            search_from = state_match.start() + len(replacement)
+            continue
+        label_position = main.find(label, search_from)
+        if label_position < 0:
+            continue
+        sentence_start = max(
+            main.rfind(". ", search_from, label_position),
+            main.rfind("! ", search_from, label_position),
+            main.rfind("? ", search_from, label_position),
+            main.rfind("\n", search_from, label_position),
+        )
+        sentence_start = search_from if sentence_start < 0 else sentence_start + 2
+        main = main[:sentence_start] + exact + " " + main[sentence_start:]
+        search_from = sentence_start + len(exact)
+
+    # Keep consecutive anchors in one Shot explicitly joined by one active bridge.
+    # Insert it immediately before its destination anchor so it cannot look like a
+    # new Move paragraph or a camera reset.
+    anchors_by_shot: dict[int, list[dict[str, Any]]] = {}
+    for anchor in anchors:
+        anchors_by_shot.setdefault(int(anchor.get("shot", 1)), []).append(anchor)
+    for shot_anchors in anchors_by_shot.values():
+        shot_anchors.sort(key=lambda item: (item["frame_index"], item["time"]))
+        for start_anchor, end_anchor in zip(shot_anchors, shot_anchors[1:]):
+            bridge = (
+                f"From {format_timestamp(start_anchor['time'])} to {format_timestamp(end_anchor['time'])}, "
+                f"the same uninterrupted take develops continuously from {start_anchor['label']} toward "
+                f"{end_anchor['label']}."
+            )
+            if bridge.casefold() in main.casefold():
+                continue
+            destination = _frame_anchor_sentence(end_anchor)
+            destination_at = main.find(destination)
+            if destination_at >= 0:
+                main = main[:destination_at] + bridge + " " + main[destination_at:]
+    rebuilt = field_match.group(1) + main + "\n\n"
+    return prompt[:field_match.start()] + rebuilt + prompt[field_match.end():]
 
 
 def _normalize_base_enhanced_prompt(prompt: str, mode: str, effective_seconds: float,
@@ -1824,6 +2745,14 @@ def _enforce_retention_line_plan(prompt: str, label_plan: dict[str, dict[str, An
         "fully_preserved|partially_preserved|attribute_transfer|weak_reference|"
         "fully_copy|partially_copy|reference"
     )
+    if _allows_frame_continuity_subjects(label_plan):
+        inferred_subject_lines = []
+        for line in source_lines:
+            if not re.match(r"\s*<Subject\s+\d+>", line, flags=re.IGNORECASE):
+                continue
+            if re.search(rf"\b(?:{fixed_markers})\b", line, flags=re.IGNORECASE):
+                inferred_subject_lines.append(line.strip())
+        rebuilt.extend(inferred_subject_lines)
     for label, plan in label_plan.items():
         matching_line = next(
             (line for line in source_lines if re.match(
@@ -1846,6 +2775,57 @@ def _enforce_retention_line_plan(prompt: str, label_plan: dict[str, dict[str, An
 
     replacement = section_match.group(1) + "\n".join(rebuilt) + "\n\n"
     return prompt[:section_match.start()] + replacement + prompt[section_match.end():]
+
+
+def _enforce_reference_definition_provenance(
+    prompt: str, reference_model: dict[str, Any] | None,
+) -> str:
+    """Replace impossible Picture/Video/Audio self-derived definitions with locked definitions."""
+    if not reference_model:
+        return prompt
+    expected_by_label: dict[str, str] = {}
+    for definition in reference_model.get("definitions", []):
+        match = re.match(r"\s*(<(?:Picture|Video|Audio)\s+\d+>)", definition, flags=re.IGNORECASE)
+        if match:
+            expected_by_label[match.group(1).casefold()] = definition.strip()
+    section_match = re.search(
+        r"(^[ \t]*subject_definitions[ \t]*:[ \t]*\n?)(.*?)(?=^[ \t]*summary[ \t]*:)",
+        prompt,
+        flags=re.IGNORECASE | re.MULTILINE | re.DOTALL,
+    )
+    if not section_match or not expected_by_label:
+        return prompt
+    lines = section_match.group(2).splitlines()
+    for index, line in enumerate(lines):
+        label_match = re.match(r"\s*(<(?:Picture|Video|Audio)\s+\d+>)", line, flags=re.IGNORECASE)
+        if not label_match:
+            continue
+        label = label_match.group(1)
+        if re.search(rf"\bderived\s+from\s+{re.escape(label)}", line, flags=re.IGNORECASE):
+            expected = expected_by_label.get(label.casefold())
+            if expected:
+                lines[index] = expected
+    replacement = section_match.group(1) + "\n".join(lines).rstrip() + "\n\n"
+    return prompt[:section_match.start()] + replacement + prompt[section_match.end():]
+
+
+def _enforce_framing_body_range(prompt: str) -> str:
+    """Repair directly contradictory shot-size labels within one sentence."""
+    sentence_pattern = re.compile(r"[^.!?\n]+(?:[.!?]|$)")
+
+    def repair(match: re.Match[str]) -> str:
+        sentence = match.group(0)
+        lower = sentence.casefold()
+        if (
+            any(phrase in lower for phrase in (
+                "entire body visible", "full body visible", "head to toe", "head-to-toe",
+            ))
+            and re.search(r"\bmedium shot\b", sentence, flags=re.IGNORECASE)
+        ):
+            return re.sub(r"\bmedium shot\b", "full shot", sentence, flags=re.IGNORECASE)
+        return sentence
+
+    return sentence_pattern.sub(repair, prompt)
 
 
 def _insert_ref_first_shot_header(detail: str, boundary: int) -> str:
@@ -1903,6 +2883,15 @@ def _canonical_ref_label(match: re.Match[str]) -> str:
     return f"<{match.group(1).title()} {int(match.group(2))}>"
 
 
+def _allows_frame_continuity_subjects(label_plan: dict[str, dict[str, Any]]) -> bool:
+    """Allow Qwen to bind recurring entities when every locked visual asset is a frame anchor."""
+    plans = list(label_plan.values())
+    return len(plans) >= 2 and all(
+        plan.get("kind") == "Picture" and plan.get("role") == "frame"
+        for plan in plans
+    )
+
+
 def _ref_prompt_structure_issues(prompt: str, label_plan: dict[str, dict[str, str]]) -> list[str]:
     matches = list(_REF_FIELD_PATTERN.finditer(prompt))
     sections = _ref_prompt_sections(prompt)
@@ -1920,21 +2909,66 @@ def _ref_prompt_structure_issues(prompt: str, label_plan: dict[str, dict[str, st
         match = re.match(r"\s*<(Subject|Picture|Video|Audio)\s+(\d+)>", line, flags=re.IGNORECASE)
         if match:
             definition_labels.append(_canonical_ref_label(match))
-    if definition_labels != expected_labels:
+    inferred_subject_labels: list[str] = []
+    if _allows_frame_continuity_subjects(label_plan):
+        inferred_subject_labels = [label for label in definition_labels if label.startswith("<Subject ")]
+        expected_subject_labels = [f"<Subject {index}>" for index in range(1, len(inferred_subject_labels) + 1)]
+        if inferred_subject_labels != expected_subject_labels:
+            issues.append("Recurring frame-continuity Subjects must be numbered sequentially from <Subject 1>.")
+        if definition_labels != inferred_subject_labels + expected_labels:
+            issues.append(
+                "Define inferred recurring Subjects first, followed by exactly these locked Picture labels: "
+                + ", ".join(expected_labels) + "."
+            )
+    elif definition_labels != expected_labels:
         issues.append(
             f"Define exactly these reference labels once and in order: {', '.join(expected_labels) or 'none'}."
         )
+    output_labels = inferred_subject_labels + expected_labels
     definition_lines = {
         _canonical_ref_label(match): line
         for line in sections["subject_definitions"].splitlines()
         if (match := re.match(r"\s*<(Subject|Picture|Video|Audio)\s+(\d+)>", line, flags=re.IGNORECASE))
     }
+    for label in inferred_subject_labels:
+        sources = {
+            _canonical_ref_label(match)
+            for match in _REF_LABEL_PATTERN.finditer(definition_lines.get(label, ""))
+            if match.group(1).casefold() == "picture"
+        }
+        if len(sources) < 2:
+            issues.append(
+                f"{label} is a recurring frame-continuity Subject and must cite at least two supporting Pictures."
+            )
     for label, plan in label_plan.items():
         if plan["kind"] != "Subject" or label not in definition_lines:
             continue
         source = plan["source"]
         if source.casefold() not in definition_lines[label].casefold():
             issues.append(f"{label} must cite its source asset {source} in subject_definitions.")
+    for label, plan in label_plan.items():
+        if plan.get("kind") != "Picture" or plan.get("role") != "frame" or label not in definition_lines:
+            continue
+        definition = definition_lines[label]
+        self_derived = re.search(
+            rf"{re.escape(label)}\s+(?:is\s+)?derived\s+from\s+{re.escape(label)}",
+            definition,
+            flags=re.IGNORECASE,
+        )
+        if self_derived or not re.search(r"\b(?:exact\s+)?target\s+frame\b", definition, flags=re.IGNORECASE):
+            issues.append(
+                f"{label} must define its exact target-frame role and must not be described as derived from itself."
+            )
+    for label, plan in label_plan.items():
+        if plan.get("kind") != "Picture" or plan.get("role") != "storyboard" or label not in definition_lines:
+            continue
+        definition = definition_lines[label]
+        expected_shots = plan.get("applicable_shots") or [1]
+        if not re.search(r"\bstoryboard\s+reference\b", definition, flags=re.IGNORECASE):
+            issues.append(f"{label} must be defined as a storyboard reference, not as a frame or Subject source.")
+        for shot_number in expected_shots:
+            if f"[shot {shot_number}]" not in definition.casefold():
+                issues.append(f"{label} storyboard definition must name [Shot {shot_number}].")
 
     retention_labels: list[str] = []
     retention_markers: dict[str, str] = {}
@@ -1950,18 +2984,21 @@ def _ref_prompt_structure_issues(prompt: str, label_plan: dict[str, dict[str, st
             label = _canonical_ref_label(match)
             retention_labels.append(label)
             retention_markers[label] = match.group(3).lower()
-    if retention_labels != expected_labels:
+    if retention_labels != output_labels:
         issues.append("retention_analysis must contain exactly one ordered entry for every defined label.")
     for label, plan in label_plan.items():
         if label in retention_markers and retention_markers[label] != plan["marker"]:
             issues.append(f"{label} must use retention marker {plan['marker']} for its defined role.")
+    for label in inferred_subject_labels:
+        if retention_markers.get(label) != "fully_preserved":
+            issues.append(f"{label} must use fully_preserved as a recurring exact-frame continuity Subject.")
     if re.search(r"\(S\d+\)", sections["retention_analysis"], flags=re.IGNORECASE):
         issues.append("Do not place speaker IDs in retention_analysis.")
 
     summary_labels = {
         _canonical_ref_label(match) for match in _REF_LABEL_PATTERN.finditer(sections["summary"])
     }
-    missing_summary = [label for label in expected_labels if label not in summary_labels]
+    missing_summary = [label for label in output_labels if label not in summary_labels]
     if missing_summary:
         issues.append("summary must mention every defined reference relationship: " + ", ".join(missing_summary) + ".")
     prefix = re.match(r"\s*\[([^\]]+)\]", sections["summary"])
@@ -1976,10 +3013,10 @@ def _ref_prompt_structure_issues(prompt: str, label_plan: dict[str, dict[str, st
     downstream_labels = {
         _canonical_ref_label(match) for match in _REF_LABEL_PATTERN.finditer(downstream_text)
     }
-    unexpected = sorted(downstream_labels.difference(expected_labels))
+    unexpected = sorted(downstream_labels.difference(output_labels))
     if unexpected:
         issues.append("Remove undefined or source-only labels outside subject_definitions: " + ", ".join(unexpected) + ".")
-    visual_labels = [
+    visual_labels = inferred_subject_labels + [
         label for label, plan in label_plan.items()
         if plan["kind"] in {"Subject", "Picture", "Video"}
     ]
@@ -2071,7 +3108,7 @@ def _ref_prompt_semantic_issues(prompt: str, project: dict[str, Any], explicit_c
         if match:
             retention_lines[_canonical_ref_label(match)] = line
     for label, plan in label_plan.items():
-        if plan["marker"] != "weak_reference":
+        if plan["marker"] != "weak_reference" or plan.get("role") == "storyboard":
             continue
         detail = retention_lines.get(label, "").split("-", 1)[-1].strip().casefold()
         exhaustive_list = detail.count(",") >= 2 and re.search(r"\b(?:retain|preserve|copy|match)\b", detail)
@@ -2101,6 +3138,28 @@ def _ref_prompt_semantic_issues(prompt: str, project: dict[str, Any], explicit_c
     source_refs = {ref["label"]: ref for ref in _reference_labels(project.get("references", []))}
     visual_evidence = visual_evidence or {}
     detail_lower = sections["detailed_description"].casefold()
+    scheduled_anchors = _frame_anchor_schedule(
+        project, align_frame_count(project.get("requested_duration", 5.0)) / MODEL_FPS,
+    )
+    for anchor in scheduled_anchors:
+        required = _frame_anchor_sentence(anchor)
+        if required.casefold() not in detail_lower:
+            issues.append(
+                f"Place {anchor['label']} at its exact assigned time with this literal in-shot sentence: {required}"
+            )
+    scheduled_by_shot: dict[int, list[dict[str, Any]]] = {}
+    for anchor in scheduled_anchors:
+        scheduled_by_shot.setdefault(int(anchor.get("shot", 1)), []).append(anchor)
+    for shot_anchors in scheduled_by_shot.values():
+        shot_anchors.sort(key=lambda item: (item["frame_index"], item["time"]))
+        for start_anchor, end_anchor in zip(shot_anchors, shot_anchors[1:]):
+            bridge = (
+                f"From {format_timestamp(start_anchor['time'])} to {format_timestamp(end_anchor['time'])}, "
+                f"the same uninterrupted take develops continuously from {start_anchor['label']} toward "
+                f"{end_anchor['label']}."
+            )
+            if bridge.casefold() not in detail_lower:
+                issues.append(f"Join consecutive same-Shot frame anchors with this literal bridge: {bridge}")
     style_opening = re.split(r"\[shot\s+1\]", detail_lower, maxsplit=1, flags=re.IGNORECASE)[0]
     environment_terms = (
         "beach", "ocean", "sea", "shore", "sand", "coast", "mountain", "forest", "street",
@@ -2370,6 +3429,21 @@ def _qwen_reference_plan(project: dict[str, Any], effective_seconds: float,
 
     if project["mode"] == "REF2VA":
         model = _reference_model(project)
+        frame_sequences: dict[int, list[tuple[int, str]]] = {}
+        max_frame = max(0, align_frame_count(project["requested_duration"]) - 1)
+        for ref in references:
+            if ref.get("type") != "picture" or ref.get("role") not in {
+                "first_frame", "last_frame", "frame",
+            }:
+                continue
+            if ref["role"] == "first_frame":
+                frame_index = 0
+            elif ref["role"] == "last_frame":
+                frame_index = max_frame
+            else:
+                frame_index = min(max(0, int(ref.get("frame_index", 0))), max_frame)
+            shot_number = _reference_applicable_shots(project, ref)[0]
+            frame_sequences.setdefault(shot_number, []).append((frame_index, ref["label"]))
         for label, plan in model["label_plan"].items():
             source = plan["source"]
             ref = refs_by_label.get(source, {})
@@ -2392,31 +3466,76 @@ def _qwen_reference_plan(project: dict[str, Any], effective_seconds: float,
                 if ref.get("role") == "frame":
                     frame_index = min(
                         max(0, int(ref.get("frame_index", 0))),
-                        max(0, align_frame_count(project["requested_duration"]) - 1),
+                        max_frame,
                     )
+                    shot_number = plan.get("applicable_shots", [1])[0]
                     lines.extend((
                         "anchor: exact whole frame at the assigned timeline position",
+                        f"anchor_role: {plan.get('anchor_kind', 'intermediate')} state within its owning Shot",
                         f"anchor_frame_index: {frame_index}",
                         f"anchor_time_seconds: {frame_index / MODEL_FPS:.3f}",
-                        "anchor_contract: reach this complete image state exactly at this frame through continuous in-shot motion, then continue chronologically; this anchor never creates a cut or transition",
+                        f"required_definition: {label} is the exact target frame at output frame {frame_index} in [Shot {shot_number}]",
+                        "anchor_contract: reach this complete image state at this frame through continuous in-shot motion; this anchor never creates a cut or transition; never dissolve, morph, reset, or stop merely to reach it",
+                    ))
+                elif ref.get("role") == "storyboard":
+                    applicable = plan.get("applicable_shots", [1])
+                    shot_text = ", ".join(f"[Shot {number}]" for number in applicable)
+                    definition_shots = " and ".join(f"[Shot {number}]" for number in applicable)
+                    lines.extend((
+                        f"applies_to: {shot_text}",
+                        "planning_scope: panel order, shot order, viewpoint, approximate framing, subject placement, and explicitly depicted action beats only",
+                        "excluded_scope: exact frame matching, exact timing, subject identity, clothing, visual style, lighting, palette, and pose locking",
+                        "panel_boundary_contract: within each applicable configured Shot, consecutive panels are chronological action beats inside one uninterrupted take and never create cuts, transitions, viewpoint jumps, or camera resets; only a configured later Shot boundary may cut",
+                        "framing_serialization_contract: detailed_description must preserve every distinct panel viewpoint, approximate shot size, screen direction, subject placement, and action beat in order, converting changes into physically continuous camera travel; merge only adjacent materially identical panels and never collapse the sequence into generic tracking language",
+                        f"required_definition: {label} is a storyboard reference for {definition_shots}, defining their viewpoint, subject placement, approximate framing, explicitly depicted action beats, and shot order.",
+                        "priority: explicit target Shot text, camera presets, and concrete frame anchors override storyboard planning",
                     ))
             elif ref.get("type") == "video":
                 lines.append(f"temporal_visual_evidence: {evidence_for(source)}")
             if ref.get("duration"):
+                displayed_duration = float(ref["duration"])
+                displayed_trim_start = float(ref.get("trim_start", 0.0))
+                displayed_timeline_start = float(ref.get("timeline_start", 0.0))
+                if ref.get("type") == "video":
+                    displayed_trim_start, displayed_duration, displayed_timeline_start = (
+                        _visible_video_selection(ref, effective_seconds)
+                    )
                 duration_key = (
                     "selected_source_duration_seconds"
                     if ref.get("type") == "video"
                     else "source_duration_seconds"
                 )
-                lines.append(f"{duration_key}: {ref['duration']:.2f}")
+                lines.append(f"{duration_key}: {displayed_duration:.2f}")
                 if ref.get("type") == "video":
-                    lines.append(f"source_trim_start_seconds: {ref.get('trim_start', 0.0):.2f}")
-                    lines.append(f"target_timeline_start_seconds: {ref.get('timeline_start', 0.0):.2f}")
+                    lines.append(f"source_trim_start_seconds: {displayed_trim_start:.2f}")
+                    lines.append(f"target_timeline_start_seconds: {displayed_timeline_start:.2f}")
             blocks.append("\n".join(lines))
+        sequence_blocks = []
+        for shot_number, anchors in sorted(frame_sequences.items()):
+            if len(anchors) < 2:
+                continue
+            sequence = " -> ".join(
+                f"{label}@frame {frame_index}" for frame_index, label in sorted(anchors)
+            )
+            sequence_blocks.append(f"[Shot {shot_number}]: {sequence}")
+        sequence_plan = ""
+        if sequence_blocks:
+            sequence_plan = (
+                "\n\nFRAME_ANCHOR_SEQUENCES:\n" + "\n".join(sequence_blocks)
+                + "\ncontract: Each line is one uninterrupted take. Write chronological From-to intervals "
+                  "between consecutive anchors and show the shortest observable subject, object, environment, "
+                  "and camera development. Begin exactly from an anchor assigned to the Shot opening; describe "
+                  "each intermediate Picture as a precise state that the ongoing motion naturally passes through, "
+                  "not as a destination, transition, new composition, or scene replacement; reach an anchor "
+                  "assigned to the Shot ending as the exact final state. Preserve one camera, lens, spatial axis, "
+                  "perspective, and evolving background. Continue from each anchored state without pausing or "
+                  "reintroducing its visual inventory. Only a configured later Shot may cut."
+            )
         return (
             "REFERENCE_PLAN:\n"
             f"task_types: {' + '.join(model['task_types'])}\n\n"
             + "\n\n".join(blocks)
+            + sequence_plan
         )
 
     for ref in references:
@@ -2443,15 +3562,22 @@ def _qwen_reference_plan(project: dict[str, Any], effective_seconds: float,
         elif ref["type"] == "video":
             lines.append(f"temporal_visual_evidence: {evidence_for(ref['label'])}")
         if ref["duration"]:
+            displayed_duration = float(ref["duration"])
+            displayed_trim_start = float(ref.get("trim_start", 0.0))
+            displayed_timeline_start = float(ref.get("timeline_start", 0.0))
+            if ref["type"] == "video":
+                displayed_trim_start, displayed_duration, displayed_timeline_start = (
+                    _visible_video_selection(ref, effective_seconds)
+                )
             duration_key = (
                 "selected_source_duration_seconds"
                 if ref["type"] == "video"
                 else "source_duration_seconds"
             )
-            lines.append(f"{duration_key}: {ref['duration']:.2f}")
+            lines.append(f"{duration_key}: {displayed_duration:.2f}")
             if ref["type"] == "video":
-                lines.append(f"source_trim_start_seconds: {ref.get('trim_start', 0.0):.2f}")
-                lines.append(f"target_timeline_start_seconds: {ref.get('timeline_start', 0.0):.2f}")
+                lines.append(f"source_trim_start_seconds: {displayed_trim_start:.2f}")
+                lines.append(f"target_timeline_start_seconds: {displayed_timeline_start:.2f}")
         blocks.append("\n".join(lines))
     plan = "REFERENCE_PLAN:\n" + "\n\n".join(blocks)
     if project["mode"] == "FL2VA":
@@ -2525,33 +3651,220 @@ def _qwen_video_timeline_plan(project: dict[str, Any], effective_seconds: float)
     return "\n".join(lines)
 
 
+def _frame_anchor_schedule(project: dict[str, Any], effective_seconds: float) -> list[dict[str, Any]]:
+    """Return exact intermediate-frame anchors with their owning Shot in chronological order."""
+    max_frame = max(0, int(round(effective_seconds * MODEL_FPS)) - 1)
+    schedule: list[dict[str, Any]] = []
+    for ref in _reference_labels(project.get("references", [])):
+        if ref.get("type") != "picture" or ref.get("role") != "frame":
+            continue
+        frame_index = min(max(0, int(ref.get("frame_index", 0))), max_frame)
+        applicable = _reference_applicable_shots(project, ref)
+        schedule.append({
+            "label": ref["label"],
+            "frame_index": frame_index,
+            "time": frame_index / MODEL_FPS,
+            "shot": applicable[0] if applicable else 1,
+        })
+    schedule.sort(key=lambda anchor: (anchor["time"], anchor["label"]))
+    take_frames = {
+        take["shot_number"]: (
+            max(0, int(round(take["start"] * MODEL_FPS))),
+            max(0, int(round(take["end"] * MODEL_FPS)) - 1),
+        )
+        for take in _compile_timeline_takes(project, effective_seconds)
+    }
+    by_shot: dict[int, list[dict[str, Any]]] = {}
+    for anchor in schedule:
+        by_shot.setdefault(anchor["shot"], []).append(anchor)
+    for shot_anchors in by_shot.values():
+        for index, anchor in enumerate(shot_anchors):
+            shot_start_frame, shot_end_frame = take_frames.get(anchor["shot"], (0, max_frame))
+            if anchor["frame_index"] == shot_start_frame:
+                anchor["anchor_kind"] = "opening"
+            elif anchor["frame_index"] == shot_end_frame:
+                anchor["anchor_kind"] = "final"
+            else:
+                anchor["anchor_kind"] = "intermediate"
+            anchor["sequence_index"] = index
+            anchor["sequence_count"] = len(shot_anchors)
+    return schedule
+
+
+def _frame_anchor_sentence(anchor: dict[str, Any]) -> str:
+    """Describe an exact guide frame without making an intermediate anchor sound like a cut."""
+    timestamp = format_timestamp(anchor["time"])
+    label = anchor["label"]
+    kind = anchor.get("anchor_kind", "intermediate")
+    if kind == "opening":
+        return f"At {timestamp}, the shot begins exactly from {label}."
+    if kind == "final":
+        return f"At {timestamp}, the same uninterrupted take reaches the exact final-frame state of {label}."
+    return (
+        f"At {timestamp}, the ongoing uninterrupted motion passes precisely through {label} "
+        "without a cut or camera reset."
+    )
+
+
+def _anchor_phase_lines(anchors: list[dict[str, Any]], start: float, end: float) -> list[str]:
+    """Compile exact anchors inside one UI item into deterministic non-cut subphases."""
+    if not anchors:
+        return []
+    lines = [
+        "internal_anchor_phase_plan: these are subdivisions of this same timeline item, never Shots or cuts",
+    ]
+    phase_start = start
+    inherited_label = "the preceding continuous scene state"
+    phase_number = 1
+    for anchor in anchors:
+        anchor_time = min(max(anchor["time"], start), end)
+        if anchor_time > phase_start + 1e-6:
+            lines.append(
+                f"phase_{phase_number}: From {phase_start:.3f} to {anchor_time:.3f} seconds, inherit "
+                f"{inherited_label} and show the shortest physically continuous action and camera development "
+                f"that naturally passes through {anchor['label']} at its exact assigned frame"
+            )
+            phase_number += 1
+        lines.append(f"required_anchor_sentence: {_frame_anchor_sentence(anchor)}")
+        inherited_label = f"the exact {anchor['label']} camera, subject, object, contact, and background state"
+        phase_start = anchor_time
+    if end > phase_start + 1e-6:
+        lines.append(
+            f"phase_{phase_number}: From {phase_start:.3f} to {end:.3f} seconds, inherit {inherited_label} "
+            "and continue the remaining requested action without resetting or replacing the image"
+        )
+    return lines
+
+
+def _frame_continuity_plan(project: dict[str, Any], effective_seconds: float,
+                           aliases: dict[str, str]) -> str:
+    """Compile frame-to-frame prose intervals while keeping Moves as in-shot events."""
+    anchors = _frame_anchor_schedule(project, effective_seconds)
+    if not anchors:
+        return ""
+    lines = [
+        "FRAME_CONTINUITY_PLAN:",
+        "role_separation: Shot starts a new camera take; Move is a timed event inside that take; Picture is an exact visual state the take passes through at one output frame",
+        "prose_structure: organize detailed_description primarily as chronological frame-to-frame From-to bridges; weave overlapping Move actions and camera instructions into those bridges without turning a Move boundary into a paragraph reset, completed scene, or cut",
+        "camera_contract: declare the Shot's single camera/lens/path once, then mention camera behavior again only when an overlapping Move physically changes it",
+        "identity_contract: infer the smallest useful set of recurring Subjects visible across two or more Picture anchors and use those Subject labels to bind identity, persistent objects, and the shared environment across the full take",
+    ]
+    for take in _compile_timeline_takes(project, effective_seconds):
+        shot_number = take["shot_number"]
+        shot_anchors = [anchor for anchor in anchors if anchor["shot"] == shot_number]
+        if not shot_anchors:
+            continue
+        events = [{
+            "name": f"Shot {shot_number} opening",
+            "start": take["start"],
+            "end": take["opening_end"],
+            "action": _replace_aliases(take["opening"].get("visual_action", ""), aliases),
+        }]
+        for beat in take["beats"]:
+            events.append({
+                "name": f"Move {beat['move_number']}",
+                "start": beat["start"],
+                "end": beat["end"],
+                "action": _replace_aliases(beat["item"].get("visual_action", ""), aliases),
+            })
+        points: list[tuple[float, str]] = [(take["start"], "the inherited Shot opening state")]
+        for anchor in shot_anchors:
+            points.append((anchor["time"], anchor["label"]))
+        if not any(anchor.get("anchor_kind") == "final" for anchor in shot_anchors):
+            points.append((take["end"], "the requested Shot end state"))
+        deduped: list[tuple[float, str]] = []
+        for point in sorted(points, key=lambda value: value[0]):
+            if deduped and abs(deduped[-1][0] - point[0]) < 1e-6:
+                if point[1].startswith("<Picture"):
+                    deduped[-1] = point
+                continue
+            deduped.append(point)
+        lines.append(f"[Shot {shot_number}] one uninterrupted take")
+        bridge_number = 1
+        for (start, start_state), (end, end_state) in zip(deduped, deduped[1:]):
+            if end <= start + 1e-6:
+                continue
+            active = []
+            for event in events:
+                if event["end"] <= start + 1e-6 or event["start"] >= end - 1e-6:
+                    continue
+                action = f": {event['action']}" if event["action"] else ""
+                active.append(
+                    f"{event['name']}@{event['start']:.3f}-{event['end']:.3f}{action}"
+                )
+            lines.append(
+                f"bridge_{bridge_number}: From {start:.3f} to {end:.3f} seconds; continue from "
+                f"{start_state}; show the shortest observable continuous state change toward {end_state}; "
+                f"overlapping_events: {' | '.join(active) or 'none'}"
+            )
+            bridge_number += 1
+        lines.append(
+            "serialization: write these bridges as a flowing chronological take; an intermediate Picture is "
+            "passed through without settling, while only an anchor actually assigned to the Shot end is the final state"
+        )
+    return "\n".join(lines)
+
+
 def _qwen_shot_plan(project: dict[str, Any], effective_seconds: float,
                     aliases: dict[str, str]) -> str:
     requested_seconds = sum(float(shot["duration"]) for shot in project["shots"])
     scale = effective_seconds / requested_seconds if requested_seconds > 0 else 1.0
     cursor = 0.0
     blocks: list[str] = []
-    for index, shot in enumerate(project["shots"], 1):
+    shot_number = 0
+    move_number = 0
+    has_moves = any(_is_move(item) for item in project["shots"])
+    move_cues = iter(_move_output_cues(project, effective_seconds))
+    frame_counts: dict[int, int] = {}
+    for anchor in _frame_anchor_schedule(project, effective_seconds):
+        number = int(anchor.get("shot", 1))
+        frame_counts[number] = frame_counts.get(number, 0) + 1
+    frame_driven_shots = {number for number, count in frame_counts.items() if count >= 2}
+    for item_index, shot in enumerate(project["shots"]):
+        is_move = _is_move(shot)
+        if is_move:
+            move_number += 1
+        else:
+            shot_number += 1
+            move_number = 0
         shot_seconds = float(shot["duration"]) * scale
         end = cursor + shot_seconds
-        lines = [f"[Shot {index}]", f"time_range_seconds: {cursor:.3f}-{end:.3f}"]
-        if index > 1:
-            lines.append(f"required_output_header: [Shot {index}] At {format_timestamp(cursor)},")
+        label = f"[Move {move_number} within Shot {shot_number}]" if is_move else f"[Shot {shot_number}]"
+        lines = [label, f"time_range_seconds: {cursor:.3f}-{end:.3f}"]
+        if is_move:
+            move_cue = next(move_cues)
+            lines.append("type: continuous in-shot beat; never a new shot or cut")
+            if shot_number in frame_driven_shots:
+                lines.extend((
+                    f"internal_timing: {cursor:.3f}-{end:.3f} seconds",
+                    "serialization: weave this action into the active FRAME_CONTINUITY bridge; do not open a "
+                    "new paragraph, restate the camera contract, settle the image, or declare a completed state "
+                    "at this Move boundary",
+                    "continuity: inherit the exact preceding physical state; this Move is only an internal action "
+                    "phase on the ongoing path toward the next Picture anchor",
+                ))
+            else:
+                lines.append(
+                    "continuity: inherit the exact preceding physical state and progressively reach this Move's "
+                    "requested action/camera state by the range end; do not restart the scene"
+                )
+                lines.append(f"required_output_cue: {move_cue}")
+        elif shot_number > 1:
+            lines.append(f"required_output_header: [Shot {shot_number}] At {format_timestamp(cursor)},")
         action = _replace_aliases(shot["visual_action"], aliases)
         if action:
             lines.append(f"visual_action: {action}")
-            lines.append("action_contract: preserve every explicit action above in the same order; omit none")
-            lines.append(
-                "semantic_lock: translate faithfully; preserve every explicitly named actor, body part, "
-                "object, quantity, direction, simultaneity, and physical action verb; never replace one with a broader state or euphemism"
-            )
-            lines.append(
-                "motion_semantics_contract: preserve the source verb at its original specificity. If it denotes "
-                "continuous or repeated motion, show distinct ongoing motion phases appropriate to that verb rather "
-                "than replacing it with a single contact, broad pose, or static hold. Preserve stated actors, limb or "
-                "hand count, contact target, direction, and simultaneity without inventing an exact cycle or step count"
-            )
-        if project["mode"] == "FL2VA" and index == len(project["shots"]):
+            if not is_move:
+                lines.append("action_contract: preserve every explicit action above in the same order; omit none")
+                lines.append(
+                    "semantic_lock: translate faithfully; preserve every explicitly named actor, body part, "
+                    "object, quantity, direction, simultaneity, and physical action verb"
+                )
+                lines.append(
+                    "motion_semantics_contract: preserve the source verb at its original specificity; preserve continuous or repeated motion as ongoing phases, "
+                    "not a single contact, broad pose, or static hold. Preserve stated actors, limb or hand count, contact target, direction, and simultaneity"
+                )
+        if project["mode"] == "FL2VA" and item_index == len(project["shots"]) - 1:
             lines.extend((
                 "opening_state: continue the incomplete transition from the preceding shot; do not reveal the completed Picture 2",
                 "entity_continuity: an entering entity that matches Picture 2 is the same final-frame entity; do not rename or duplicate it",
@@ -2559,7 +3872,26 @@ def _qwen_shot_plan(project: dict[str, Any], effective_seconds: float,
             ))
         blocks.append("\n".join(lines))
         cursor = end
-    return "SHOT_PLAN:\n" + "\n\n".join(blocks)
+    rules = (
+        "TIMELINE_RULES:\n"
+        "- Preserve every explicit action, actor, body part, object, direction, simultaneity, and verb in order.\n"
+        "- A Shot creates a numbered header; a Move creates no header or cut.\n"
+        "- Moves are consecutive beats of the owning Shot's single take. When FRAME_CONTINUITY_PLAN exists, "
+        "Picture-to-Picture bridges control the prose and Move ranges stay internal; otherwise copy each range cue. "
+        "Inherit the preceding state, name only needed physical camera travel, and keep an unchanged camera locked.\n\n"
+        if has_moves else
+        "TIMELINE_RULES:\n"
+        "- Preserve every explicit action, actor, body part, object, direction, simultaneity, and verb in order.\n"
+        "- Each configured Shot creates one numbered output header; later Shots begin with cuts.\n\n"
+    )
+    take_plan = _camera_take_plan(project, effective_seconds)
+    frame_plan = _frame_continuity_plan(project, effective_seconds, aliases)
+    return (
+        rules
+        + (take_plan + "\n\n" if take_plan else "")
+        + "SHOT_PLAN:\n" + "\n\n".join(blocks)
+        + ("\n\n" + frame_plan if frame_plan else "")
+    )
 
 
 _TARGET_STYLE_PATTERNS = (
@@ -2622,6 +3954,21 @@ def _enhanced_output_budget(effective_seconds: float, shot_count: int,
     )
 
 
+def _enhance_max_new_tokens(mode: str, enhance_level: str) -> int:
+    if enhance_level == "strong":
+        return STRONG_ENHANCE_MAX_NEW_TOKENS
+    if mode == "REF2VA":
+        return REF_ENHANCE_MAX_NEW_TOKENS
+    if enhance_level == "normal":
+        return RICH_ENHANCE_MAX_NEW_TOKENS
+    return BASE_ENHANCE_MAX_NEW_TOKENS
+
+
+def _estimated_mixed_prompt_tokens(text: str) -> int:
+    """Conservative preflight estimate for mixed Korean/English llama.cpp input."""
+    return int(math.ceil(len(text) / 3.2))
+
+
 def build_video_prompt(project: dict[str, Any], effective_seconds: float,
                        visual_evidence: dict[str, str] | None = None) -> str:
     """Build compact mode data for the single-pass Qwen H3 rewriter."""
@@ -2633,6 +3980,10 @@ def build_video_prompt(project: dict[str, Any], effective_seconds: float,
     target_style = _extract_target_style_lock(project)
     has_strong_subject = bool(model and any(
         plan.get("kind") == "Subject" and plan.get("strength") == "strong"
+        for plan in model["label_plan"].values()
+    ))
+    has_storyboard = bool(model and any(
+        plan.get("kind") == "Picture" and plan.get("role") == "storyboard"
         for plan in model["label_plan"].values()
     ))
     if mode == "I2VA":
@@ -2657,27 +4008,53 @@ def build_video_prompt(project: dict[str, Any], effective_seconds: float,
         )
     else:
         reference_style_policy = "analysis evidence only; do not transfer or name it unless explicitly requested"
+    style_transfer_labels = [
+        label for label, plan in (model or {}).get("label_plan", {}).items()
+        if plan.get("kind") == "Subject" and plan.get("strength") == "style_transfer"
+    ]
+    if style_transfer_labels:
+        reference_style_policy += (
+            "; style-transfer Subjects " + ", ".join(style_transfer_labels)
+            + " provide only their explicitly requested visual medium/rendering treatment; apply that treatment "
+            "to the requested target while preserving the target's identity, face, body, hairstyle, clothing, "
+            "accessories, objects, and action, and never copy the style source's character or scene content"
+        )
     sections = [
         "INPUT DATA ONLY - DO NOT COPY THESE KEYS INTO THE FINAL H3 PROMPT",
         "MODE_DATA:\n"
         f"mode: {mode}\n"
         f"requested_duration_seconds: {project['requested_duration']:.2f}\n"
         f"effective_duration_seconds: {effective_seconds:.2f}\n"
-        f"shot_count: {len(project['shots'])}",
+        f"shot_count: {len(_shot_items(project))}\n"
+        f"timeline_item_count: {len(project['shots'])}",
         "STYLE_POLICY:\n"
         "target_video_style: use only when explicitly requested in PROMPT_PRESETS, TARGET_REQUEST, SHOT_PLAN visual_action, or CONSTRAINTS\n"
         "when_unspecified: omit any target-wide style invented beyond a concrete keyframe or Strong Subject contract\n"
         f"reference_visual_style: {reference_style_policy}",
         "CAMERA_POLICY:\n"
         "source: obey explicit PROMPT_PRESETS first; otherwise infer composition, viewpoint, camera behavior, and explicit transition intent from TARGET_REQUEST and SHOT_PLAN visual_action\n"
-        "per_shot: choose framing that contains the largest required visible action and final state; use a static shot only when all required events remain inside the opening crop, otherwise use one motivated reframe\n"
+        "per_shot: choose one coherent physical camera path that contains the required actions and final states; configured Moves are consecutive phases of that uninterrupted path\n"
         "expression: write camera behavior as natural English; add amplitude and speed only when meaningful\n"
         "shot_boundaries: each configured shot after Shot 1 is an ordinary cut at its time-range start; use cross-dissolve, fade, or wipe only when explicitly requested\n"
         "frame_anchor_editing: Picture anchor times never create cuts or transitions; interpolate continuously between anchors inside each configured shot\n"
-        "restraint: do not invent decorative motion or a new cut when a static camera or a small continuous camera move presents the action clearly",
+        + (
+            "storyboard_framing: preserve every distinct ordered panel viewpoint, approximate shot size, screen direction, and subject placement as recognizable camera states; connect them through physically continuous travel inside each owning Shot\n"
+            "storyboard_compression: merge only adjacent panels whose framing and action are materially identical; never reduce a multi-framing storyboard to generic coherent framing, tracking, or following language\n"
+            if has_storyboard else ""
+        )
+        + "restraint: do not invent decorative motion or a new cut when a static camera or a small continuous camera move presents the action clearly",
     ]
     shot_preset_blocks = []
-    for shot_index, shot in enumerate(project["shots"], start=1):
+    shot_number = 0
+    move_number = 0
+    for shot in project["shots"]:
+        if _is_move(shot):
+            move_number += 1
+            preset_label = f"[Move {move_number} within Shot {shot_number}]"
+        else:
+            shot_number += 1
+            move_number = 0
+            preset_label = f"[Shot {shot_number}]"
         shot_presets = _normalize_shot_presets(shot.get("presets"))
         shot_preset_lines = []
         preset_style = STYLE_PRESET_PROMPTS.get(shot_presets["style"], "")
@@ -2689,16 +4066,18 @@ def build_video_prompt(project: dict[str, Any], effective_seconds: float,
                 shot_preset_lines.append(f"{preset_name}: {preset_prompt}")
         if shot_preset_lines:
             shot_preset_blocks.append(
-                f"[Shot {shot_index}]\n" + "\n".join(shot_preset_lines)
+                preset_label + "\n" + "\n".join(shot_preset_lines)
             )
     if shot_preset_blocks:
         sections.append(
             "PROMPT_PRESETS:\n"
-            "scope: each block applies only to its named shot; never carry a preset into another shot\n"
-            "status: mandatory explicit user selections; preserve every non-none value in its named shot\n"
-            "style_expression: when a shot has style, state that style naturally in the opening sentence of that shot; never omit it, convert it into an unnamed aesthetic, or apply it to another shot\n"
-            "conflicts: only an explicit instruction inside the same shot may refine a preset; otherwise the preset controls\n"
-            "camera_expression: combine selected motion, amplitude, and speed into a natural English camera action inside that shot; do not output stacked labels\n"
+            "scope: each block applies only to its named shot or Move timeline item; a Move preset is a continuous target state inside its owning Shot\n"
+            "status: mandatory explicit user selections; preserve every non-none value in its named timeline item\n"
+            "style_expression: when a Shot has style, state it naturally in that Shot's opening sentence; when a Move has style, develop it continuously inside the owning Shot without implying a cut\n"
+            "conflicts: only an explicit instruction inside the same timeline item may refine a preset; otherwise the preset controls\n"
+            "camera_expression: for a Shot, establish the selected camera state; for a Move, treat the selected shot size and angle as the state reached progressively by the end of its interval. "
+            "Name physical travel such as dolly, track, crane, pan, or tilt, including a smooth reversal when necessary, and preserve the same camera, lens, axis, and continuous parallax; "
+            "never present a Move preset as a fresh composition, use digital zoom unless explicitly selected, or output stacked labels\n"
             + "\n\n".join(shot_preset_blocks)
         )
     if user_request:
@@ -2748,7 +4127,7 @@ def build_video_prompt(project: dict[str, Any], effective_seconds: float,
         )
     if project.get("enhance") is True:
         sections.append(_enhanced_output_budget(
-            effective_seconds, len(project["shots"]), project.get("enhance_level", "normal")
+            effective_seconds, len(_shot_items(project)), project.get("enhance_level", "normal")
         ))
     sections.extend((
         _qwen_reference_plan(project, effective_seconds, visual_evidence),
@@ -2770,7 +4149,7 @@ def build_video_prompt(project: dict[str, Any], effective_seconds: float,
 
 def build_llm_prompt(project: dict[str, Any], video_prompt: str) -> str:
     mode = project["mode"]
-    expected_shots = list(range(1, len(project["shots"]) + 1))
+    expected_shots = list(range(1, len(_shot_items(project)) + 1))
     final_shot = len(expected_shots)
     effective_seconds = align_frame_count(project["requested_duration"]) / MODEL_FPS
     reference_model = _reference_model(project) if mode == "REF2VA" else None
@@ -2781,13 +4160,23 @@ def build_llm_prompt(project: dict[str, Any], video_prompt: str) -> str:
         else ENHANCED_MODE_LLM_SYSTEM_PROMPTS if enhance_level == "normal"
         else MODE_LLM_SYSTEM_PROMPTS
     )
+    move_rules = ""
+    if any(_is_move(item) for item in project["shots"]):
+        move_rules = (
+            "TIMED MOVE EVENTS\n"
+            "A Shot starts a camera take. A Move is only a timed action or camera event inside the current take and "
+            "never starts a shot, cut, reset, or new composition. Embed each Move cue once in the ongoing action "
+            "or applicable frame-to-frame bridge; inherit the preceding physical state without restating the continuity contract."
+        )
     system_prompt = "\n\n".join((
         _mode_prompt_preamble(mode),
         active_prompts[mode],
+        move_rules,
         _figurine_animation_system_module(project, mode, enhance_level),
         _reference_system_modules(project) if mode == "REF2VA" else "",
         _single_pass_output_lock(
             mode, effective_seconds, final_shot, expected_shots, reference_model, content_locks,
+            _move_output_cues(project, effective_seconds),
         ),
     ))
     return (
@@ -3778,7 +5167,10 @@ def _video_analysis_prompt(role: str, duration: float, timestamps: list[float],
         "none": "Describe the observable video content neutrally so the user-written relationship can be applied without guessing.",
         "video_editing": "Prioritize every source element needed for a scoped edit: visible subjects, performances, objects, environment, camera, cuts, timing, and continuity.",
         "video_continuation": "Prioritize the ending state, final composition, positions, motion direction and momentum, camera behavior, lighting, and unresolved actions.",
-        "motion": "Prioritize subject actions, pose progression, direction, speed, contacts, interaction timing, and physical rhythm.",
+        "subject_visual": "Prioritize only stable visible traits of the user-specified person, object, or environment; keep motion, camera, cuts, and audio separate.",
+        "visual_style": "Prioritize only rendering medium, palette, lighting treatment, materials, shading, and visual texture; do not bind source identity or action to the style.",
+        "motion": "Extract an actor-neutral motion plan only: pose progression, limb trajectories, direction, speed, contacts, interaction timing, weight transfer, and physical rhythm. Refer to performers only as Actor A, Actor B, and so on. Omit face, identity, age, gender, body shape and proportions, skin, hair, clothing, accessories, materials, texture, rendering medium, visual style, environment appearance, camera, cuts, and audio.",
+        "motion_camera": "Extract only an actor-neutral kinematic plan and synchronized camera plan: pose progression, body-part and limb trajectories, locomotion, direction, speed, contacts, interaction timing, weight transfer, physical rhythm, shot size, viewpoint, framing changes, camera path, movement direction, amplitude, speed, stabilization, and subject-tracking relationship. Treat the video as a motion template rather than scene-content evidence. Refer to the principal performer only as Actor A; use Actor B or later only for action choreography that directly interacts with Actor A, never merely because a background person is visible. Do not name, count, locate, or describe source people, objects, props, architecture, scenery, or background events. If a source action uses an object, retain only the actor's body/limb trajectory and timing; do not identify or introduce the object. Omit face, identity, age, gender, body shape and proportions, skin, hair, clothing, accessories, all visible content, materials, texture, rendering medium, visual style, environment appearance, lighting, cuts, visible text, and audio.",
         "camera": "Prioritize shot size, viewpoint, framing changes, camera motion type, direction, amplitude, speed, and stabilization.",
         "cuts_rhythm": "Prioritize shot boundaries, cut times, viewpoint changes, pacing, event rhythm, and temporal structure.",
     }[role]
@@ -3792,7 +5184,7 @@ Return exactly the eight labeled sections below as compact English evidence. Use
 VIDEO_OVERVIEW: source duration analyzed, visual medium, probable shot count supported by samples, and overall composition.
 SUBJECTS: stable observable identities, clothing, props, initial positions, and which visible entity performs each action.
 ACTION_TIMELINE: chronological actions, pose changes, movement paths, contacts, interactions, object states, and final state with timestamps.
-CAMERA_EDITING: framing, viewpoint, camera movement, supported cut boundaries, and pacing; write unknown when samples cannot distinguish camera motion from subject motion.
+CAMERA_EDITING: framing, viewpoint, camera movement, supported cut boundaries, and pacing; write unknown when samples cannot distinguish camera motion from subject motion. For each framing state, use exactly one shot-size term consistent with its visible body range: close-up=head and shoulders, medium close-up=chest or shoulders upward, medium shot=waist upward, medium wide or medium full=thighs or knees upward, full shot=the entire body from head to toe.
 ENVIRONMENT_OBJECTS: location, layout, surfaces, furniture, background elements, and action-relevant object relationships.
 STYLE_LIGHTING: observable rendering medium, lighting direction and continuity, palette, materials, reflections, and shadows.
 VISIBLE_TEXT: exact readable text with its timestamp; otherwise none visible.
@@ -3810,6 +5202,44 @@ def _clean_video_analysis(text: str) -> str:
         text = re.split(r"<VIDEO_ANALYSIS>\s*", text, maxsplit=1, flags=re.IGNORECASE)[1]
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
     return re.sub(r"(?:^|\n)Exiting\.\.\.\s*$", "", text, flags=re.IGNORECASE).strip()
+
+
+def _scope_video_analysis(analysis: str, role: str) -> str:
+    """Remove evidence that a narrowly scoped video preset must never transfer."""
+    if role not in {"motion", "motion_camera"}:
+        return analysis
+    def section(name: str, following: str) -> str:
+        match = re.search(
+            rf"(?:^|\n){name}:\s*(.*?)(?=\n(?:{following}):|\Z)",
+            analysis,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        return match.group(1).strip() if match else "unavailable from the sampled frames"
+
+    action_timeline = section(
+        "ACTION_TIMELINE", "CAMERA_EDITING|ENVIRONMENT_OBJECTS|STYLE_LIGHTING|VISIBLE_TEXT|EDIT_CONTINUITY"
+    )
+    if role == "motion_camera":
+        camera_editing = section(
+            "CAMERA_EDITING", "ENVIRONMENT_OBJECTS|STYLE_LIGHTING|VISIBLE_TEXT|EDIT_CONTINUITY"
+        )
+        return (
+            "MOTION_CAMERA_SCOPE: Transfer only actor-neutral motion, action timing, camera behavior, and "
+            "their synchronization. This is a kinematic template, not source scene-content evidence. Never add "
+            "a person, actor, creature, object, prop, architecture, environment feature, or background event from "
+            "the source. Map motion only onto target entities already established by the target request or another "
+            "authorized reference; discard unmatched actors and object identities. Source identity, body traits, "
+            "skin, hair, clothing, accessories, visible content, materials, texture, style, environment, lighting, "
+            "cuts, visible text, and audio are intentionally excluded.\n"
+            f"ACTION_TIMELINE: {action_timeline}\n"
+            f"CAMERA_EDITING: {camera_editing}"
+        )
+    return (
+        "MOTION_ONLY_SCOPE: Transfer only actor-neutral motion and timing. Source performer appearance, "
+        "identity, body traits, skin, hair, clothing, materials, texture, style, environment, camera, cuts, "
+        "and audio are intentionally excluded.\n"
+        f"ACTION_TIMELINE: {action_timeline}"
+    )
 
 
 def _video_reference_system_modules(project: dict[str, Any]) -> str:
@@ -3901,7 +5331,7 @@ def analyze_reference_video(video: dict[str, Any], role: str, duration: float,
                 tail = "\n".join(completed.stderr.splitlines()[-12:])
                 raise RuntimeError(f"Video analysis failed with code {completed.returncode}.\n{tail}")
             output = completed.stdout
-    analysis = _clean_video_analysis(output)
+    analysis = _scope_video_analysis(_clean_video_analysis(output), role)
     if not analysis:
         raise RuntimeError("The vision model returned an empty video analysis.")
     return {
@@ -3963,6 +5393,19 @@ def _clean_reference_analysis(text: str) -> str:
 
 def _reference_analysis_prompt(role: str) -> str:
     role = role if role in REFERENCE_ROLES["picture"] else "subject_identity"
+    if role == "storyboard":
+        return """Analyze the supplied image only as storyboard planning evidence for a MiniMax H3 video prompt.
+Read panels in their visible order. Keep each panel's framing, placement, and action bound together so a later writer cannot reduce the storyboard to a plot summary. Do not transfer performer identity, face, body, clothing, rendering style, palette, lighting treatment, exact output timing, or exact keyframe matching.
+Return exactly the six compact labeled lines below. Use "none visible" when unsupported and do not add prose. PANEL_SEQUENCE must contain one semicolon-separated record for every visible panel in reading order; never merge panels there.
+
+STORYBOARD_LAYOUT: panel count, grid/layout, and reading order.
+PANEL_SEQUENCE: P1={viewpoint and approximate shot size | relative subject placement and screen direction | explicitly depicted action}; P2={...}; continue through every panel.
+FRAMING_PROGRESSION: ordered distinct viewpoint and shot-size changes, retaining over-the-shoulder, profile, rear, high/low angle, close/wide, and insert/detail cues when visibly present.
+SPATIAL_CONTINUITY: persistent environment layout, entrances/exits, travel direction, and subject-to-object relationships supported across panels.
+PANEL_BOUNDARIES: visible cut/transition cues in the source storyboard; these are planning evidence and do not independently authorize target-video cuts.
+VISIBLE_TEXT: quote only clearly readable planning text; otherwise write "none visible".
+
+Enclose the six lines exactly once in <REFERENCE_ANALYSIS> and </REFERENCE_ANALYSIS>."""
     role_focus = {
         "first_frame": "Treat it as an opening-frame anchor. Prioritize the exact style, composition, pose, support, contact, scene layout, and action-relevant objects that must continue forward.",
         "last_frame": "Treat it as a final-frame anchor. Prioritize the exact style, pose, object state, support, contact, composition, viewpoint, and lighting on which motion must land.",
@@ -4077,7 +5520,16 @@ def _build_omni_raw_prompt(project: dict[str, Any], effective_seconds: float) ->
     aliases = reference_model["aliases"] if reference_model else {}
     applications = reference_model["applications"] if reference_model else []
     lines = [_shot_description(project, effective_seconds, aliases, applications)]
-    for index, shot in enumerate(project["shots"], 1):
+    shot_number = 0
+    move_number = 0
+    for shot in project["shots"]:
+        if _is_move(shot):
+            move_number += 1
+            label = f"[Move {move_number} within Shot {shot_number}]"
+        else:
+            shot_number += 1
+            move_number = 0
+            label = f"[Shot {shot_number}]"
         presets = _normalize_shot_presets(shot.get("presets"))
         selected: list[str] = []
         style = STYLE_PRESET_PROMPTS.get(presets["style"], "")
@@ -4088,7 +5540,8 @@ def _build_omni_raw_prompt(project: dict[str, Any], effective_seconds: float) ->
             if value:
                 selected.append(value)
         if selected:
-            lines.append(f"[Shot {index}] Required presets: " + "; ".join(selected) + ".")
+            continuity = " Continue without a cut from the preceding camera state." if _is_move(shot) else ""
+            lines.append(f"{label} Required presets: " + "; ".join(selected) + "." + continuity)
     return "\n".join(lines)
 
 
@@ -4201,6 +5654,12 @@ def _enhance_project_omni(result: dict[str, Any], model_id: str, progress=None,
             raise EnhancementCancelled("Prompt generation was stopped by the user.")
         base_path, mmproj_path, adapter_path = _resolve_omni_model(progress)
         system_prompt = _omni_system_prompt(mode)
+        if any(_is_move(item) for item in project["shots"]):
+            system_prompt += (
+                "\n\nOnly a configured Shot starts a new camera take. Each following Move is a range-based "
+                "beat inside that take: inherit the preceding camera and subject state, continue one physical path, "
+                "and reach the requested endpoint without a header or cut."
+            )
         raw_prompt = _build_omni_raw_prompt(project, result["effective_duration"])
         task = {"T2VA": "T2AV", "I2VA": "I2AV", "L2VA": "L2AV", "FL2VA": "FL2AV", "REF2VA": "REF2AV"}[mode]
         resolution = "16:9" if mode == "T2VA" else "adaptive"
@@ -4249,6 +5708,13 @@ def _enhance_project_omni(result: dict[str, Any], model_id: str, progress=None,
         enhanced = _run_omni_process(command, cancel_event, job_id)
         if not enhanced:
             raise RuntimeError("The Omni rewriter returned an empty prompt.")
+        enhanced = _enforce_move_camera_continuity(
+            enhanced, project, result["effective_duration"],
+        )
+        enhanced = _enforce_ref_frame_anchor_timing(
+            enhanced, project, result["effective_duration"],
+        )
+        enhanced = _enforce_framing_body_range(enhanced)
         if progress:
             progress(stage="complete", message="Omni prompt generation completed.")
         return {
@@ -4430,7 +5896,7 @@ def enhance_project(project_data: Any, model_id: str, image_model_id: str = DEFA
 
     # Raw Prompt remains the deterministic result of user-controlled fields.
     # Automatic image analyses are supplied only in the private LLM context.
-    expected_shots = list(range(1, len(result["project"]["shots"]) + 1))
+    expected_shots = list(range(1, len(_shot_items(result["project"])) + 1))
     shot_headers = ", ".join(f"[Shot {number}]" for number in expected_shots)
     mode = result["project"]["mode"]
     active_mode_prompts = (
@@ -4439,6 +5905,12 @@ def enhance_project(project_data: Any, model_id: str, image_model_id: str = DEFA
         else MODE_LLM_SYSTEM_PROMPTS
     )
     system_prompt = _mode_prompt_preamble(mode) + "\n\n" + active_mode_prompts[mode]
+    if any(_is_move(item) for item in result["project"]["shots"]):
+        system_prompt += (
+            "\n\nTIMED MOVE EVENTS: A Shot starts a camera take. A Move is only a timed action or camera "
+            "event inside the current take, never a shot, cut, reset, or new composition. Embed each cue once in the "
+            "ongoing action or applicable frame-to-frame bridge and inherit the preceding state without repeating the camera lock."
+        )
     figurine_module = _figurine_animation_system_module(
         result["project"], mode, enhance_level,
     )
@@ -4471,6 +5943,15 @@ def enhance_project(project_data: Any, model_id: str, image_model_id: str = DEFA
                 "retention_analysis, or detailed_description. Use only role-relevant facts and never transfer a "
                 "source background into an incompatible target setting."
             )
+            if reference_model and any(
+                plan.get("kind") == "Picture" and plan.get("role") == "storyboard"
+                for plan in reference_model["label_plan"].values()
+            ):
+                system_prompt += (
+                    " For storyboard evidence, PANEL_SEQUENCE is the mandatory ordered camera-and-action plan: "
+                    "carry every panel record into detailed_description, preserving distinct framing states and "
+                    "converting their boundaries into continuous physical camera travel inside each configured Shot."
+                )
         else:
             system_prompt += (
                 "\n\nREFERENCE IMAGE EVIDENCE: Each analysis is authoritative observable evidence for its "
@@ -4484,12 +5965,20 @@ def enhance_project(project_data: Any, model_id: str, image_model_id: str = DEFA
                 f"- {label}: kind={plan['kind']}, source={plan['source']}, role={plan['role']}"
                 f"{strength}, retention={plan['marker']}; contract={plan['contract']}"
             )
-        system_prompt += (
-            "\n\nLOCKED REF2VA LABEL PLAN:\n" + "\n".join(plan_lines)
-            + "\nDefine exactly these output labels in this order. Source labels that are not output labels may "
-              "appear only as provenance inside subject_definitions. Mention every output label in summary and "
-              "retention_analysis, and apply every visual output label in detailed_description."
-        )
+        if _allows_frame_continuity_subjects(reference_model["label_plan"]):
+            label_instruction = (
+                "\nThese Picture labels are locked. Before them, add only a minimal sequential set of Subject "
+                "labels for people, persistent objects, and environments visibly recurring across at least two "
+                "Pictures; cite every supporting Picture in each definition. Mention all resulting labels in "
+                "summary and retention_analysis and apply them throughout detailed_description."
+            )
+        else:
+            label_instruction = (
+                "\nDefine exactly these output labels in this order. Source labels that are not output labels may "
+                "appear only as provenance inside subject_definitions. Mention every output label in summary and "
+                "retention_analysis, and apply every visual output label in detailed_description."
+            )
+        system_prompt += "\n\nLOCKED REF2VA LABEL PLAN:\n" + "\n".join(plan_lines) + label_instruction
         system_prompt += _reference_system_modules(result["project"])
     system_prompt += (
         "\n\nOUTPUT: Return only the finished English H3 prompt as plain text with no wrapper, "
@@ -4502,6 +5991,7 @@ def enhance_project(project_data: Any, model_id: str, image_model_id: str = DEFA
         expected_shots,
         reference_model,
         _input_content_locks(result["project"]),
+        _move_output_cues(result["project"], result["effective_duration"]),
     )
     evidence_by_label = {
         item["label"]: item["analysis"] for item in reference_analyses
@@ -4509,6 +5999,23 @@ def enhance_project(project_data: Any, model_id: str, image_model_id: str = DEFA
     user_prompt = build_video_prompt(
         result["project"], result["effective_duration"], evidence_by_label,
     )
+    max_new_tokens = _enhance_max_new_tokens(mode, enhance_level)
+    estimated_input_tokens = _estimated_mixed_prompt_tokens(system_prompt + "\n" + user_prompt)
+    estimated_total_tokens = estimated_input_tokens + max_new_tokens
+    if estimated_total_tokens > ENHANCE_CONTEXT_SIZE:
+        raise ValueError(
+            f"Estimated prompt context ({estimated_input_tokens} input + {max_new_tokens} output tokens) "
+            f"exceeds the {ENHANCE_CONTEXT_SIZE}-token Qwen runtime limit. Shorten references, Shot/Move text, "
+            "or use a lower Enhance level."
+        )
+    if progress and estimated_total_tokens > int(ENHANCE_CONTEXT_SIZE * 0.85):
+        progress(
+            stage="context_warning",
+            message=(
+                f"Estimated context use is {estimated_total_tokens}/{ENHANCE_CONTEXT_SIZE} tokens; "
+                "generation is close to the runtime limit."
+            ),
+        )
     with _ENHANCE_LOCK, tempfile.TemporaryDirectory(prefix="toyxyz_h3_") as temp_dir:
         check_cancelled()
         if progress:
@@ -4536,12 +6043,6 @@ def enhance_project(project_data: Any, model_id: str, image_model_id: str = DEFA
             )
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         def run_generation(prompt_text: str, temperature: float = 0.22) -> str:
-            max_new_tokens = (
-                STRONG_ENHANCE_MAX_NEW_TOKENS if strong_enhance
-                else REF_ENHANCE_MAX_NEW_TOKENS if mode == "REF2VA"
-                else RICH_ENHANCE_MAX_NEW_TOKENS if rich_enhance
-                else BASE_ENHANCE_MAX_NEW_TOKENS
-            )
             top_p = 0.95 if strong_enhance else 0.93 if rich_enhance else 0.88
             top_k = 50 if strong_enhance else 40 if rich_enhance else 20
             repeat_penalty = 1.03 if rich_enhance else 1.05
@@ -4612,6 +6113,14 @@ def enhance_project(project_data: Any, model_id: str, image_model_id: str = DEFA
             raise RuntimeError("The selected model returned an empty prompt.")
         if mode == "REF2VA" and reference_model:
             enhanced = _enforce_retention_line_plan(enhanced, reference_model["label_plan"])
+            enhanced = _enforce_reference_definition_provenance(enhanced, reference_model)
+        enhanced = _enforce_framing_body_range(enhanced)
+        enhanced = _enforce_move_camera_continuity(
+            enhanced, result["project"], result["effective_duration"],
+        )
+        enhanced = _enforce_ref_frame_anchor_timing(
+            enhanced, result["project"], result["effective_duration"],
+        )
         if progress:
             progress(stage="complete", message="Prompt generation completed.")
         return {
@@ -4802,19 +6311,27 @@ def _reference_media_outputs(project: dict[str, Any], target_frame_count: int) -
     blank = _blank_reference_image()
     target_duration = target_frame_count / MODEL_FPS
     outputs: list[Any] = []
+    frame_entries: list[dict[str, Any]] = []
+    has_frame_references = any(
+        reference.get("role") == "frame" for reference in pictures[:MAX_REF_IMAGES]
+    )
     for reference in pictures[:MAX_REF_IMAGES]:
+        loaded_image = None
         if not reference.get("image_filename"):
             outputs.append(blank.clone())
         else:
             try:
-                outputs.append(_load_reference_image_tensor(reference))
+                loaded_image = _load_reference_image_tensor(reference)
+                outputs.append(loaded_image)
             except (FileNotFoundError, OSError, ValueError):
                 outputs.append(blank.clone())
         if reference.get("role") == "frame":
-            outputs.append(min(
+            frame_index = min(
                 max(0, int(reference.get("frame_index", 0))),
                 max(0, target_frame_count - 1),
-            ))
+            )
+            if loaded_image is not None:
+                frame_entries.append({"image": loaded_image, "frame_idx": frame_index})
     for reference in videos[:MAX_REF_VIDEOS]:
         if not reference.get("video_filename"):
             outputs.append(_blank_reference_video())
@@ -4831,7 +6348,9 @@ def _reference_media_outputs(project: dict[str, Any], target_frame_count: int) -
             outputs.append(_load_reference_audio(reference, target_duration))
         except (FileNotFoundError, OSError, RuntimeError, ValueError):
             outputs.append(_blank_reference_audio())
-    total_media_outputs = MAX_REF_IMAGES * 2 + MAX_REF_VIDEOS + MAX_REF_AUDIOS
+    if has_frame_references:
+        outputs.append({"type": "minimax_h3_frames", "frames": frame_entries})
+    total_media_outputs = MAX_REF_IMAGES + MAX_REF_VIDEOS + MAX_REF_AUDIOS + 1
     outputs.extend(blank.clone() for _ in range(total_media_outputs - len(outputs)))
     return tuple(outputs)
 
@@ -4857,18 +6376,14 @@ class MinimaxH3Prompter:
         }
 
     RETURN_TYPES = ("STRING", "INT") + (FLEXIBLE_MEDIA_TYPE,) * (
-        MAX_REF_IMAGES * 2 + MAX_REF_VIDEOS + MAX_REF_AUDIOS
+        MAX_REF_IMAGES + MAX_REF_VIDEOS + MAX_REF_AUDIOS + 1
     )
     RETURN_NAMES = (
         "generated_prompt",
         "length",
-    ) + tuple(
-        name
-        for index in range(1, MAX_REF_IMAGES + 1)
-        for name in (f"image_{index}", f"frame_{index}")
-    ) + tuple(
+    ) + tuple(f"image_{index}" for index in range(MAX_REF_IMAGES)) + tuple(
         f"video_{index}" for index in range(1, MAX_REF_VIDEOS + 1)
-    ) + tuple(f"audio_{index}" for index in range(1, MAX_REF_AUDIOS + 1))
+    ) + tuple(f"audio_{index}" for index in range(1, MAX_REF_AUDIOS + 1)) + ("frames",)
     FUNCTION = "compile"
     CATEGORY = "ToyxyzTestNodes/Prompt"
     DESCRIPTION = "Director-style editor that directly compiles a production-ready MiniMax-H3 video prompt."

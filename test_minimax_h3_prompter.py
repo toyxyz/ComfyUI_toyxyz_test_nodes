@@ -39,6 +39,308 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertIn("SHOT_PLAN:\n[Shot 1]", result["video_prompt"])
         self.assertIn("when_music_unspecified: output non_diegetic_music: N/A", result["video_prompt"])
 
+    def test_move_is_a_timed_continuation_inside_the_preceding_shot(self):
+        result = self.compile({
+            "mode": "T2VA",
+            "shots": [
+                {"kind": "shot", "duration": 2, "visual_action": "A woman walks forward."},
+                {"kind": "move", "duration": 1, "visual_action": "She turns toward the ocean.",
+                 "presets": {"camera_motion": "arc", "camera_angle": "profile"}},
+                {"kind": "shot", "duration": 2, "visual_action": "She stops near the water."},
+            ],
+        })
+        raw = result["draft_video_prompt"]
+        llm = result["llm_prompt"]
+        self.assertIn("shot_count: 2", raw)
+        self.assertIn("timeline_item_count: 3", raw)
+        self.assertIn("[Move 1 within Shot 1]", raw)
+        self.assertIn("type: continuous in-shot beat; never a new shot or cut", raw)
+        self.assertIn("continuity: inherit the exact preceding physical state and progressively reach", raw)
+        self.assertIn("required_output_cue: From 00:02.067 to 00:03.100, without a cut,", raw)
+        self.assertIn("required_output_header: [Shot 2] At 00:03.100,", raw)
+        self.assertNotIn("required_output_header: [Shot 3]", raw)
+        self.assertEqual(raw.count("action_contract: preserve every explicit action above in the same order; omit none"), 2)
+        self.assertEqual(llm.count("TIMED MOVE EVENTS"), 1)
+        self.assertIn(
+            "Mandatory inline Move cues, in order: From 00:02.067 to 00:03.100, without a cut,",
+            llm,
+        )
+        self.assertIn("one coherent physical camera path", llm)
+        self.assertIn("without a cut", MODULE._shot_description(result["project"], 5.17, {}))
+
+    def test_moves_are_scoped_to_their_nearest_preceding_shot_take(self):
+        result = self.compile({
+            "mode": "T2VA",
+            "requested_duration": 6,
+            "shots": [
+                {"kind": "shot", "duration": 1, "visual_action": "First setup."},
+                {"kind": "move", "duration": 1, "visual_action": "First move."},
+                {"kind": "move", "duration": 1, "visual_action": "Second move."},
+                {"kind": "shot", "duration": 1, "visual_action": "Second setup."},
+                {"kind": "move", "duration": 1, "visual_action": "Third move."},
+                {"kind": "move", "duration": 1, "visual_action": "Fourth move."},
+            ],
+        })
+        raw = result["draft_video_prompt"]
+        llm = result["llm_prompt"]
+        self.assertIn("CAMERA_TAKE_PLAN:", raw)
+        self.assertIn("[Shot 1] opens the first camera take", raw)
+        self.assertIn("[Shot 2] starts a new camera take with an intentional cut", raw)
+        self.assertIn("[Move 1 within Shot 1]", raw)
+        self.assertIn("[Move 2 within Shot 1]", raw)
+        self.assertIn("[Move 1 within Shot 2]", raw)
+        self.assertIn("[Move 2 within Shot 2]", raw)
+        self.assertEqual(raw.count("required_output_cue:"), 4)
+        self.assertEqual(raw.count("without a cut,"), 2)
+        self.assertIn("Only a later configured Shot header may cut", llm)
+
+    def test_timeline_ir_groups_moves_as_range_based_beats_inside_shots(self):
+        project, _warnings = MODULE.normalize_project({
+            "mode": "T2VA",
+            "requested_duration": 5,
+            "shots": [
+                {"kind": "shot", "duration": 1, "visual_action": "Opening."},
+                {"kind": "move", "duration": 1, "visual_action": "First beat."},
+                {"kind": "move", "duration": 1, "visual_action": "Second beat."},
+                {"kind": "shot", "duration": 2, "visual_action": "New shot."},
+            ],
+        })
+        effective = MODULE.align_frame_count(5) / MODULE.MODEL_FPS
+        takes = MODULE._compile_timeline_takes(project, effective)
+        self.assertEqual(len(takes), 2)
+        self.assertEqual(takes[0]["shot_number"], 1)
+        self.assertEqual([beat["move_number"] for beat in takes[0]["beats"]], [1, 2])
+        self.assertAlmostEqual(takes[0]["opening_end"], effective / 5, places=3)
+        self.assertAlmostEqual(takes[0]["end"], effective * 3 / 5, places=3)
+        self.assertEqual(takes[1]["beats"], [])
+        cues = MODULE._move_output_cues(project, effective)
+        self.assertTrue(cues[0].startswith("From 00:01.033 to 00:02.067"))
+        self.assertIn("continuing the same uninterrupted camera path", cues[1])
+
+    def test_move_continuity_postprocess_preserves_real_shot_cuts(self):
+        project, _warnings = MODULE.normalize_project({
+            "mode": "T2VA",
+            "requested_duration": 6,
+            "shots": [
+                {"kind": "shot", "duration": 1, "visual_action": "First setup."},
+                {"kind": "move", "duration": 1, "visual_action": "First move."},
+                {"kind": "move", "duration": 1, "visual_action": "Second move."},
+                {"kind": "shot", "duration": 1, "visual_action": "Second setup."},
+                {"kind": "move", "duration": 1, "visual_action": "Third move."},
+                {"kind": "move", "duration": 1, "visual_action": "Fourth move."},
+            ],
+        })
+        effective = MODULE.align_frame_count(6) / MODULE.MODEL_FPS
+        cues = MODULE._move_output_cues(project, effective)
+        source = (
+            "integrated_multimodal_description: [Shot 1] Opening. "
+            f"{cues[0]} the camera pulls back to transition into a full shot. "
+            f"{cues[1]} the camera switches to a close-up. "
+            "[Shot 2] At 00:03.100, cut to a new shot. New setup. "
+            f"{cues[2]} the camera moves left. "
+            f"{cues[3]} the camera moves right.\n\n"
+            "overall_soundscape: Room tone.\n\nnon_diegetic_music: N/A"
+        )
+        fixed = MODULE._enforce_move_camera_continuity(source, project, effective)
+        self.assertEqual(fixed.count("one locked camera holds a continuous take"), 2)
+        self.assertEqual(fixed.count("From 00:"), 8)
+        self.assertNotIn("to transition into a full shot", fixed)
+        self.assertNotIn("the camera switches to a close-up", fixed)
+        self.assertIn("[Shot 2] At 00:03.100, cut to a new shot.", fixed)
+
+    def test_move_camera_compiler_replaces_zoom_and_reverses_physical_path(self):
+        project, _warnings = MODULE.normalize_project({
+            "mode": "T2VA",
+            "requested_duration": 5,
+            "shots": [
+                {"kind": "shot", "duration": 0.958, "visual_action": "A woman stands.",
+                 "presets": {"camera_shot": "close_up"}},
+                {"kind": "move", "duration": 0.917, "visual_action": "She raises a fist.",
+                 "presets": {"camera_shot": "medium_close_up"}},
+                {"kind": "move", "duration": 0.958, "visual_action": "She cups the fist.",
+                 "presets": {"camera_shot": "cowboy_shot"}},
+                {"kind": "move", "duration": 1.105, "visual_action": "She jumps.",
+                 "presets": {"camera_shot": "full_shot"}},
+                {"kind": "move", "duration": 1.229, "visual_action": "She falls backward.",
+                 "presets": {"camera_shot": "close_up"}},
+            ],
+        })
+        effective = MODULE.align_frame_count(5) / MODULE.MODEL_FPS
+        cues = MODULE._move_output_cues(project, effective)
+        source = (
+            "integrated_multimodal_description: [Shot 1] The camera opens on her face. "
+            f"{cues[0]} the camera pulls back as she raises her fist. "
+            f"{cues[1]} the lens continues to dolly out while she cups the fist. "
+            f"{cues[2]} the camera retreats further as she jumps. "
+            f"{cues[3]} the camera zooms back in as she falls backward and lies flat.\n\n"
+            "overall_soundscape: Waves.\n\nnon_diegetic_music: N/A"
+        )
+        fixed = MODULE._enforce_move_camera_continuity(source, project, effective)
+        self.assertIn("the same camera holds the close-up centered on the face", fixed)
+        self.assertIn("continues dollying backward along the same physical path", fixed)
+        self.assertIn("smoothly decelerates, reverses direction without a pause", fixed)
+        self.assertNotIn("the lens continues to dolly out", fixed)
+        self.assertNotIn("the camera zooms back in", fixed)
+        self.assertNotIn("fist.At", fixed)
+        self.assertIn("She falls backward and lies flat.", fixed)
+
+    def test_explicit_move_zoom_is_preserved_by_camera_compiler(self):
+        project, _warnings = MODULE.normalize_project({
+            "mode": "T2VA",
+            "requested_duration": 2,
+            "shots": [
+                {"kind": "shot", "duration": 1, "visual_action": "A woman stands.",
+                 "presets": {"camera_shot": "medium_shot"}},
+                {"kind": "move", "duration": 1, "visual_action": "She smiles.",
+                 "presets": {"camera_motion": "zoom_in", "camera_shot": "close_up"}},
+            ],
+        })
+        effective = MODULE.align_frame_count(2) / MODULE.MODEL_FPS
+        cue = MODULE._move_output_cues(project, effective)[0]
+        source = (
+            f"integrated_multimodal_description: [Shot 1] A woman stands. {cue} "
+            "the camera zooms in as she smiles.\n\noverall_soundscape: Quiet.\n\n"
+            "non_diegetic_music: N/A"
+        )
+        fixed = MODULE._enforce_move_camera_continuity(source, project, effective)
+        self.assertIn("focal length changes only in an explicit optical-zoom or dolly-zoom beat", fixed)
+        self.assertIn("zoom in by changing focal length", fixed)
+        self.assertNotIn("without stopping, cutting, zooming", fixed)
+        self.assertIn("She smiles.", fixed)
+
+    def test_unchanged_move_inherits_exact_composition_without_new_endpoint(self):
+        project, _warnings = MODULE.normalize_project({
+            "mode": "T2VA",
+            "requested_duration": 2,
+            "shots": [
+                {"kind": "shot", "duration": 1, "visual_action": "A woman looks outside.",
+                 "presets": {"camera_shot": "wide_shot", "camera_angle": "low_angle"}},
+                {"kind": "move", "duration": 1, "visual_action": "A cat approaches."},
+            ],
+        })
+        effective = MODULE.align_frame_count(2) / MODULE.MODEL_FPS
+        spec = MODULE._shot_move_camera_specs(project, effective)[0]
+        sentence = spec["camera_sentence"]
+        self.assertIn("continues directly from the preceding frame", sentence)
+        self.assertIn("camera position, lens, orientation, framing, subject scale", sentence)
+        self.assertIn("only the requested subject action changes", sentence)
+        self.assertIn("does not reframe to follow the action", sentence)
+        self.assertNotIn("background parallax", sentence)
+        self.assertNotIn("physical camera path", sentence)
+        self.assertNotIn("naturally reaching a wide shot", sentence)
+
+    def test_first_changed_move_bridges_directly_from_shot_final_frame(self):
+        project, _warnings = MODULE.normalize_project({
+            "mode": "T2VA",
+            "requested_duration": 3,
+            "shots": [
+                {"kind": "shot", "duration": 1, "visual_action": "A woman stands.",
+                 "presets": {"camera_shot": "medium_shot"}},
+                {"kind": "move", "duration": 2, "visual_action": "She raises one arm.",
+                 "presets": {"camera_shot": "full_shot"}},
+            ],
+        })
+        effective = MODULE.align_frame_count(3) / MODULE.MODEL_FPS
+        spec = MODULE._shot_move_camera_specs(project, effective)[0]
+        self.assertIn("begins visibly from the exact preceding frame", spec["camera_sentence"])
+        self.assertIn("no pose, framing, or viewpoint discontinuity", spec["camera_sentence"])
+        raw = MODULE.build_video_prompt(project, effective)
+        self.assertIn("type: continuous in-shot beat", raw)
+        self.assertIn("progressively reach this Move's requested action/camera state", raw)
+
+    def test_move_cleanup_removes_redundant_hold_but_preserves_action(self):
+        cleaned = MODULE._repair_move_transition_language(
+            "During this movement, maintaining the wide shot framing; a cat approaches the woman."
+        )
+        self.assertEqual(cleaned, "A cat approaches the woman.")
+
+    def test_shot_opening_motion_is_preserved_before_first_move(self):
+        project, _warnings = MODULE.normalize_project({
+            "mode": "T2VA",
+            "requested_duration": 2,
+            "shots": [
+                {"kind": "shot", "duration": 1, "visual_action": "A woman looks outside.",
+                 "presets": {"camera_shot": "wide_shot", "camera_angle": "low_angle",
+                             "camera_motion": "tilt_up"}},
+                {"kind": "move", "duration": 1, "visual_action": "A cat approaches."},
+            ],
+        })
+        effective = MODULE.align_frame_count(2) / MODULE.MODEL_FPS
+        cue = MODULE._move_output_cues(project, effective)[0]
+        source = (
+            f"integrated_multimodal_description: [Shot 1] A woman looks outside. {cue} "
+            "During this movement, maintaining the wide shot framing; a cat approaches.\n\n"
+            "overall_soundscape: Quiet.\n\nnon_diegetic_music: N/A"
+        )
+        fixed = MODULE._enforce_move_camera_continuity(source, project, effective)
+        self.assertIn("executes the configured motion: camera tilt up from a fixed position", fixed)
+        self.assertNotIn("holds the wide shot with subtle stabilized drift", fixed)
+        self.assertIn("A cat approaches.", fixed)
+        self.assertNotIn("During this movement", fixed)
+
+    def test_move_camera_compiler_physically_travels_when_only_angle_changes(self):
+        project, _warnings = MODULE.normalize_project({
+            "mode": "T2VA",
+            "requested_duration": 3,
+            "shots": [
+                {"kind": "shot", "duration": 1, "visual_action": "A subject stands.",
+                 "presets": {"camera_shot": "close_up", "camera_angle": "eye_level"}},
+                {"kind": "move", "duration": 2, "visual_action": "The subject changes pose.",
+                 "presets": {"camera_shot": "close_up", "camera_angle": "top_down"}},
+            ],
+        })
+        effective = MODULE.align_frame_count(3) / MODULE.MODEL_FPS
+        spec = MODULE._shot_move_camera_specs(project, effective)[0]
+        sentence = spec["camera_sentence"]
+        self.assertIn("preserves its current framing distance", sentence)
+        self.assertIn("raising its position", sentence)
+        self.assertIn("coordinating its tilt", sentence)
+        self.assertNotIn("holds its current distance and continues along the established path", sentence)
+        self.assertIn("reaching and settling into a stable close-up", sentence)
+
+    def test_move_camera_compiler_combines_orbital_and_height_dimensions(self):
+        project, _warnings = MODULE.normalize_project({
+            "mode": "T2VA",
+            "requested_duration": 2,
+            "shots": [
+                {"kind": "shot", "duration": 1, "visual_action": "A subject stands.",
+                 "presets": {"camera_shot": "medium_shot", "camera_angle": "eye_level"}},
+                {"kind": "move", "duration": 1, "visual_action": "The subject turns.",
+                 "presets": {"camera_shot": "medium_shot", "camera_angle": "profile"}},
+            ],
+        })
+        effective = MODULE.align_frame_count(2) / MODULE.MODEL_FPS
+        sentence = MODULE._shot_move_camera_specs(project, effective)[0]["camera_sentence"]
+        self.assertIn("arcing continuously around the subject", sentence)
+        self.assertIn("profile angle from the side", sentence)
+
+    def test_move_prompt_includes_generic_action_state_contract(self):
+        project, _warnings = MODULE.normalize_project({
+            "mode": "T2VA",
+            "requested_duration": 2,
+            "shots": [
+                {"kind": "shot", "duration": 1, "visual_action": "Opening state."},
+                {"kind": "move", "duration": 1, "visual_action": "Perform an action."},
+            ],
+        })
+        effective = MODULE.align_frame_count(2) / MODULE.MODEL_FPS
+        raw = MODULE.build_video_prompt(project, effective)
+        llm = MODULE.build_llm_prompt(project, raw)
+        self.assertIn("endpoint: progressively reach this beat's camera preset", raw)
+        self.assertIn("progress physically to the requested endpoint", llm)
+
+    def test_legacy_timeline_items_default_to_shots_and_first_move_is_repaired(self):
+        legacy, _warnings = MODULE.normalize_project({
+            "version": 26,
+            "shots": [{"duration": 2}, {"duration": 3}],
+        })
+        repaired, _warnings = MODULE.normalize_project({
+            "version": 27,
+            "shots": [{"kind": "move", "duration": 2}, {"kind": "move", "duration": 3}],
+        })
+        self.assertEqual([item["kind"] for item in legacy["shots"]], ["shot", "shot"])
+        self.assertEqual([item["kind"] for item in repaired["shots"]], ["shot", "move"])
+
     def test_korean_shot_text_is_preserved_in_qwen_input(self):
         action = "여자가 식탁에서 즐겁게 웃고 있다."
         result = self.compile({
@@ -112,8 +414,9 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertIn("PROMPT_PRESETS:", prompt)
         self.assertIn("style: polished 3D animation", prompt)
         self.assertIn("camera_angle: low angle looking upward", prompt)
-        self.assertIn("camera_motion: tracking shot following the moving subject", prompt)
-        self.assertIn("camera_shot: cowboy shot", prompt)
+        self.assertIn("camera_motion: track the moving subject while maintaining a stable relative framing", prompt)
+        self.assertIn("camera_shot: medium-long framing from mid-thigh", prompt)
+        self.assertNotIn("camera_shot: cowboy shot", prompt)
         self.assertIn("camera_amplitude: with large amplitude", prompt)
         self.assertIn("camera_speed: at fast speed", prompt)
         self.assertIn("combine selected motion, amplitude, and speed", prompt)
@@ -137,7 +440,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         prompt = result["draft_video_prompt"]
         preset_section = prompt.split("PROMPT_PRESETS:\n", 1)[1].split("\n\nTARGET_REQUEST:", 1)[0]
         self.assertIn("[Shot 1]\nstyle: polished 3D animation with coherent modeled forms", preset_section)
-        self.assertIn("camera_motion: arc shot moving around the subject", preset_section)
+        self.assertIn("camera_motion: arc smoothly around the subject along one continuous curved camera path", preset_section)
         self.assertIn("[Shot 2]\ncamera_motion: static shot with camera position", preset_section)
         self.assertIn("camera_shot: close-up centered on the face", preset_section)
         self.assertEqual(preset_section.count("style: polished 3D animation with coherent modeled forms"), 1)
@@ -152,12 +455,12 @@ class MinimaxH3PrompterTests(unittest.TestCase):
 
     def test_extended_camera_motion_presets_compile(self):
         expected = {
-            "dolly_left": "camera dolly left", "dolly_right": "camera dolly right",
-            "dolly_zoom_in": "move the camera forward while zooming out",
-            "dolly_zoom_out": "move the camera backward while zooming in",
+            "dolly_left": "camera truck left", "dolly_right": "camera truck right",
+            "dolly_zoom_in": "physically move the camera forward while zooming out",
+            "dolly_zoom_out": "physically move the camera backward while zooming in",
             "crane_up": "crane movement lifting", "crane_down": "crane movement lowering",
-            "orbit_left": "orbit left around", "orbit_right": "orbit right around",
-            "follow": "follow shot continuously following", "handheld": "natural handheld camera movement",
+            "orbit_left": "camera's left around", "orbit_right": "camera's right around",
+            "follow": "track the moving subject continuously", "handheld": "natural handheld camera movement",
         }
         for motion, phrase in expected.items():
             with self.subTest(motion=motion):
@@ -192,6 +495,62 @@ class MinimaxH3PrompterTests(unittest.TestCase):
                                "presets": {"style": style}}],
                 })
                 self.assertIn(MODULE.STYLE_PRESET_PROMPTS[style], result["draft_video_prompt"])
+
+    def test_animation_library_presets_are_split_into_2d_and_3d_families(self):
+        animation_2d = {
+            "rough_hand_drawn_2d", "watercolor_2d", "ink_wash_2d", "modern_flat_cartoon",
+            "vintage_western_cartoon", "comic_book_2d", "manga_monochrome_2d",
+            "paper_cutout_2d", "anime_1980s_ova", "anime_early_2000s_tv",
+            "theatrical_anime_2d",
+        }
+        animation_3d = {
+            "stylized_feature_3d", "photorealistic_3d_cg", "semi_realistic_3d",
+            "cel_shaded_3d", "game_cinematic_3d", "low_poly_3d", "ps1_retro_3d",
+            "ps2_retro_3d", "voxel_3d", "product_visualization_3d",
+            "architectural_visualization_3d", "fantasy_stylized_3d", "chibi_3d",
+            "dark_fantasy_cgi_3d", "scifi_cgi_3d",
+        }
+        self.assertTrue(animation_2d.issubset(MODULE.STYLE_PRESET_PROMPTS))
+        self.assertTrue(animation_3d.issubset(MODULE.STYLE_PRESET_PROMPTS))
+        source = (Path(__file__).parent / "web" / "minimax_h3_prompter.js").read_text(encoding="utf-8")
+        for category in (
+            "2D animation — General", "2D animation — Anime",
+            "3D animation — General", "3D animation — Retro / stylized",
+        ):
+            self.assertIn(category, source)
+        for style in animation_2d | animation_3d:
+            with self.subTest(style=style):
+                self.assertIn(f'{style}: "', source)
+
+    def test_named_studio_and_game_presets_and_categories_are_removed(self):
+        removed_styles = {
+            "disney_renaissance_2d", "disney_xerox_2d", "ghibli_painted_2d",
+            "cartoon_saloon_2d", "ufotable_cinematic_2d", "kyoto_animation_2d",
+            "trigger_action_2d", "science_saru_2d", "madhouse_cinematic_2d",
+            "mappa_modern_2d", "south_park_cutout_2d", "pixar_feature_3d",
+            "disney_feature_3d", "dreamworks_feature_3d", "illumination_feature_3d",
+            "game_genshin_npr_3d", "game_star_rail_npr_3d", "game_zenless_urban_3d",
+            "game_botw_painterly_3d", "game_wind_waker_toon_3d",
+            "game_skyward_painterly_3d", "game_granblue_illustrated_3d",
+            "game_guilty_gear_2_5d", "game_persona_5_graphic",
+            "game_overwatch_stylized_3d", "game_fortnite_stylized_3d",
+            "game_ff7_stylized_realism",
+        }
+        self.assertTrue(removed_styles.isdisjoint(MODULE.STYLE_PRESET_PROMPTS))
+        source = (Path(__file__).parent / "web" / "minimax_h3_prompter.js").read_text(encoding="utf-8")
+        for removed_category in (
+            "2D animation — Studio-inspired", "3D animation — Feature",
+            "Game graphics — Anime / NPR", "Game graphics — Stylized / graphic",
+            "Game graphics — Cinematic / realistic",
+        ):
+            self.assertNotIn(removed_category, source)
+        for style in removed_styles:
+            with self.subTest(style=style):
+                self.assertNotIn(f'{style}: "', source)
+                project, _warnings = MODULE.normalize_project({
+                    "shots": [{"presets": {"style": style}}],
+                })
+                self.assertEqual(project["shots"][0]["presets"]["style"], "none")
 
     def test_general_style_presets_do_not_force_scene_content(self):
         generic_keys = (
@@ -244,7 +603,10 @@ class MinimaxH3PrompterTests(unittest.TestCase):
             "Noir / thriller", "Horror / found footage", "Documentary / reality",
             "Action / fantasy", "Science fiction", "Fashion / editorial",
             "Commercial / product", "POV / social video", "Film / era",
-            "Physical character animation", "Animation / graphic", "Music / game / hybrid",
+            "2D animation — General", "2D animation — Anime",
+            "3D animation — General", "3D animation — Retro / stylized",
+            "Stop-motion / physical animation", "Graphic / mixed media",
+            "Music",
         ):
             self.assertIn(category, source)
 
@@ -492,6 +854,8 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         cases = {
             "weak": ("weak_reference", "broad subject appearance similarity only"),
             "normal": ("partially_preserved", "core subject identity and primary visible appearance"),
+            "attribute_transfer": ("attribute_transfer", "transfer only explicitly requested visible attributes"),
+            "style_transfer": ("attribute_transfer", "transfer only the explicitly requested source visual medium and rendering treatment"),
             "strong": ("fully_preserved", "complete visible subject identity and appearance plus that subject's source visual medium/rendering style"),
         }
         for strength, (marker, contract) in cases.items():
@@ -512,8 +876,36 @@ class MinimaxH3PrompterTests(unittest.TestCase):
                 if strength == "strong":
                     self.assertIn("preserve the style independently per subject", prompt)
                     self.assertIn("exclude source setting, composition", prompt)
+                elif strength == "attribute_transfer":
+                    self.assertIn("exclude source identity, setting, style, composition", prompt)
+                elif strength == "style_transfer":
+                    self.assertIn("preserve the target identity, face, body, hairstyle, clothing", prompt)
                 else:
                     self.assertIn("exclude source setting, style, composition", prompt)
+
+    def test_style_transfer_is_scoped_to_rendering_and_preserves_target_appearance(self):
+        result = self.compile({
+            "mode": "REF2VA",
+            "shots": [{
+                "duration": 5,
+                "visual_action": "@target walks through a hallway using @style's visual style.",
+            }],
+            "references": [
+                {
+                    "type": "picture", "role": "subject_identity",
+                    "strength": "normal", "alias": "target",
+                },
+                {
+                    "type": "picture", "role": "subject_identity",
+                    "strength": "style_transfer", "alias": "style",
+                },
+            ],
+        })
+        prompt = result["draft_video_prompt"]
+        self.assertIn("input_strength_for_definition_scope_only: style_transfer", prompt)
+        self.assertIn("retention_output_marker: attribute_transfer", prompt)
+        self.assertIn("never copy the style source's character or scene content", prompt)
+        self.assertIn("preserve the target identity, face, body, hairstyle, clothing", prompt)
 
     def test_ref2va_retention_line_plan_uses_exact_guide_syntax_and_shot_scope(self):
         result = self.compile({
@@ -888,21 +1280,136 @@ class MinimaxH3PrompterTests(unittest.TestCase):
     def test_python_normalization_uses_ui_minimum_shot_duration(self):
         result = self.compile({
             "mode": "T2VA",
-            "requested_duration": 0.1,
-            "shots": [{"duration": 0.1}],
+            "requested_duration": 0.01,
+            "shots": [{"duration": 0.01}],
         })
-        self.assertEqual(result["project"]["requested_duration"], 0.25)
-        self.assertEqual(result["project"]["shots"][0]["duration"], 0.25)
+        self.assertAlmostEqual(MODULE.MIN_SHOT_DURATION, 2 / MODULE.MODEL_FPS)
+        self.assertAlmostEqual(result["project"]["requested_duration"], 2 / MODULE.MODEL_FPS, places=6)
+        self.assertAlmostEqual(result["project"]["shots"][0]["duration"], 2 / MODULE.MODEL_FPS)
+        source = (Path(__file__).parent / "web" / "minimax_h3_prompter.js").read_text(encoding="utf-8")
+        self.assertIn("const MIN_TIMELINE_ITEM_FRAMES = 2;", source)
+        self.assertIn("const MIN_SHOT_DURATION = MIN_TIMELINE_ITEM_FRAMES / VIDEO_OUTPUT_FPS;", source)
+        self.assertIn(".mmh3p-shot { min-width:0;", source)
 
     def test_duration_fitting_preserves_each_shot_minimum(self):
         result = self.compile({
             "mode": "T2VA",
             "requested_duration": 4,
-            "shots": [{"duration": 0.25}, {"duration": 9.75}],
+            "shots": [{"duration": 2 / MODULE.MODEL_FPS}, {"duration": 9.75}],
         })
         durations = [shot["duration"] for shot in result["project"]["shots"]]
         self.assertAlmostEqual(sum(durations), 4.0)
         self.assertGreaterEqual(min(durations), MODULE.MIN_SHOT_DURATION)
+
+    def test_video_preview_is_always_visible_and_expands_node_to_the_left(self):
+        web_dir = Path(__file__).parent / "web"
+        source = (web_dir / "minimax_h3_prompter.js").read_text(encoding="utf-8")
+        self.assertNotIn('await import("./minimax_h3_camera_preview.js")', source)
+        self.assertIn("this.node.pos[0] -= VIDEO_PREVIEW_WIDTH", source)
+        self.assertIn("this._minimaxH3PrompterUI.openVideoPreview(true);", source)
+        self.assertIn('data-el="video-preview-panel"', source)
+        self.assertNotIn('data-preview-mode="camera"', source)
+        self.assertNotIn('data-preview-view="scene"', source)
+        self.assertNotIn('data-preview-view="camera"', source)
+        self.assertNotIn('data-el="camera-preview-canvas"', source)
+        self.assertNotIn("CameraPresetPreview", source)
+
+    def test_shared_timeline_playhead_controls_selected_video_preview(self):
+        source = (Path(__file__).parent / "web" / "minimax_h3_prompter.js").read_text(encoding="utf-8")
+        self.assertIn('data-el="timeline-scrubber"', source)
+        self.assertIn('data-el="timeline-scrubber-track"', source)
+        self.assertIn('data-el="playhead-line"', source)
+        self.assertIn('data-action="timeline-play"', source)
+        self.assertNotIn('data-action="preview-play"', source)
+        self.assertNotIn('data-action="preview-mode"', source)
+        self.assertNotIn('data-action="preview-reset"', source)
+        self.assertIn('data-el="reference-video-preview"', source)
+        self.assertIn("selectedReferenceVideo()", source)
+        self.assertIn("this.selectedVideoReferenceId = ref.id", source)
+        self.assertIn('ref.id === this.selectedVideoReferenceId ? " selected" : ""', source)
+        self.assertIn('this.selectVideoReference(ref, false)', source)
+        self.assertIn('.mmh3p-video-clip.selected', source)
+        self.assertIn("scheduleReferenceVideoSeek", source)
+        self.assertIn("this.syncReferenceVideoPreview(forceMedia)", source)
+        self.assertIn("grid-column:1 / 4; grid-row:2", source)
+        self.assertIn("left:var(--playhead-position,0%); width:2px; transform:translateX(-50%)", source)
+        self.assertIn('style.setProperty("--playhead-position"', source)
+        self.assertIn("(event.clientX - rect.left) / rect.width", source)
+        self.assertIn("card.style.flex = `0 0 ${widthPercent}%`", source)
+        self.assertIn("const total = Math.max(0.1, this.totalDuration());", source)
+        self.assertIn("margin:0 7px; cursor:pointer", source)
+
+    def test_frontend_buttons_have_explanatory_tooltips(self):
+        source = (Path(__file__).parent / "web" / "minimax_h3_prompter.js").read_text(encoding="utf-8")
+        self.assertIn('data-action="delete-shot" title="Delete the selected Shot or Move"', source)
+        self.assertIn('data-preset-tab="camera" type="button" title=', source)
+        self.assertIn('data-preset-tab="style" type="button" title=', source)
+        self.assertIn('data-action="enhance" type="button" title=', source)
+        self.assertIn('data-ref-type="picture" type="button" title=', source)
+        self.assertIn('data-ref-type="audio" type="button" title=', source)
+        self.assertIn('data-ref-type="video" type="button" title=', source)
+        self.assertIn('button.title = `Insert ${entry.alias} into the prompt`', source)
+        self.assertIn('del.setAttribute("aria-label", "Delete reference")', source)
+        toolbar_start = source.index('<div class="mmh3p-row mmh3p-toolbar">')
+        playback_start = source.index('<div class="mmh3p-playback-row">', toolbar_start)
+        toolbar = source[toolbar_start:playback_start]
+        self.assertIn('data-action="timeline-play"', toolbar)
+
+    def test_native_select_popup_font_tracks_canvas_zoom(self):
+        source = (Path(__file__).parent / "web" / "minimax_h3_prompter.js").read_text(encoding="utf-8")
+        self.assertIn("this.nativeSelectScaleHandler = event =>", source)
+        self.assertIn("this.root.getBoundingClientRect().width", source)
+        self.assertIn("visualWidth / layoutWidth", source)
+        self.assertIn('select.querySelectorAll("option,optgroup")', source)
+        self.assertIn("item.style.fontSize = popupFontSize", source)
+        self.assertIn('this.root.addEventListener("pointerdown", this.nativeSelectScaleHandler, true)', source)
+        self.assertIn('this.root.removeEventListener("pointerdown", this.nativeSelectScaleHandler, true)', source)
+
+    def test_node_height_is_manually_resizable_and_not_content_driven(self):
+        source = (Path(__file__).parent / "web" / "minimax_h3_prompter.js").read_text(encoding="utf-8")
+        self.assertNotIn("ensureTimelineCapacity", source)
+        self.assertNotIn("IMAGE_TIMELINE_EXPANSION", source)
+        self.assertNotIn("requiredHeight", source)
+        self.assertIn("getMinHeight: () => UI_HEIGHT", source)
+        self.assertIn("(Number(this.size?.[1]) || NODE_HEIGHT) - (NODE_HEIGHT - UI_HEIGHT)", source)
+        self.assertIn("Math.max(Number(this.size?.[1]) || 0, NODE_HEIGHT)", source)
+
+    def test_reference_video_card_uses_clickable_static_thumbnail(self):
+        source = (Path(__file__).parent / "web" / "minimax_h3_prompter.js").read_text(encoding="utf-8")
+        start = source.index('      } else if (ref.type === "video") {')
+        end = source.index('      } else if (ref.type === "audio") {', start)
+        video_card = source[start:end]
+        self.assertIn('const image = document.createElement("img")', video_card)
+        self.assertIn("this.populateReferenceVideoThumbnail(ref, image);", video_card)
+        self.assertIn('preview.title = "Click the thumbnail to replace this video"', video_card)
+        self.assertIn("event.stopPropagation(); fileInput.click();", video_card)
+        self.assertNotIn('document.createElement("video")', video_card)
+        self.assertNotIn("video.controls", video_card)
+        self.assertIn("async populateReferenceVideoThumbnail(ref, image)", source)
+
+    def test_shot_and_move_can_each_shrink_to_two_frames(self):
+        minimum = 2 / MODULE.MODEL_FPS
+        project, _warnings = MODULE.normalize_project({
+            "mode": "T2VA",
+            "requested_duration": minimum * 2,
+            "shots": [
+                {"kind": "shot", "duration": 0.001, "visual_action": "Opening."},
+                {"kind": "move", "duration": 0.001, "visual_action": "Continue."},
+            ],
+        })
+        self.assertAlmostEqual(project["shots"][0]["duration"], minimum)
+        self.assertAlmostEqual(project["shots"][1]["duration"], minimum)
+
+    def test_timeline_delete_recovers_a_stale_selection_and_stops_playback(self):
+        source = (Path(__file__).parent / "web" / "minimax_h3_prompter.js").read_text(encoding="utf-8")
+        delete_block = source[source.index("  deleteShot() {"):source.index("  addReference(type) {")]
+        self.assertIn("this.stopTimelinePlayback();", delete_block)
+        self.assertIn("const selectedFallback = this.selectedShot();", delete_block)
+        self.assertIn("shot.id === selectedFallback.id", delete_block)
+
+        render_block = source[source.index("  render() {"):source.index("  renderPresets() {")]
+        self.assertIn("shot.id === this.selectedShotId", render_block)
+        self.assertIn("this.selectedShotId = this.project.shots[0]?.id", render_block)
 
     def test_invalid_enums_are_normalized_with_warnings(self):
         result = self.compile({
@@ -934,7 +1441,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertTrue(any("Project version" in warning for warning in result["warnings"]))
 
     def test_removed_picture_roles_migrate_to_weak_reference(self):
-        for removed_role in ("environment", "style", "storyboard"):
+        for removed_role in ("environment", "style"):
             with self.subTest(role=removed_role):
                 result = self.compile({
                     "version": 8,
@@ -947,25 +1454,87 @@ class MinimaxH3PrompterTests(unittest.TestCase):
                 self.assertIn("retention_output_marker: weak_reference", result["draft_video_prompt"])
                 self.assertFalse(any("role=" in warning for warning in result["warnings"]))
 
+    def test_storyboard_picture_is_shot_planning_not_a_frame_or_subject(self):
+        result = self.compile({
+            "version": MODULE.CURRENT_PROJECT_VERSION,
+            "mode": "REF2VA",
+            "shots": [
+                {"id": "shot-a", "kind": "shot", "duration": 2, "visual_action": "A woman enters."},
+                {"id": "move-a", "kind": "move", "duration": 1, "visual_action": "She crosses the room."},
+                {"id": "shot-b", "kind": "shot", "duration": 2, "visual_action": "A man responds."},
+            ],
+            "references": [{
+                "id": "ref-storyboard", "type": "picture", "role": "storyboard",
+                "storyboard_shot_ids": ["shot-b"],
+            }],
+        })
+        ref = result["project"]["references"][0]
+        self.assertEqual(ref["role"], "storyboard")
+        self.assertEqual(ref["storyboard_shot_ids"], ["shot-b"])
+        model = MODULE._reference_model(result["project"])
+        plan = model["label_plan"]["<Picture 1>"]
+        self.assertEqual(plan["applicable_shots"], [2])
+        self.assertEqual(plan["marker"], "weak_reference")
+        self.assertIn("storyboard reference for [Shot 2]", model["definitions"][0])
+        self.assertIn("reference generation", model["task_types"])
+        self.assertNotIn("keyframe completion", model["task_types"])
+        self.assertEqual(MODULE._frame_anchor_schedule(result["project"], 5.17), [])
+        self.assertIn("storyboard planning for [Shot 2]", plan["retention_prefix"])
+        self.assertIn("Mandatory storyboard definitions:", result["llm_prompt"])
+        self.assertIn("Storyboard Pictures plan only their listed Shots", result["llm_prompt"])
+        self.assertIn("panel boundaries never create cuts", result["llm_prompt"])
+        self.assertIn("planning_scope: panel order, shot order", result["draft_video_prompt"])
+        self.assertIn("excluded_scope: exact frame matching", result["draft_video_prompt"])
+        self.assertIn("panel_boundary_contract:", result["draft_video_prompt"])
+        self.assertIn("framing_serialization_contract:", result["draft_video_prompt"])
+        self.assertIn("storyboard_framing: preserve every distinct ordered panel viewpoint", result["draft_video_prompt"])
+        analysis_prompt = MODULE._reference_analysis_prompt("storyboard")
+        self.assertIn("PANEL_SEQUENCE: P1=", analysis_prompt)
+        self.assertIn("FRAMING_PROGRESSION:", analysis_prompt)
+        self.assertIn("one semicolon-separated record for every visible panel", analysis_prompt)
+        self.assertNotIn("VIEWPOINT_FRAMING:", analysis_prompt)
+        self.assertIn(
+            "configured frame anchor or a storyboard/shot-planning reference",
+            MODULE.MODE_LLM_SYSTEM_PROMPTS["REF2VA"],
+        )
+        evidence_prompt = MODULE.build_video_prompt(
+            result["project"], result["effective_duration"], {
+                "<Picture 1>": (
+                    "STORYBOARD_LAYOUT: 3 panels, left-to-right.\n"
+                    "PANEL_SEQUENCE: P1={wide | woman left | writes}; "
+                    "P2={over-the-shoulder | intruder in doorway | woman turns}; "
+                    "P3={low-angle detail | running legs centered | woman flees}.\n"
+                    "FRAMING_PROGRESSION: wide to over-the-shoulder to low-angle detail."
+                ),
+            },
+        )
+        self.assertIn("PANEL_SEQUENCE: P1={wide", evidence_prompt)
+
     def test_frontend_picture_role_list_contains_only_supported_choices(self):
         source = (MODULE_PATH.parent.parent / "web" / "minimax_h3_prompter.js").read_text(encoding="utf-8")
-        self.assertIn('data-ref-type="picture" type="button">+ Image</button>', source)
-        self.assertIn('data-ref-type="audio" type="button">+ Audio</button>', source)
-        self.assertIn('data-ref-type="video" type="button">+ Video</button>', source)
+        self.assertIn('data-ref-type="picture" type="button" title="Add an image reference">+ Image</button>', source)
+        self.assertIn('data-ref-type="audio" type="button" title="Add an audio reference">+ Audio</button>', source)
+        self.assertIn('data-ref-type="video" type="button" title="Add a video reference">+ Video</button>', source)
         self.assertNotIn('data-el="new-ref-type"', source)
         self.assertNotIn('>+ Reference</button>', source)
         self.assertIn(
-            'picture: ["first_frame", "last_frame", "frame", "subject_identity"]', source,
+            'picture: ["first_frame", "last_frame", "frame", "storyboard", "subject_identity"]', source,
         )
         self.assertNotIn('reference: "Reference (weak)"', source)
-        self.assertIn('const SUBJECT_STRENGTHS = ["weak", "normal", "strong"]', source)
+        self.assertIn('const SUBJECT_STRENGTHS = ["weak", "normal", "strong", "attribute_transfer", "style_transfer"]', source)
+        self.assertIn('strong: "fully_preserved"', source)
+        self.assertIn('normal: "partially_preserved"', source)
+        self.assertIn('attribute_transfer: "attribute_transfer"', source)
+        self.assertIn('style_transfer: "style_transfer"', source)
+        self.assertIn('weak: "weak_reference"', source)
         self.assertIn('first_frame: "First frame"', source)
         self.assertIn('last_frame: "Last frame"', source)
         self.assertNotIn('first_frame: "First frame anchor"', source)
         self.assertNotIn('last_frame: "Last frame anchor"', source)
         self.assertIn('strength.className = "subject-strength"', source)
         self.assertIn('strengthRow.className = "mmh3p-subject-strength-row"', source)
-        self.assertIn('strengthRow.append(strengthLabel, strength, alias)', source)
+        self.assertIn('strengthRow.append(strength, alias)', source)
+        self.assertNotIn('strengthLabel.textContent = "Strength"', source)
         self.assertIn('body.append(strengthRow)', source)
         self.assertIn('if (ref.type === "video") controls.append(role, alias, del)', source)
         self.assertIn('else if (ref.type === "audio") controls.append(role, alias, del)', source)
@@ -974,7 +1543,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertIn('controls.classList.add("video-metadata")', source)
         self.assertNotIn('duration.placeholder = "seconds"', source)
         self.assertIn('ref.source_duration = actualDuration > 0 ? actualDuration : 0', source)
-        self.assertIn('ref.duration = actualDuration > 0 ? Math.min(15, actualDuration) : 0', source)
+        self.assertIn('ref.duration = actualDuration > 0 ? actualDuration : 0', source)
         self.assertIn('const VIDEO_UPLOAD_ENDPOINT = "/toyxyz/minimax_h3_prompter/upload-video"', source)
         self.assertIn('const VIDEO_VIEW_ENDPOINT = "/toyxyz/minimax_h3_prompter/video"', source)
         self.assertIn("const VIDEO_UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024", source)
@@ -1001,9 +1570,9 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertNotIn('data-preset="camera_lens"', source)
         self.assertIn('extreme_close_up: "Extreme close-up (ECU)"', source)
         self.assertIn('medium_close_up: "Medium close-up (MCU)"', source)
-        self.assertIn('medium_wide_shot: "Medium wide shot (MWS)"', source)
-        self.assertIn('cowboy_shot: "Cowboy shot (CS)"', source)
-        self.assertIn('medium_full_shot: "Medium full shot (MFS)"', source)
+        self.assertIn('medium_wide_shot: "Medium wide · thighs/knees up (MWS)"', source)
+        self.assertIn('cowboy_shot: "Mid-thigh framing · hands visible (Cowboy)"', source)
+        self.assertIn('medium_full_shot: "Knees-up framing (MFS)"', source)
         self.assertIn('extreme_wide_shot: "Extreme wide shot (EWS)"', source)
         self.assertIn('establishing_shot: "Establishing shot (ES)"', source)
         self.assertIn('insert_shot: "Insert shot"', source)
@@ -1018,23 +1587,28 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertIn('this.rawPromptEnabled = this.els["raw-prompt"].checked', source)
         self.assertIn('this.previewData?.llm_prompt', source)
         self.assertIn('this.lastRawModelPrompt = String(data.raw_model_prompt || "")', source)
+        self.assertIn('this.disableRawPromptPreview();', source)
+        self.assertIn('this.rawPromptEnabled = false;', source)
+        self.assertIn('this.els["raw-prompt"].checked = false', source)
         self.assertIn('anime_1990s: "1990s Japanese hand-drawn anime"', source)
         self.assertIn('food_commercial: "Food commercial"', source)
         self.assertIn('dark_retro_fantasy: "Dark retro fantasy film"', source)
         self.assertIn('shot.presets[select.dataset.preset] = select.value', source)
         self.assertIn('this.selectedShot()?.presets?.[select.dataset.preset]', source)
+        self.assertIn('updateTimelineActionButtons()', source)
+        self.assertIn('this.updateTimelineActionButtons();', source)
         self.assertIn('id: uid("shot"), duration: firstHalf, visual_action: "",\n      presets: DEFAULT_SHOT_PRESETS(),', source)
         self.assertIn('zoom_in: "Zoom in"', source)
         self.assertIn('truck_left: "Truck left"', source)
         self.assertIn('pedestal_up: "Pedestal up"', source)
-        self.assertIn('dolly_left: "Dolly left"', source)
-        self.assertIn('dolly_right: "Dolly right"', source)
-        self.assertIn('dolly_zoom_in: "Dolly zoom in"', source)
-        self.assertIn('dolly_zoom_out: "Dolly zoom out"', source)
+        self.assertNotIn('dolly_left:', source)
+        self.assertNotIn('dolly_right:', source)
+        self.assertNotIn('dolly_zoom_in:', source)
+        self.assertNotIn('dolly_zoom_out:', source)
         self.assertIn('crane_up: "Crane up"', source)
         self.assertIn('crane_down: "Crane down"', source)
-        self.assertIn('orbit_left: "Orbit left"', source)
-        self.assertIn('orbit_right: "Orbit right"', source)
+        self.assertIn('orbit_left: "Orbit left around subject"', source)
+        self.assertIn('orbit_right: "Orbit right around subject"', source)
         self.assertIn('follow: "Follow shot"', source)
         self.assertIn('handheld: "Handheld"', source)
         self.assertIn('shake_strongly: "Shake strongly"', source)
@@ -1050,7 +1624,21 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertIn('imageHelp.textContent = "Image anchors · first/last frames are fixed · drag Frame images to an exact output frame"', source)
         self.assertIn('marker.className = `mmh3p-image-anchor ${isFirst ? "first" : isLast ? "last" : "frame"}`', source)
         self.assertIn('Image ${number} · Last · Frame ${frameCount - 1}', source)
-        self.assertIn('ref.frame_index = Math.round(ratio * Math.max(0, this.timelineFrameCount() - 1))', source)
+        self.assertIn("const anchorGeometry = () =>", source)
+        self.assertIn("align-items:stretch; gap:0; padding-top:18px", source)
+        self.assertIn("position:relative; overflow-x:hidden; margin:0 7px; }", source)
+        self.assertIn("const minimumCenter = Math.min(laneWidth / 2, frameWidth / 2)", source)
+        self.assertIn("laneWidth - frameWidth / 2", source)
+        self.assertIn("const pointerLocalX = pointerEvent =>", source)
+        self.assertIn("const scaleX = rect.width / Math.max(1, lane.offsetWidth)", source)
+        self.assertIn("const grabOffset = pointerLocalX(event) - markerCenter", source)
+        self.assertIn("const targetCenter = pointerLocalX(moveEvent) - grabOffset", source)
+        self.assertIn("minimumCenter + ratio * (maximumCenter - minimumCenter)", source)
+        self.assertIn("if (upEvent.type === \"pointerup\") move(upEvent);", source)
+        self.assertIn("ref.frame_index = Math.round(ratio * Math.max(0, frameCount - 1))", source)
+        self.assertIn("this.updateReferenceFramePosition(ref);", source)
+        self.assertIn("data-frame-reference-id", source)
+        self.assertIn("`Output frame ${ref.frame_index} / ${frameCount - 1} · ${(ref.frame_index / VIDEO_OUTPUT_FPS).toFixed(3)}s`", source)
         self.assertIn('const frameWidth = Math.max(2, laneWidth / Math.max(1, frameCount))', source)
         self.assertIn('label.classList.toggle("before", ref.frame_index >= frameCount / 2)', source)
         self.assertIn('previewImage.className = "mmh3p-image-anchor-preview"', source)
@@ -1061,7 +1649,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertIn('else controls.append(role, del)', source)
         self.assertNotIn('controls.append(role, strength, alias, del)', source)
         self.assertIn(
-            'video: ["none", "video_editing", "video_continuation", "motion", "camera", "cuts_rhythm"]',
+            '"none", "video_editing", "video_continuation", "subject_visual", "visual_style",',
             source,
         )
         self.assertIn('"none", "full_signal_copy", "partial_signal_copy", "voice_delivery"', source)
@@ -1072,7 +1660,10 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertIn('none: "None"', source)
         self.assertIn('video_editing: "Video editing"', source)
         self.assertIn('video_continuation: "Video continuation"', source)
+        self.assertIn('subject_visual: "Subject / visual content"', source)
+        self.assertIn('visual_style: "Visual style"', source)
         self.assertIn('motion: "Motion / action timing"', source)
+        self.assertIn('motion_camera: "Motion + camera"', source)
         self.assertIn('camera: "Camera movement"', source)
         self.assertIn('cuts_rhythm: "Cuts / rhythm / temporal structure"', source)
         self.assertNotIn('voice_timbre: "Voice timbre"', source)
@@ -1089,8 +1680,10 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertNotIn('data-action="copy-raw"', source)
         self.assertNotIn("copyRawPrompt()", source)
         self.assertNotIn('environment: "Environment"', source)
-        self.assertNotIn('style: "Visual style"', source)
-        self.assertNotIn('storyboard: "Storyboard"', source)
+        self.assertNotIn('\n  style: "Visual style"', source)
+        self.assertIn('storyboard: "Storyboard"', source)
+        self.assertIn('scope.className = "mmh3p-storyboard-scope"', source)
+        self.assertIn('legend.textContent = "Applies to Shots"', source)
 
     def test_legacy_audio_roles_migrate_to_audio_presets(self):
         expected = {
@@ -1119,7 +1712,10 @@ class MinimaxH3PrompterTests(unittest.TestCase):
     def test_video_reference_presets_are_normalized_and_compiled(self):
         expected = {
             "reference": ("none", "reference generation"),
-            "motion": ("motion", "subject motion, action sequence, movement timing"),
+            "subject_visual": ("subject_visual", "core subject identity and primary visible appearance"),
+            "visual_style": ("visual_style", "visual style only: rendering medium, palette"),
+            "motion": ("motion", "actor-neutral pose progression, movement paths"),
+            "motion_camera": ("motion_camera", "synchronization between performance and camera"),
             "camera": ("camera", "camera movement, viewpoint, framing progression"),
             "pacing": ("cuts_rhythm", "cut placement, pacing, rhythm, and temporal structure"),
             "continuation": ("video_continuation", "video continuation"),
@@ -1224,7 +1820,7 @@ class MinimaxH3PrompterTests(unittest.TestCase):
     def test_frontend_does_not_persist_reference_analysis_results(self):
         source = (MODULE_PATH.parent.parent / "web" / "minimax_h3_prompter.js").read_text(encoding="utf-8")
         self.assertNotIn("ref.description = item.analysis", source)
-        self.assertIn('description: type === "picture" ? ""', source)
+        self.assertIn('description: type === "picture" && role !== "storyboard" ? ""', source)
 
     def test_mention_highlight_does_not_change_text_wrapping_metrics(self):
         source = (MODULE_PATH.parent.parent / "web" / "minimax_h3_prompter.js").read_text(encoding="utf-8")
@@ -1378,12 +1974,13 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertEqual(
             MODULE.MinimaxH3Prompter.RETURN_NAMES,
             ("generated_prompt", "length")
-            + tuple(name for index in range(1, 10) for name in (f"image_{index}", f"frame_{index}"))
+            + tuple(f"image_{index}" for index in range(9))
             + tuple(f"video_{index}" for index in range(1, 4))
-            + tuple(f"audio_{index}" for index in range(1, 4)),
+            + tuple(f"audio_{index}" for index in range(1, 4))
+            + ("frames",),
         )
         self.assertEqual(MODULE.MinimaxH3Prompter.RETURN_TYPES[:2], ("STRING", "INT"))
-        self.assertEqual(len(MODULE.MinimaxH3Prompter.RETURN_TYPES), 26)
+        self.assertEqual(len(MODULE.MinimaxH3Prompter.RETURN_TYPES), 18)
 
     def test_node_first_output_is_only_the_saved_enhanced_prompt(self):
         node = MODULE.MinimaxH3Prompter()
@@ -1395,14 +1992,14 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         outputs = node.compile(json.dumps(project))
         self.assertEqual(outputs[0], "enhanced result only")
         self.assertIsInstance(outputs[1], int)
-        self.assertEqual(len(outputs), 26)
+        self.assertEqual(len(outputs), 18)
         self.assertEqual(tuple(outputs[2].shape), (1, 64, 64, 3))
         node = MODULE.MinimaxH3Prompter()
         output = node.compile(json.dumps({
             "mode": "T2VA",
             "shots": [{"duration": 5, "visual_action": "A static establishing shot"}],
         }))
-        self.assertEqual(len(output), 26)
+        self.assertEqual(len(output), 18)
         self.assertEqual(output[0], "")
         self.assertIsInstance(output[1], int)
 
@@ -1493,13 +2090,20 @@ class MinimaxH3PrompterTests(unittest.TestCase):
     def test_frontend_shows_one_image_slot_per_picture_reference(self):
         source = (MODULE_PATH.parent.parent / "web" / "minimax_h3_prompter.js").read_text(encoding="utf-8")
         self.assertIn("syncReferenceOutputs()", source)
-        self.assertIn('const frameOutputCount = pictures.filter(ref => ref.role === "frame").length', source)
         self.assertIn('this.project.references.filter(ref => ref.type === "video").length', source)
         self.assertIn('this.project.references.filter(ref => ref.type === "audio").length', source)
-        self.assertIn('this.node.outputs[outputIndex].name = `frame_${index + 1}`', source)
+        self.assertIn("let pictureNumber = -1", source)
+        self.assertIn("const counts = { picture: -1, video: 0, audio: 0 }", source)
+        self.assertIn('this.node.outputs[outputIndex].name = `image_${index}`', source)
+        self.assertNotIn('this.node.outputs[outputIndex].name = `frame_${index + 1}`', source)
+        self.assertIn('const hasFrameBundle = pictures.some(ref => ref.role === "frame")', source)
+        self.assertIn('output.name = "frames"', source)
+        self.assertIn('output.type = "MINIMAX_H3_FRAMES"', source)
+        self.assertIn('/^frame_\\d+$/.test', source)
+        self.assertIn('this.node.removeOutput(index)', source)
         self.assertIn("this.node.removeOutput(this.node.outputs.length - 1)", source)
 
-    def test_frame_picture_emits_image_then_frame_index(self):
+    def test_frame_picture_emits_image_and_only_the_frames_bundle(self):
         project = {
             "mode": "REF2VA",
             "shots": [{"duration": 5, "visual_action": "Reach the reference frame."}],
@@ -1512,12 +2116,179 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         with mock.patch.object(MODULE, "_load_reference_image_tensor", return_value=marker):
             outputs = MODULE.MinimaxH3Prompter().compile(json.dumps(project))
         self.assertIs(outputs[2], marker)
-        self.assertEqual(outputs[3], 62)
+        self.assertEqual(outputs[3]["type"], "minimax_h3_frames")
+        self.assertEqual(outputs[3]["frames"][0]["frame_idx"], 62)
+        self.assertIs(outputs[3]["frames"][0]["image"], marker)
         compiled = MODULE.compile_project(json.dumps(project))["draft_video_prompt"]
         self.assertIn("anchor_frame_index: 62", compiled)
         self.assertIn("anchor_time_seconds: 2.583", compiled)
         self.assertIn("this anchor never creates a cut or transition", compiled)
         self.assertIn("Picture anchor times never create cuts or transitions", compiled)
+
+    def test_same_shot_frame_anchors_compile_as_one_continuous_take(self):
+        project, _warnings = MODULE.normalize_project({
+            "mode": "REF2VA",
+            "requested_duration": 5,
+            "shots": [{"duration": 5, "visual_action": "A woman crosses the room."}],
+            "references": [
+                {"type": "picture", "role": "frame", "frame_index": 60},
+                {"type": "picture", "role": "frame", "frame_index": 0},
+                {"type": "picture", "role": "frame", "frame_index": 101},
+            ],
+        })
+        plan = MODULE._qwen_reference_plan(project, 5.17, {})
+        self.assertIn("FRAME_ANCHOR_SEQUENCES:", plan)
+        self.assertIn(
+            "[Shot 1]: <Picture 2>@frame 0 -> <Picture 1>@frame 60 -> <Picture 3>@frame 101",
+            plan,
+        )
+        self.assertIn("Each line is one uninterrupted take", plan)
+        self.assertIn("Only a configured later Shot may cut", plan)
+        self.assertIn(
+            "required_definition: <Picture 1> is the exact target frame at output frame 60 in [Shot 1]",
+            plan,
+        )
+        compiled = MODULE.compile_project(json.dumps(project))
+        self.assertIn("All Picture anchors assigned to one Shot", compiled["llm_prompt"])
+        self.assertIn("never write that a Picture is derived from itself", compiled["llm_prompt"])
+        self.assertIn("Exact in-shot anchor schedule:", compiled["llm_prompt"])
+        self.assertIn("<Picture 1>@2.500s/frame 60", compiled["llm_prompt"])
+        self.assertIn("falls inside a Move", compiled["llm_prompt"])
+        self.assertIn("instead of postponing it to the Move endpoint", compiled["llm_prompt"])
+        self.assertIn("FRAME_CONTINUITY_PLAN:", compiled["llm_prompt"])
+        self.assertIn("organize detailed_description primarily as chronological frame-to-frame From-to bridges", compiled["llm_prompt"])
+        self.assertIn(
+            "At 00:02.500, the ongoing uninterrupted motion passes precisely through <Picture 1> without a cut or camera reset.",
+            compiled["llm_prompt"],
+        )
+
+    def test_frame_anchor_inside_move_is_compiled_as_a_cross_move_bridge(self):
+        project, _warnings = MODULE.normalize_project({
+            "mode": "REF2VA",
+            "requested_duration": 5,
+            "shots": [
+                {"kind": "shot", "duration": 2, "visual_action": "A woman sits."},
+                {"kind": "move", "duration": 3, "visual_action": "She stands and turns."},
+            ],
+            "references": [
+                {"type": "picture", "role": "frame", "frame_index": 72},
+            ],
+        })
+        plan = MODULE._qwen_shot_plan(project, 5.0, {})
+        self.assertIn("FRAME_CONTINUITY_PLAN:", plan)
+        self.assertIn("bridge_1: From 0.000 to 3.000 seconds", plan)
+        self.assertIn("Shot 1 opening@0.000-2.000: A woman sits.", plan)
+        self.assertIn("Move 1@2.000-5.000: She stands and turns.", plan)
+        self.assertIn("bridge_2: From 3.000 to 5.000 seconds", plan)
+        self.assertNotIn("internal_anchor_phase_plan:", plan)
+
+    def test_frame_anchor_timing_is_repaired_deterministically(self):
+        project, _warnings = MODULE.normalize_project({
+            "mode": "REF2VA",
+            "requested_duration": 5,
+            "shots": [{"duration": 5, "visual_action": "A woman stretches."}],
+            "references": [{"type": "picture", "role": "frame", "frame_index": 72}],
+        })
+        prompt = """subject_definitions:
+<Picture 1> is the exact target frame at output frame 72 in [Shot 1]
+summary:
+[keyframe completion] A woman stretches.
+retention_analysis:
+<Picture 1> ([Shot 1] frame 72): fully_preserved - the pose is retained.
+detailed_description:[Shot 1] The woman moves continuously. At the exact state of <Picture 1>, her arms are raised.
+overall_soundscape:
+Quiet room tone.
+non_diegetic_music:
+N/A"""
+        repaired = MODULE._enforce_ref_frame_anchor_timing(prompt, project, 5.0)
+        sentence = "At 00:03.000, the ongoing uninterrupted motion passes precisely through <Picture 1> without a cut or camera reset."
+        self.assertEqual(repaired.count(sentence), 1)
+        self.assertIn("Continuing from that exact anchored state, her arms are raised", repaired)
+
+    def test_same_shot_frame_bridges_keep_moves_as_internal_cues(self):
+        project, _warnings = MODULE.normalize_project({
+            "mode": "REF2VA",
+            "requested_duration": 5,
+            "shots": [
+                {"kind": "shot", "duration": 2, "visual_action": "A woman begins stretching."},
+                {"kind": "move", "duration": 1.5, "visual_action": "She completes the stretch."},
+                {"kind": "move", "duration": 1.5, "visual_action": "A man walks into view."},
+            ],
+            "references": [
+                {"type": "picture", "role": "frame", "frame_index": 0},
+                {"type": "picture", "role": "frame", "frame_index": 72},
+                {"type": "picture", "role": "frame", "frame_index": 119},
+            ],
+        })
+        plan = MODULE._qwen_shot_plan(project, 5.0, {})
+        self.assertIn("internal_timing: 2.000-3.500 seconds", plan)
+        self.assertIn("weave this action into the active FRAME_CONTINUITY bridge", plan)
+        self.assertNotIn("required_output_cue: From 2.000 to 3.500 seconds", plan)
+
+        source = """subject_definitions:
+<Picture 1> is the exact target frame at output frame 0 in [Shot 1]
+<Picture 2> is the exact target frame at output frame 72 in [Shot 1]
+<Picture 3> is the exact target frame at output frame 119 in [Shot 1]
+summary:
+[keyframe completion] One continuous scene.
+retention_analysis:
+<Picture 1> ([Shot 1] frame 0): fully_preserved - exact.
+<Picture 2> ([Shot 1] frame 72): fully_preserved - exact.
+<Picture 3> ([Shot 1] frame 119): fully_preserved - exact.
+detailed_description:
+[Shot 1] At 00:00.000, the shot begins exactly from <Picture 1>. The woman stretches and the man enters. At 00:03.000, the ongoing uninterrupted motion passes precisely through <Picture 2> without a cut or camera reset. At 00:04.958, the same uninterrupted take reaches the exact final-frame state of <Picture 3>.
+overall_soundscape:
+Room tone.
+non_diegetic_music:
+N/A"""
+        repaired = MODULE._enforce_move_camera_continuity(source, project, 5.0)
+        self.assertNotIn("reaching its completed visible state", repaired)
+        repaired = MODULE._enforce_ref_frame_anchor_timing(repaired, project, 5.0)
+        self.assertIn(
+            "From 00:03.000 to 00:04.958, the same uninterrupted take develops continuously "
+            "from <Picture 2> toward <Picture 3>.",
+            repaired,
+        )
+
+    def test_frame_only_ref2va_accepts_recurring_subjects_before_locked_pictures(self):
+        project, _warnings = MODULE.normalize_project({
+            "mode": "REF2VA",
+            "requested_duration": 5,
+            "shots": [{"duration": 5, "visual_action": "The same woman turns."}],
+            "references": [
+                {"type": "picture", "role": "frame", "frame_index": 0},
+                {"type": "picture", "role": "frame", "frame_index": 123},
+            ],
+        })
+        label_plan = MODULE._reference_model(project)["label_plan"]
+        prompt = """subject_definitions:
+<Subject 1> is the same woman visible in <Picture 1> and <Picture 2>.
+<Picture 1> is the exact target frame at output frame 0 in [Shot 1]
+<Picture 2> is the exact target frame at output frame 123 in [Shot 1]
+summary:
+[keyframe completion] <Subject 1> moves continuously from <Picture 1> to <Picture 2>.
+retention_analysis:
+<Subject 1> (appears in [Shot 1]): fully_preserved - her identity remains continuous.
+<Picture 1> ([Shot 1] frame 0): fully_preserved - the opening frame is exact.
+<Picture 2> ([Shot 1] frame 123): fully_preserved - the final frame is exact.
+detailed_description:
+[Shot 1] At 00:00.000, the shot begins exactly from <Picture 1>. <Subject 1> turns in one take. At 00:05.125, the same uninterrupted take reaches the exact final-frame state of <Picture 2>.
+overall_soundscape:
+Quiet room tone.
+non_diegetic_music:
+N/A"""
+        self.assertEqual(MODULE._ref_prompt_structure_issues(prompt, label_plan), [])
+        repaired = MODULE._enforce_retention_line_plan(prompt, label_plan)
+        self.assertIn("<Subject 1> (appears in [Shot 1]): fully_preserved", repaired)
+        self.assertLess(repaired.index("<Subject 1>"), repaired.index("<Picture 1> ([Shot 1] frame 0)"))
+
+    def test_frame_index_is_clamped_after_references_are_loaded(self):
+        project, _warnings = MODULE.normalize_project({
+            "mode": "REF2VA",
+            "requested_duration": 5,
+            "references": [{"type": "picture", "role": "frame", "frame_index": 9999}],
+        })
+        self.assertEqual(project["references"][0]["frame_index"], MODULE.align_frame_count(5) - 1)
 
     def test_llm_prompt_uses_mode_specific_english_system_prompt(self):
         expected_phrases = {
@@ -1961,6 +2732,41 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertIn("never stretch, freeze, loop, or hold it across an uncovered interval", result["draft_video_prompt"])
         self.assertNotIn("\nsource_duration_seconds: 5.00", result["draft_video_prompt"])
 
+    def test_reference_video_preserves_aligned_362_frame_tail(self):
+        aligned_duration = 362 / MODULE.MODEL_FPS
+        result = self.compile({
+            "mode": "REF2VA",
+            "requested_duration": 15,
+            "shots": [{"duration": 15, "visual_action": "Follow @clip."}],
+            "references": [{
+                "type": "video", "role": "camera", "alias": "clip",
+                "duration": aligned_duration, "source_duration": aligned_duration,
+                "video_filename": "source.mp4",
+            }],
+        })
+        ref = result["project"]["references"][0]
+        self.assertAlmostEqual(ref["duration"], aligned_duration, places=6)
+        self.assertFalse(any("Reference-video duration" in error for error in result["errors"]))
+
+    def test_long_reference_video_keeps_full_source_and_selects_timeline_intersection(self):
+        result = self.compile({
+            "mode": "REF2VA",
+            "requested_duration": 5,
+            "shots": [{"duration": 5, "visual_action": "Use @clip."}],
+            "references": [{
+                "type": "video", "role": "motion", "alias": "clip",
+                "duration": 60, "source_duration": 60, "timeline_start": -30,
+                "video_filename": "long-source.mp4",
+            }],
+        })
+        ref = result["project"]["references"][0]
+        self.assertEqual(ref["source_duration"], 60)
+        self.assertEqual(ref["duration"], 60)
+        self.assertIn("selected_source_duration_seconds: 5.17", result["draft_video_prompt"])
+        self.assertIn("source_trim_start_seconds: 30.00", result["draft_video_prompt"])
+        self.assertIn("target_timeline_start_seconds: 0.00", result["draft_video_prompt"])
+        self.assertFalse(result["errors"])
+
     def test_reference_audio_upload_metadata_is_preserved(self):
         result = self.compile({
             "mode": "REF2VA",
@@ -1991,6 +2797,165 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertIn("VIDEO PRESET: CAMERA", prompt)
         self.assertNotIn("VIDEO PRESET: CONTINUATION", prompt)
         self.assertNotIn("VIDEO PRESET: MOTION", prompt)
+
+    def test_motion_video_reference_excludes_source_appearance_at_analysis_and_rewrite(self):
+        analysis = """VIDEO_OVERVIEW: Live-action woman in a tunnel.
+SUBJECTS: A woman with red hair, pale skin, a leather dress, and a slender body.
+ACTION_TIMELINE: 0.0-2.0s Actor A raises both arms, pivots left, and lowers into a crouch.
+CAMERA_EDITING: Static medium shot.
+ENVIRONMENT_OBJECTS: Dark tunnel.
+STYLE_LIGHTING: Glossy photoreal materials.
+VISIBLE_TEXT: none visible.
+EDIT_CONTINUITY: Preserve the motion."""
+        scoped = MODULE._scope_video_analysis(analysis, "motion")
+        self.assertIn("MOTION_ONLY_SCOPE", scoped)
+        self.assertIn("Actor A raises both arms", scoped)
+        self.assertNotIn("red hair", scoped)
+        self.assertNotIn("pale skin", scoped)
+        self.assertNotIn("leather dress", scoped)
+        self.assertNotIn("Dark tunnel", scoped)
+        self.assertNotIn("photoreal", scoped)
+
+        project, _warnings = MODULE.normalize_project({
+            "mode": "REF2VA",
+            "references": [{"type": "video", "role": "motion", "duration": 3}],
+        })
+        prompt = MODULE._video_reference_system_modules(project)
+        self.assertIn("anonymous motion carrier", prompt)
+        self.assertIn("target subject keeps its own identity and appearance", prompt)
+        self.assertIn("body shape or proportions", prompt)
+        self.assertIn("leave it unspecified rather than borrowing", prompt)
+
+    def test_motion_camera_video_reference_keeps_only_action_and_camera_evidence(self):
+        analysis = """VIDEO_OVERVIEW: Live-action woman in a tunnel.
+SUBJECTS: A woman with red hair, pale skin, a leather dress, and a slender body.
+ACTION_TIMELINE: 0.0-2.0s Actor A raises both arms while stepping backward.
+CAMERA_EDITING: The camera orbits right at matching speed while keeping Actor A centered.
+ENVIRONMENT_OBJECTS: Dark tunnel with steel doors.
+STYLE_LIGHTING: Glossy photoreal materials and red lighting.
+VISIBLE_TEXT: EXIT.
+EDIT_CONTINUITY: Preserve all content."""
+        scoped = MODULE._scope_video_analysis(analysis, "motion_camera")
+        self.assertIn("MOTION_CAMERA_SCOPE", scoped)
+        self.assertIn("Actor A raises both arms", scoped)
+        self.assertIn("camera orbits right", scoped)
+        self.assertIn("their synchronization", scoped)
+        self.assertNotIn("red hair", scoped)
+        self.assertNotIn("leather dress", scoped)
+        self.assertNotIn("Dark tunnel", scoped)
+        self.assertNotIn("photoreal", scoped)
+        self.assertNotIn("EXIT", scoped)
+        self.assertIn("Never add a person, actor, creature, object, prop, architecture", scoped)
+        self.assertIn("discard unmatched actors and object identities", scoped)
+
+        project, _warnings = MODULE.normalize_project({
+            "mode": "REF2VA",
+            "references": [{"type": "video", "role": "motion_camera", "duration": 3}],
+        })
+        prompt = MODULE._video_reference_system_modules(project)
+        self.assertIn("<Video 1>=motion_camera", prompt)
+        self.assertIn("VIDEO PRESET: MOTION AND CAMERA", prompt)
+        self.assertIn("actor-neutral performance plus camera behavior", prompt)
+        self.assertIn("strictly as a kinematic-and-camera template", prompt)
+        self.assertIn("discard every unmatched source actor", prompt)
+        self.assertIn("target input does not establish", prompt)
+        self.assertIn("Never transfer source identity", prompt)
+        analysis_prompt = MODULE._video_analysis_prompt("motion_camera", 3.0, [0.0, 1.5, 2.95])
+        self.assertIn("rather than scene-content evidence", analysis_prompt)
+        self.assertIn("never merely because a background person is visible", analysis_prompt)
+        self.assertIn("do not identify or introduce the object", analysis_prompt)
+
+    def test_ref_cleanup_replaces_video_self_derivation_with_locked_definition(self):
+        project, _warnings = MODULE.normalize_project({
+            "mode": "REF2VA",
+            "references": [{"type": "video", "role": "motion_camera", "duration": 3}],
+        })
+        reference_model = MODULE._reference_model(project)
+        generated = """subject_definitions:
+<Video 1> A source video providing actor-neutral motion and camera behavior, derived from <Video 1>.
+
+summary:
+[reference generation] A target scene follows <Video 1>.
+
+retention_analysis:
+<Video 1>: weak_reference - motion and camera are referenced.
+
+detailed_description:
+[Shot 1] The target action unfolds.
+
+overall_soundscape:
+Quiet ambience.
+
+non_diegetic_music:
+N/A"""
+        cleaned = MODULE._enforce_reference_definition_provenance(generated, reference_model)
+        definition = MODULE._ref_prompt_sections(cleaned)["subject_definitions"]
+        self.assertEqual(
+            definition,
+            "<Video 1> is the motion, action timing, and camera behavior reference, using the selected 3.00-second source interval as the configured analysis and reference segment.",
+        )
+        self.assertNotIn("derived from <Video 1>", definition)
+
+    def test_video_definition_uses_timeline_selection_not_full_source_duration(self):
+        project, _warnings = MODULE.normalize_project({
+            "mode": "REF2VA",
+            "requested_duration": 5,
+            "references": [{
+                "type": "video", "role": "motion_camera",
+                "duration": 144.73, "source_duration": 144.73,
+                "trim_start": 40.0, "timeline_start": 0.0,
+            }],
+        })
+        definition = MODULE._reference_model(project)["definitions"][0]
+        self.assertIn("selected 5.17-second source interval", definition)
+        self.assertIn("beginning at 40.00 seconds", definition)
+        self.assertNotIn("144.73", definition)
+
+    def test_short_video_definition_reports_only_available_timeline_interval(self):
+        project, _warnings = MODULE.normalize_project({
+            "mode": "REF2VA",
+            "requested_duration": 5,
+            "references": [{
+                "type": "video", "role": "motion_camera",
+                "duration": 3.0, "source_duration": 3.0,
+                "timeline_start": 0.0,
+            }],
+        })
+        definition = MODULE._reference_model(project)["definitions"][0]
+        self.assertIn("selected 3.00-second source interval", definition)
+        self.assertNotIn("5.17-second", definition)
+
+    def test_framing_cleanup_matches_medium_and_full_body_ranges(self):
+        generated = (
+            "The camera starts in a medium shot framing her from the waist upward. "
+            "It then keeps her full body visible from head to toe in a medium shot."
+        )
+        cleaned = MODULE._enforce_framing_body_range(generated)
+        self.assertIn("medium shot framing her from the waist upward", cleaned)
+        self.assertIn("full body visible from head to toe in a full shot", cleaned)
+        analysis_prompt = MODULE._video_analysis_prompt("motion_camera", 3.0, [0.0, 1.5, 2.95])
+        self.assertIn("medium shot=waist upward", analysis_prompt)
+        self.assertIn("full shot=the entire body from head to toe", analysis_prompt)
+
+    def test_video_subject_and_style_presets_create_subject_labels(self):
+        for role, expected_contract in (
+            ("subject_visual", "exclude source motion, action timing, camera, cuts, and audio"),
+            ("visual_style", "visual style only: rendering medium, palette"),
+        ):
+            with self.subTest(role=role):
+                result = self.compile({
+                    "mode": "REF2VA",
+                    "shots": [{"duration": 5, "visual_action": "@vid appears in the scene."}],
+                    "references": [{
+                        "type": "video", "role": role, "alias": "vid", "duration": 5,
+                        "strength": "normal", "video_filename": "source.mp4",
+                    }],
+                })
+                plan = MODULE._reference_model(result["project"])["label_plan"]
+                self.assertEqual(list(plan), ["<Subject 1>"])
+                self.assertEqual(plan["<Subject 1>"]["source"], "<Video 1>")
+                self.assertIn(expected_contract, plan["<Subject 1>"]["contract"])
+                self.assertIn("<Subject 1> appears in the scene.", result["draft_video_prompt"])
 
     def test_audio_reference_system_prompt_loads_only_selected_preset_modules(self):
         project, _warnings = MODULE.normalize_project({
@@ -3400,8 +4365,8 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertIn("The camera uses a low angle", shot["visual_action"])
         self.assertIn("The camera tracks the moving subject", shot["visual_action"])
         self.assertIn("CAMERA_POLICY:", prompt)
-        self.assertIn("choose framing that contains the largest required visible action and final state", prompt)
-        self.assertIn("otherwise use one motivated reframe", prompt)
+        self.assertIn("choose one coherent physical camera path", prompt)
+        self.assertIn("configured Moves are consecutive phases", prompt)
         self.assertNotIn("camera_framing:", prompt)
         self.assertNotIn("camera_angle:", prompt)
         self.assertNotIn("camera_motion:", prompt)

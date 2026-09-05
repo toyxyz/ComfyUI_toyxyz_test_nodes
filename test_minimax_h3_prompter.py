@@ -1338,6 +1338,10 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertIn("card.style.flex = `0 0 ${widthPercent}%`", source)
         self.assertIn("const total = Math.max(0.1, this.totalDuration());", source)
         self.assertIn("margin:0 7px; cursor:pointer", source)
+        self.assertIn("syncSelectedShotToPlayhead()", source)
+        self.assertIn("this.syncSelectedShotToPlayhead();", source)
+        self.assertIn("time + 1e-6 >= this.shotTimelineRange(candidate).startSeconds", source)
+        self.assertIn('card.classList.toggle("selected", card.dataset.shotId === shot.id)', source)
 
     def test_frontend_buttons_have_explanatory_tooltips(self):
         source = (Path(__file__).parent / "web" / "minimax_h3_prompter.js").read_text(encoding="utf-8")
@@ -1584,6 +1588,10 @@ class MinimaxH3PrompterTests(unittest.TestCase):
         self.assertIn('data-preset="camera_speed"', source)
         self.assertIn('data-preset="style"', source)
         self.assertIn('data-el="raw-prompt" type="checkbox"><span>Raw Prompt</span>', source)
+        self.assertIn('data-action="copy-prompt"', source)
+        self.assertIn('this.els.preview?.textContent || ""', source)
+        self.assertIn('navigator.clipboard?.writeText', source)
+        self.assertIn('document.execCommand("copy")', source)
         self.assertIn('this.rawPromptEnabled = this.els["raw-prompt"].checked', source)
         self.assertIn('this.previewData?.llm_prompt', source)
         self.assertIn('this.lastRawModelPrompt = String(data.raw_model_prompt || "")', source)

@@ -792,6 +792,7 @@ function installStyles() {
       padding:3px 6px; border:1px solid #30353d; border-radius:5px; background:#181b20; }
     .mmh3p-enhance-level { display:flex; align-items:center; gap:6px; color:var(--muted); font-size:10px; }
     .mmh3p-enhance-level select { width:92px; min-width:92px; height:25px; }
+    .mmh3p-copy-button { min-width:52px; height:25px; padding:2px 9px; white-space:nowrap; }
     .mmh3p-log-panel { min-width:0; min-height:0; display:flex; flex-direction:column; }
     .mmh3p-log { flex:1; min-height:0; overflow:auto; margin-top:6px; padding:6px 8px;
       white-space:pre-wrap; word-break:break-word; color:#a9d1ad; background:#121416;
@@ -930,6 +931,7 @@ class PrompterUI {
             <label class="mmh3p-enhance-level" title="None: concise standard prompt. Normal: materially expands action steps and resolves hands, objects, camera, and keyframe continuity. Strong: creates a much longer rewriter-style scene with compatible new staging, lighting, performance, sound, and atmosphere details.">
               <span>Enhance</span><select data-el="enhance"></select>
             </label>
+            <button class="mmh3p-copy-button" data-action="copy-prompt" type="button" title="Copy the prompt currently displayed above, including Raw Prompt when enabled">Copy</button>
             <label class="mmh3p-auto-run" title="Show the complete system and user prompts supplied to the selected prompt-generation model">
               <input data-el="raw-prompt" type="checkbox"><span>Raw Prompt</span>
             </label>
@@ -1046,6 +1048,7 @@ class PrompterUI {
       button.addEventListener("click", () => this.addReference(button.dataset.refType));
     });
     this.root.querySelector('[data-action="enhance"]').addEventListener("click", () => this.enhancePrompt());
+    this.root.querySelector('[data-action="copy-prompt"]').addEventListener("click", event => this.copyDisplayedPrompt(event.currentTarget));
     this.root.querySelectorAll('[data-action="preset-tab"]').forEach(button => {
       button.addEventListener("click", () => {
         this.activePresetTab = button.dataset.presetTab;
@@ -1458,6 +1461,27 @@ class PrompterUI {
     return `${String(minutes).padStart(2, "0")}:${remainder.toFixed(3).padStart(6, "0")}`;
   }
 
+  syncSelectedShotToPlayhead() {
+    if (!this.project.shots.length) return;
+    const time = this.playheadTime;
+    let index = this.project.shots.length - 1;
+    for (let candidate = this.project.shots.length - 1; candidate >= 0; candidate -= 1) {
+      if (time + 1e-6 >= this.shotTimelineRange(candidate).startSeconds) {
+        index = candidate;
+        break;
+      }
+    }
+    const shot = this.project.shots[index];
+    if (!shot || shot.id === this.selectedShotId) return;
+    this.selectedShotId = shot.id;
+    this.els.timeline?.querySelectorAll(".mmh3p-shot").forEach(card => {
+      card.classList.toggle("selected", card.dataset.shotId === shot.id);
+    });
+    this.renderShotEditor();
+    this.renderPresets();
+    this.updateTimelineActionButtons();
+  }
+
   setPlayheadTime(seconds, forceMedia = false) {
     const duration = Math.max(.001, this.timelineDuration());
     this.playheadTime = Math.max(0, Math.min(duration, Number(seconds) || 0));
@@ -1466,6 +1490,7 @@ class PrompterUI {
     const position = `${this.playheadTime / duration * 100}%`;
     this.els["playhead-line"].style.setProperty("--playhead-position", position);
     this.els["timeline-scrubber-track"].style.setProperty("--playhead-position", position);
+    this.syncSelectedShotToPlayhead();
     this.syncReferenceVideoPreview(forceMedia);
   }
 
@@ -2877,6 +2902,48 @@ class PrompterUI {
     this.els.preview.textContent = this.project.enhanced_prompt
       ? this.previewData.video_prompt || this.project.enhanced_prompt
       : "No generated prompt yet. Click Generate Prompt to create one.";
+  }
+
+  async copyDisplayedPrompt(button) {
+    const text = this.els.preview?.textContent || "";
+    if (!text) {
+      this.appendLog("There is no displayed prompt to copy.", "copy-prompt", "warning");
+      return;
+    }
+    try {
+      const legacyCopy = () => {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        try {
+          textarea.select();
+          if (!document.execCommand("copy")) throw new Error("The browser rejected the copy command.");
+        } finally {
+          textarea.remove();
+        }
+      };
+      if (navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(text);
+        } catch (_clipboardError) {
+          legacyCopy();
+        }
+      } else {
+        legacyCopy();
+      }
+      button.textContent = "Copied";
+      clearTimeout(this.copyButtonResetTimer);
+      this.copyButtonResetTimer = setTimeout(() => { button.textContent = "Copy"; }, 1200);
+      this.appendLog(
+        `${this.rawPromptEnabled ? "Raw prompt" : "Generated prompt"} copied to the clipboard.`,
+        "copy-prompt",
+      );
+    } catch (error) {
+      this.appendLog(`Copy failed: ${error.message || error}`, "copy-prompt", "error");
+    }
   }
 
   disableRawPromptPreview() {

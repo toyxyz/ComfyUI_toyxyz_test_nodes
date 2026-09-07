@@ -2,6 +2,20 @@
 
 This is a custom node that collects the tools I use frequently.
 
+### MiniMax H3 camera render
+
+Enable **Camera render** in the camera panel to expose a `camera_render` IMAGE output.
+On node execution it renders the full panel camera timeline at **1024×1024, 24 fps**
+as a CPU float32 image batch. Connect it to Save Image for a PNG sequence or a video
+combine node (24 fps). The existing `length` output is its frame count.
+Rendering is off by default and writes no files itself. Allow roughly 1.5 GiB RAM
+per five seconds of output; long sequences require proportionally more RAM.
+It renders the preview mannequin, ground grid and white edges, without editor overlays.
+Shot cuts, Move interpolation, composition and roll match the preview. Text-only
+Motion presets and Qwen/user-text target changes are not 3D-solved and therefore
+are not animated in this output. This checkbox applies to the entire timeline and
+is separate from each item's prompt-camera enable checkbox.
+
 https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8536e96a-514a-48b2-b1aa-8eccbd3fa853
 
 (This video is at 4x speed)
@@ -62,6 +76,17 @@ Direct Webcam capture workflow (without webcam app)
 
 ## Minimax-H3-prompter
 
+### Camera Advanced path controls
+
+- **Direction** selects the destination viewpoint; **Orbit route** selects how a Move reaches it in camera-relative coordinates. Choose camera-left or camera-right explicitly when the route matters. Shortest path preserves the previous behavior, with a leftward tie at 180 degrees. Identical directions do not imply a full revolution. The route control is inactive on a Shot opening, which establishes a new take.
+- Preview and compiled camera text share the signed orbit route. A profile-to-opposite-profile half-circle names the intervening front or rear view, rather than relying on the destination alone.
+- Continuous paths interpolate distance, elevation, azimuth and framing target with shape-preserving shared waypoint tangents. Reversing components slow at the boundary; the view does not reset. Camera height is derived from those quantities, so height need not be monotonic when both framing target and angle change.
+- **Composition** selects the screen position of the framed subject region: center, left/right thirds, upper/lower thirds, or four corner-third positions. It is independent of orbital Direction. The preview interpolates an off-axis framing offset rather than inventing subject movement or a physical orbit. Distance can increase to retain the requested body range near an edge; this can make the subject smaller. Camera prose includes the continuous reframing and resulting destination placement.
+- The Full camera timeline UI box has been removed. Verified camera sentences and diagnostic metadata remain in the raw plan. Diagnostics are not rendered into the final camera sentence. Ground-plane conflicts are reported, not silently corrected. The fast-orbit warning is a planning heuristic, not a measured model limit.
+- Geometry remains a standing mannequin proxy with a square preview, not a constraint on output aspect ratio or a simulation of arbitrary subject poses. Text-only video generation can still miss paths or insert cuts despite valid geometry.
+
+Camera checks: `python -m unittest test_advanced_camera_prompt.py` and `node test_camera_geometry.mjs`.
+
 <img width="2190" height="1624" alt="image" src="https://github.com/user-attachments/assets/fc97abbe-d8ee-498b-8b5c-f248663cb749" />
 
 
@@ -80,8 +105,8 @@ audio references. Supported modes are `Auto`, `T2VA`, `I2VA`, `FL2VA`, `L2VA`, a
 1. Select a mode, duration, and model. `Auto` chooses a mode from the reference layout.
 2. Describe each shot naturally in **Prompt**, including actions, camera direction, dialogue,
    visible text, sound, and music.
-3. Optionally use the preset menu below Prompt. **Camera** provides angle, motion, shot framing, motion-amplitude,
-   and motion-speed presets using the H3 camera vocabulary;
+3. Optionally use the preset menu below Prompt. **Camera** provides direction, angle, motion, and shot-framing presets using
+   the H3 camera vocabulary;
    **Style** groups detailed presets by general cinema/drama, natural-light/outdoor, urban,
    noir/thriller, horror/found footage, documentary/reality, action/fantasy, science fiction,
    fashion/editorial, commercial/product, POV/social video, film era, physical-character animation,
@@ -148,6 +173,26 @@ Set `TOYXYZ_LLAMA_COMPLETION`, `TOYXYZ_LLAMA_CLI`, `TOYXYZ_LLAMA_SERVER`, or
   cuts/rhythm/temporal structure. Analysis and VIDEO output use only the interval visible on the video timeline.
   Prompt generation also emits a locked video timeline plan: placed clips apply only inside their visible
   intervals, while uncovered intervals execute the corresponding shot prompt instead of freezing a clip.
+  For **Motion / action timing**, assign source objects in the main Prompt or reference description,
+  in Korean or English: `<Video 1> red object = woman in white; blue object = man in a black coat`.
+  This preset requests **reference generation**, including camera reference: transfer the specified
+  tracks' motion, placement, timing and relative occlusion, plus evidenced camera path/framing/pacing,
+  into a new target scene. Source appearance, environment, surfaces and lighting are excluded.
+  Explicit target action/camera instructions override conflicting reference evidence. Source-video
+  editing remains a separate preset. This is a prompt contract, not a pixel-tracking implementation.
+  Minimal color/shape selectors identify tracks; they are not transferred appearance. Analysis preserves
+  separate actor bindings, motion and interaction timing, and flags uncertain tracking or unobserved limbs.
+  Qwen's existing video-analysis pass emits a structured binding array with source selectors, stable actor
+  IDs, target descriptions and exact supporting user-text quotes. The application checks the schema,
+  quoted text, ambiguity and duplicate tracks, then assigns collision-free `<Subject N>` labels.
+  It assembles their definitions and retention lines and checks label presence in the summary and assigned
+  Shots. Missing output labels or uncertain mappings produce explicit errors instead of silent remapping.
+  These checks do not prove semantic correctness of the vision model's tracking or detect every omitted
+  free-text assignment; inspect the returned `motion_bindings` in reference analyses when diagnosing one.
+  Motion-only REF2VA uses a compact system instruction set; mixed-reference projects retain their
+  role-specific instructions. No extra Qwen call is introduced. Context estimates are logged against the
+  16,384-token runtime budget. Audio reuse still requires an independently enabled audio role; merely
+  loading a video never creates an Audio label or a source-signal-copy claim.
 - **Audio:** choose `None`, full/partial signal copy, voice and delivery, dialogue/lyrics, sound and
   ambience, or music/rhythm. Audio is not inferred beyond the selected role and supplied metadata.
 

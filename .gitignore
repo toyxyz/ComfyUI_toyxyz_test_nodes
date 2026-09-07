@@ -11,3 +11,9 @@ QWEN_IMAGE_POC_PLAN.md
 TESTING_CHECKLIST.md
 ZIMAGE_SUPPORT_NOTES.md
 tests/
+
+# Local test outputs, logs, extracted frames and temporary videos
+/test/
+
+# Local agent instructions
+/AGENTS.md

@@ -85,7 +85,6 @@ Direct Webcam capture workflow (without webcam app)
 - The Full camera timeline UI box has been removed. Verified camera sentences and diagnostic metadata remain in the raw plan. Diagnostics are not rendered into the final camera sentence. Ground-plane conflicts are reported, not silently corrected. The fast-orbit warning is a planning heuristic, not a measured model limit.
 - Geometry remains a standing mannequin proxy with a square preview, not a constraint on output aspect ratio or a simulation of arbitrary subject poses. Text-only video generation can still miss paths or insert cuts despite valid geometry.
 
-Camera checks: `python -m unittest test_advanced_camera_prompt.py` and `node test_camera_geometry.mjs`.
 
 <img width="2190" height="1624" alt="image" src="https://github.com/user-attachments/assets/fc97abbe-d8ee-498b-8b5c-f248663cb749" />
 

@@ -178,7 +178,7 @@ DEFAULT_PROJECT = {
             "visual_action": "",
             "presets": {
                 "camera_angle": "none", "camera_direction": "none", "camera_motion": "none", "camera_shot": "none",
-                "style": "none",
+                "style": "none", "camera_style": "none",
             },
         }
     ],
@@ -188,8 +188,8 @@ DEFAULT_PROJECT = {
     "enhance_model": DEFAULT_ENHANCE_MODEL_ID,
     "image_model": DEFAULT_IMAGE_MODEL_ID,
     "auto_run": False,
-    "enhance": False,
-    "enhance_level": "none",
+    "enhance": True,
+    "enhance_level": "normal",
     "enhanced_prompt": "",
 }
 
@@ -276,14 +276,14 @@ CAMERA_PRESET_PROMPTS = {
 
 STYLE_PRESET_PROMPTS = {
     "none": "",
-    "animation_2d": "polished hand-drawn 2D animation with coherent linework, layered flat color, readable silhouettes, expressive character acting, and continuously interpolated configured camera travel",
+    "animation_2d": "polished hand-drawn 2D animation with coherent linework, layered flat color, readable silhouettes, expressive character acting",
     "animation_3d": "polished feature-quality 3D animation with appealing sculpted geometry, consistent PBR materials, global illumination, expressive facial acting, natural articulated motion, and physically coherent secondary motion",
     "rough_hand_drawn_2d": "loose hand-drawn 2D animation with visible pencil strokes, rough construction lines, uneven organic contours, expressive smears, hand-drawn in-betweens, and energetic frame-by-frame character movement",
     "watercolor_2d": "hand-painted watercolor 2D animation with soft bleeding pigments, textured watercolor paper, delicate ink outlines, translucent color layering, painterly backgrounds, and gentle frame-by-frame character motion",
     "ink_wash_2d": "traditional ink-wash 2D animation with expressive black brush strokes, diluted grey ink gradients, handmade rice-paper texture, minimal color accents, and flowing brush-like character motion",
     "modern_flat_cartoon": "modern flat 2D cartoon animation with bold clean outlines, simplified geometric character shapes, flat colors, minimal shading, highly readable facial expressions, and snappy pose-to-pose character animation",
     "vintage_western_cartoon": "vintage hand-painted Western 2D cartoon animation with inked outlines, painted cel colors, watercolor backgrounds, slightly imperfect registration, subtle film grain, and lively frame-by-frame character acting",
-    "comic_book_2d": "2D comic-book animation with bold black ink outlines, halftone-dot shading, flat spot colors, dramatic panel composition, speed lines, impact frames, and animated graphic transitions",
+    "comic_book_2d": "2D comic-book animation with bold black ink outlines, halftone-dot shading, flat spot colors, dramatic panel composition, speed lines, impact frames",
     "manga_monochrome_2d": "black-and-white manga animation with crisp pen-and-ink linework, screentone shading, cross-hatching, pure black shadows, white negative space, speed lines, and restrained panel-like motion",
     "paper_cutout_2d": "handcrafted paper-cutout 2D animation with layered paper shapes, visible fibers and cut edges, flat articulated pieces, practical-looking shadows, and deliberately stepped frame-by-frame motion",
     "anime_1980s_ova": "late-1980s Japanese OVA animation with detailed hand-drawn linework, dramatic painted shadows, muted analog colors, hand-painted backgrounds, subtle film grain, elaborate mechanical detail, and cinematic cel character animation",
@@ -306,12 +306,12 @@ STYLE_PRESET_PROMPTS = {
     "scifi_cgi_3d": "cinematic science-fiction 3D CG with precise hard-surface modeling, advanced PBR materials, emissive interface accents, volumetric lighting, coherent reflections, detailed environments, and physically believable animation",
     "figurine_animation": "a crafted figurine character coming fully alive with fluid expressive animation, natural body mechanics, responsive facial acting, and material-aware secondary motion while preserving its recognizable sculpted identity and surface appearance",
     "cinematic_live_action": "cinematic live-action film with realistic skin and materials, natural physical motion, controlled depth of field, practical lighting, and restrained filmic contrast",
-    "smartphone_video": "natural smartphone-recorded video with realistic mobile exposure, compact-sensor detail, casual composition, and authentic available light",
+    "smartphone_video": "natural smartphone-recorded video with realistic mobile exposure, compact-sensor detail, and authentic available light",
     "photoreal_live_action": "photorealistic live-action footage with natural skin texture, physically plausible motion, coherent materials, realistic lighting, and grounded production detail",
     "documentary": "observational documentary footage with available-light realism, natural color response, unembellished environments, and authentic human behavior",
     "stop_motion": "stop-motion animation with handcrafted materials, intentional frame-by-frame movement, tactile surfaces, and consistent miniature-scale lighting",
-    "anime_1990s": "authentic 1990s Japanese hand-drawn anime with traditional 2D cel animation, painted background art, visible ink linework, two-tone cel shading, restrained held-frame timing for character acting, subtle analog film texture, continuously interpolated configured camera travel, and strictly no 3D, CGI, or game-engine rendering",
-    "retro_anime_motion_graphics": "polished retro-anime motion graphics with a limited palette, clean manga linework, halftone shading, sequential graphic reveals, UI-style wipes, pixel accents, poster-like composition, and stable protected typography",
+    "anime_1990s": "authentic 1990s Japanese hand-drawn anime with traditional 2D cel animation, painted background art, visible ink linework, two-tone cel shading, restrained held-frame timing for character acting, subtle analog film texture, and strictly no 3D, CGI, or game-engine rendering",
+    "retro_anime_motion_graphics": "polished retro-anime motion graphics with a limited palette, clean manga linework, halftone shading, sequential graphic reveals, pixel accents, poster-like composition, and stable protected typography",
     "retro_anime_noir_jazz": "retro Japanese anime opening artwork with a graphic noir-jazz aesthetic, bold silhouettes, moody contrast, vintage analog texture, and poster-like visual sensibility",
     "contemporary_anime": "contemporary Japanese 2D anime with clean line art, expressive character acting, saturated color grading, strong readable key poses, crisp highlights, selective impact-frame emphasis, emotionally cinematic presentation, and polished anime-PV finish",
     "contemporary_action_anime": "contemporary Japanese 2D action anime with sharp clean line art, dynamic perspective drawing, exaggerated but readable key poses, speed-line accents, selective impact frames, hard-edged highlights, and clear high-energy action staging",
@@ -324,14 +324,14 @@ STYLE_PRESET_PROMPTS = {
     "high_saturation_commercial": "high-saturation commercial with photoreal subjects, a bold controlled palette, clean subject presentation, glossy textures, crisp visual hierarchy, and premium lighting",
     "photoreal_graphic_hybrid": "photorealistic characters against flat graphic-animation design with controlled color palettes, clean commercial composition, and a cohesive hybrid live-action and graphic treatment",
     "phone_ugc_ad": "phone-shot UGC advertisement with casual creator-led realism, natural available lighting, conversational performance, realistic micro-expressions, and short-form social-media character",
-    "authentic_smartphone_vlog": "authentic smartphone vlog with handheld selfie-camera character, natural room or available lighting, casual creator performance, realistic micro-expressions, conversational pacing, and an unpolished short-form social-media aesthetic",
+    "authentic_smartphone_vlog": "authentic smartphone vlog with natural room or available lighting, casual creator performance, realistic micro-expressions, conversational pacing, and an unpolished short-form social-media aesthetic",
     "sprite_16bit": "16-bit retro 2D game-sprite animation with readable pixel silhouettes, low-frame game timing, short loop-friendly movement, and simple retro-console animation logic",
     "sketch_anime": "hand-drawn sketch animation with rough textured outlines, minimalist flat coloring, loose line movement, white highlight accents, and an intentionally unfinished rough-animation finish",
     "lineart_anime": "lineart anime with clean ink contours, contour-focused shading, minimal fill rendering, crisp outline priority, and strong graphic readability",
-    "anamorphic_cinema": "anamorphic cinematic live-action with widescreen composition, shallow depth of field, subtle anamorphic lens characteristics, practical lighting, atmospheric highlights, and restrained film grading",
+    "anamorphic_cinema": "anamorphic cinematic live-action with shallow depth of field, subtle anamorphic lens characteristics, practical lighting, atmospheric highlights, and restrained film grading",
     "cinematic_35mm": "cinematic live-action photographed with a 35mm film aesthetic, natural skin texture, subtle organic film grain, soft highlight roll-off, shallow depth of field, realistic optical behavior, practical lighting, and restrained film color grading",
     "film_noir": "classic film noir with high-contrast black-and-white cinematography, hard directional lighting, deep shadows, venetian-blind patterns, smoky atmosphere, and dramatic silhouettes",
-    "neo_noir": "modern neo-noir cinema with deep shadows, selective neon lighting, a dark desaturated palette, reflective surfaces, restrained acting, and moody cinematic composition",
+    "neo_noir": "modern neo-noir cinema with deep shadows, selective neon lighting, a dark desaturated palette, reflective surfaces, restrained acting",
     "horror_cinema": "cinematic horror with oppressive low-key lighting, practical light sources, deep shadows, unsettling negative space, realistic textures, and grounded atmospheric tension",
     "analog_horror_1990s": "1990s analog horror with consumer VHS recording character, dim practical lighting, empty institutional atmosphere, soft analog detail, subtle tape noise, restrained distortion, and unsettling grounded realism",
     "scifi_mystery": "cinematic science-fiction mystery teaser with cold futuristic lighting, restrained production design, atmospheric haze, enigmatic technological accents, and realistic cinematic materials",
@@ -341,54 +341,77 @@ STYLE_PRESET_PROMPTS = {
     "food_commercial": "premium food commercial with appetizing macro detail, glossy food textures, vivid controlled colors, crisp ingredient visibility, precise highlights, and polished advertising lighting",
     "music_video": "stylized cinematic music video with expressive performance, bold lighting design, atmospheric color grading, graphic visual accents, and strong beat-responsive energy",
     "anime_music_video": "high-energy anime music video with contemporary Japanese anime rendering, strong character poses, expressive facial detail, dramatic lighting changes, impact-frame styling, and rhythmic visual energy",
-    "graphic_poster_animation": "graphic poster animation with protected original layout and typography, bold poster-like composition, sequential line-art treatment, geometric graphic elements, restrained parallax, and subtle looping accents",
-    "minimalist_motion_design": "minimalist 2D motion design with clean geometric forms, a limited color palette, precise easing, simple graphic transitions, strong visual hierarchy, and smooth restrained animation",
+    "graphic_poster_animation": "graphic poster animation with protected original layout and typography, bold poster-like composition, sequential line-art treatment, geometric graphic elements, and subtle looping accents",
+    "minimalist_motion_design": "minimalist 2D motion design with clean geometric forms, a limited color palette, strong visual hierarchy, and smooth restrained animation",
     "game_cinematic": "high-end game cinematic with realistic character rendering, dramatic environmental lighting, detailed production design, coherent materials, and polished real-time-render aesthetics",
     "dark_retro_fantasy": "1970s-to-1990s dark-fantasy live-action film with a practical-effects atmosphere, weathered material detail, soft analog imagery, muted vintage color response, and mysterious mythic tone",
     "modern_cinematic_live_action": "photorealistic live-action cinema with natural skin texture, realistic materials, physically believable movement, cinematic lighting, shallow depth of field, subtle filmic contrast, natural lens behavior, and restrained color grading",
-    "prestige_drama": "prestige live-action drama with naturalistic performances, subtle facial expressions, realistic skin texture, restrained cinematic lighting, soft contrast, shallow depth of field, carefully composed frames, slow controlled camera movement, and grounded production design",
-    "intimate_relationship_drama": "intimate live-action relationship drama with quiet restrained acting, subtle micro-expressions, natural breathing and posture shifts, warm practical interior lighting, shallow depth of field, a realistic lived-in environment, carefully matched eyelines, and understated cinematic camera work",
-    "short_form_microdrama": "grounded live-action microdrama with tight emotional pacing, medium-close framing, natural performances, shallow depth of field, warm realistic interior lighting, frequent shot-reverse-shot editing, strong but believable emotion, and a realistic everyday environment",
-    "golden_hour_road_movie": "cinematic road movie with warm golden-hour sunlight, natural backlighting, soft atmospheric haze, gentle lens flare, a nostalgic color palette, relaxed natural performances, subtle wind movement, smooth restrained camera motion, and photorealistic live action",
-    "natural_light_indie_film": "naturalistic indie film with soft available light, muted organic colors, imperfect realistic skin, understated performances, gentle handheld camera, shallow depth of field, subtle environmental movement, and intimate observational framing",
-    "mountain_adventure_cinema": "photorealistic outdoor adventure film with a vast natural landscape, natural mountain light, atmospheric depth, realistic wind, physically grounded performance, a stable horizon, detailed environmental parallax, and cinematic scale",
+    "prestige_drama": "prestige live-action drama with naturalistic performances, subtle facial expressions, realistic skin texture, restrained cinematic lighting, soft contrast, shallow depth of field, and grounded production design",
+    "intimate_relationship_drama": "intimate live-action relationship drama with quiet restrained acting, subtle micro-expressions, natural breathing and posture shifts, warm practical interior lighting, shallow depth of field, a realistic lived-in environment",
+    "short_form_microdrama": "grounded live-action microdrama with tight emotional pacing, natural performances, shallow depth of field, warm realistic interior lighting, strong but believable emotion, and a realistic everyday environment",
+    "golden_hour_road_movie": "cinematic road movie with warm golden-hour sunlight, natural backlighting, soft atmospheric haze, gentle lens flare, a nostalgic color palette, relaxed natural performances, subtle wind movement, and photorealistic live action",
+    "natural_light_indie_film": "naturalistic indie film with soft available light, muted organic colors, imperfect realistic skin, understated performances, shallow depth of field, subtle environmental movement",
+    "mountain_adventure_cinema": "photorealistic outdoor adventure film with a vast natural landscape, natural mountain light, atmospheric depth, realistic wind, physically grounded performance, and cinematic scale",
     "survival_expedition_film": "realistic expedition film with a harsh natural environment, weathered clothing and equipment, cold natural daylight, wind-driven atmosphere, documentary-influenced cinematic framing, physically believable movement, and restrained color grading",
     "blue_hour_urban_cinema": "photorealistic urban cinema at blue hour with rain-soaked streets, wet pavement reflections, glowing storefront lights, cool ambient sky light mixed with warm practical lights, shallow depth of field, realistic rain physics, and cinematic city atmosphere",
-    "rainy_city_one_take": "continuous cinematic one-take in a photorealistic rain-soaked city with low-angle tracking, realistic wet reflections, physically believable body movement, a smooth camera orbit, slow cinematic push-in, shallow depth of field, and natural rain and cloth physics",
-    "urban_editorial": "polished urban editorial film with modern city architecture, natural city light, wide-angle movement, dynamic tracking shots, clean hard cuts, restrained fashion poses, realistic motion, and crisp cinematic pacing",
+    "rainy_city_one_take": "cinematic live-action in a photorealistic rain-soaked city with realistic wet reflections, physically believable body movement, shallow depth of field, and natural rain and cloth physics",
+    "urban_editorial": "polished urban editorial film with modern city architecture, natural city light, restrained fashion poses, realistic motion, and crisp cinematic pacing",
     "night_city_timelapse": "photorealistic midnight city timelapse with an elevated urban highway, persistent vehicle light trails, deep night exposure, luminous city lights, smooth temporal motion, and a realistic long-exposure photography aesthetic",
-    "modern_neo_noir": "modern neo-noir cinema with deep blacks, selective practical lighting, wet reflective streets, restrained neon accents, moody shadows, shallow depth of field, slow deliberate camera movement, and realistic live-action texture",
-    "classic_film_noir": "classic film noir with monochrome live-action cinematography, hard directional key light, deep black shadows, smoky interiors, dramatic silhouettes, venetian-blind light patterns, restrained dolly movement, and vintage film contrast",
-    "crime_thriller": "realistic cinematic crime thriller with tense low-key lighting, practical fluorescent and tungsten sources, a muted color palette, controlled handheld camera, shallow focus, restrained performances, realistic urban locations, and slow-building tension",
-    "thriller_1990s": "1990s live-action thriller with moody colored practical lighting, slightly heightened contrast, dramatic close-ups, fast purposeful cuts, subtle analog character, an unsettling atmosphere, and photorealistic cinematic texture",
-    "cinematic_horror_live_action": "photorealistic cinematic horror with oppressive low-key lighting, practical light sources, deep shadow detail, unsettling negative space, restrained camera movement, realistic environmental texture, subtle atmospheric haze, and grounded horror realism",
-    "found_footage_horror": "realistic handheld found footage with imperfect autofocus, slight exposure hunting, subtle handheld shake, fluorescent light flicker, natural sensor noise, delayed focus response, accidental framing, realistic reflections, and unpolished documentary camera behavior",
-    "consumer_camcorder_horror": "consumer camcorder horror footage with imperfect handheld framing, automatic exposure shifts, soft digital detail, autofocus breathing, practical fluorescent lighting, minor sensor noise, and realistic accidental camera movement",
-    "observational_documentary": "observational documentary live action with natural available lighting, an unobtrusive handheld camera, imperfect framing, realistic focus adjustments, natural body language, minimal cinematic polish, authentic environmental sound, and a candid unstaged atmosphere",
-    "workplace_mockumentary": "photorealistic workplace mockumentary with subtle handheld camera shake, natural office fluorescent lighting, medium documentary framing, awkward pauses, restrained reaction shots, realistic office room tone, and deadpan timing",
-    "reality_tv_documentary": "realistic reality-TV documentary with a handheld shoulder camera, reactive reframing, quick natural focus corrections, available interior lighting, spontaneous body language, imperfect composition, and realistic room ambience",
-    "grounded_martial_arts_cinema": "hyper-realistic cinematic martial-arts action with grounded human physics, realistic weight transfer, fast physical choreography, a wet reflective environment, practical industrial lighting, cinematic dolly movement, speed ramping, controlled camera shake, and realistic motion blur",
-    "gritty_close_quarters_action": "gritty close-quarters action film with physically believable combat, realistic inertia and recovery, practical lighting, a handheld cinematic camera, environmental debris and collisions, realistic impact reactions, and restrained motion blur",
-    "dark_fantasy_live_action": "hyper-realistic dark fantasy cinema with a grounded medieval environment, gritty practical lighting, candlelight and firelight, smoky atmosphere, weathered materials, realistic body momentum, a practical-effects aesthetic, and handheld cinematic camera",
-    "neon_cyberpunk_cinema": "photorealistic cyberpunk cinema with heavy neon rain, reflective wet surfaces, volumetric neon fog, glowing practical lights, subtle lens flare, dark futuristic production design, cinematic slow motion, and a dynamic orbiting camera",
+    "modern_neo_noir": "modern neo-noir cinema with deep blacks, selective practical lighting, wet reflective streets, restrained neon accents, moody shadows, shallow depth of field, and realistic live-action texture",
+    "classic_film_noir": "classic film noir with monochrome live-action cinematography, hard directional key light, deep black shadows, smoky interiors, dramatic silhouettes, venetian-blind light patterns, and vintage film contrast",
+    "crime_thriller": "realistic cinematic crime thriller with tense low-key lighting, practical fluorescent and tungsten sources, a muted color palette, shallow focus, restrained performances, realistic urban locations, and slow-building tension",
+    "thriller_1990s": "1990s live-action thriller with moody colored practical lighting, slightly heightened contrast, subtle analog character, an unsettling atmosphere, and photorealistic cinematic texture",
+    "cinematic_horror_live_action": "photorealistic cinematic horror with oppressive low-key lighting, practical light sources, deep shadow detail, unsettling negative space, realistic environmental texture, subtle atmospheric haze, and grounded horror realism",
+    "found_footage_horror": "realistic found-footage horror with fluorescent light flicker, natural sensor noise, soft digital detail, and realistic reflections",
+    "consumer_camcorder_horror": "consumer camcorder horror aesthetic with soft digital detail, practical fluorescent lighting, and minor sensor noise",
+    "observational_documentary": "observational documentary live action with natural available lighting, realistic focus adjustments, natural body language, minimal cinematic polish, authentic environmental sound, and a candid unstaged atmosphere",
+    "workplace_mockumentary": "photorealistic workplace mockumentary with natural office fluorescent lighting, awkward pauses, realistic office room tone, and deadpan timing",
+    "reality_tv_documentary": "realistic reality-TV documentary with available interior lighting, spontaneous body language, and realistic room ambience",
+    "grounded_martial_arts_cinema": "hyper-realistic cinematic martial-arts action with grounded human physics, realistic weight transfer, fast physical choreography, a wet reflective environment, practical industrial lighting, and realistic motion blur",
+    "gritty_close_quarters_action": "gritty close-quarters action film with physically believable combat, realistic inertia and recovery, practical lighting, environmental debris and collisions, realistic impact reactions, and restrained motion blur",
+    "dark_fantasy_live_action": "hyper-realistic dark fantasy cinema with a grounded medieval environment, gritty practical lighting, candlelight and firelight, smoky atmosphere, weathered materials, realistic body momentum, a practical-effects aesthetic",
+    "neon_cyberpunk_cinema": "photorealistic cyberpunk cinema with heavy neon rain, reflective wet surfaces, volumetric neon fog, glowing practical lights, subtle lens flare, dark futuristic production design",
     "dark_dystopian_scifi": "dark dystopian live-action science fiction with industrial futuristic architecture, cold practical lighting, dense atmospheric haze, restrained neon accents, weathered technology, realistic materials, and grounded cinematic realism",
-    "prestige_scifi_drama": "prestige science-fiction cinema with restrained futuristic production design, natural human performances, soft volumetric atmosphere, clean practical lighting, subtle visual effects, realistic materials, and slow controlled camera movement",
-    "high_fashion_editorial": "high-fashion editorial film with a premium fashion-photography aesthetic, realistic skin texture with visible pores, dramatic model posing, controlled editorial camera movement, sculptural lighting, a minimalist luxury mood, and magazine-grade composition",
-    "korean_fashion_campaign": "premium Korean fashion campaign with international magazine editorial photography, controlled model posing, clean high-contrast composition, restrained camera motion, premium skin texture, a fashion-lookbook atmosphere, and polished editorial finish",
-    "streetwear_fashion_film": "urban streetwear fashion film with natural city light, dynamic tracking shots, wide-angle movement, architectural backgrounds, hard editorial cuts, confident restrained poses, and a polished urban fashion aesthetic",
-    "minimalist_premium_product": "minimalist premium product film with a pristine studio environment, controlled softbox lighting, precise product highlights, clean reflective surfaces, elegant macro details, restrained camera movement, and premium commercial finish",
-    "luxury_automotive_commercial": "premium luxury automotive commercial with elegant restrained cinematography, a dark architectural environment, glossy controlled body reflections, slow precision camera movement, low-angle hero shots, premium practical lighting, and realistic automotive materials",
-    "performance_car_commercial": "high-performance automotive commercial with a low tracking camera, physically realistic vehicle motion, aggressive but controlled camera movement, tire spray, realistic suspension load, detailed paint reflections, cinematic landscape, and restrained motion blur",
-    "food_macro_commercial": "premium cinematic food commercial with ultra-realistic macro photography, glossy food textures, shallow depth of field, dramatic practical lighting, controlled slow motion, detailed steam and condensation, appetizing highlights, and polished advertising finish",
-    "dark_surreal_commercial": "surreal cinematic commercial with photorealistic subjects, moody colored neon lighting, dark humor, rapid editorial cutting, exaggerated macro detail, unsettling character expressions, and a retro-thriller atmosphere",
-    "ultra_realistic_pov": "ultra-realistic first-person POV footage with realistic hands, energetic handheld camera, physically believable recoil and body movement, lens droplets, environmental reflections, subtle motion blur, and immersive spatial audio",
-    "smartphone_ugc": "photorealistic smartphone UGC video with arm's-length selfie framing, natural handheld movement, available daylight, realistic smartphone depth of field, casual creator performance, natural skin texture, conversational pacing, and authentic social-media realism",
+    "prestige_scifi_drama": "prestige science-fiction cinema with restrained futuristic production design, natural human performances, soft volumetric atmosphere, clean practical lighting, subtle visual effects, realistic materials",
+    "high_fashion_editorial": "high-fashion editorial film with a premium fashion-photography aesthetic, realistic skin texture with visible pores, dramatic model posing, sculptural lighting, a minimalist luxury mood",
+    "korean_fashion_campaign": "premium Korean fashion campaign with international magazine editorial photography, controlled model posing, premium skin texture, a fashion-lookbook atmosphere, and polished editorial finish",
+    "streetwear_fashion_film": "urban streetwear fashion film with natural city light, architectural backgrounds, confident restrained poses, and a polished urban fashion aesthetic",
+    "minimalist_premium_product": "minimalist premium product film with a pristine studio environment, controlled softbox lighting, precise product highlights, clean reflective surfaces, elegant macro details, and premium commercial finish",
+    "luxury_automotive_commercial": "premium luxury automotive commercial with elegant restrained cinematography, a dark architectural environment, glossy controlled body reflections, premium practical lighting, and realistic automotive materials",
+    "performance_car_commercial": "high-performance automotive commercial with physically realistic vehicle motion, tire spray, realistic suspension load, detailed paint reflections, cinematic landscape, and restrained motion blur",
+    "food_macro_commercial": "premium cinematic food commercial with ultra-realistic macro photography, glossy food textures, shallow depth of field, dramatic practical lighting, detailed steam and condensation, appetizing highlights, and polished advertising finish",
+    "dark_surreal_commercial": "surreal cinematic commercial with photorealistic subjects, moody colored neon lighting, dark humor, exaggerated macro detail, unsettling character expressions, and a retro-thriller atmosphere",
+    "ultra_realistic_pov": "ultra-realistic immersive live-action footage with realistic hands, physically believable recoil and body movement, lens droplets, environmental reflections, subtle motion blur, and immersive spatial audio",
+    "smartphone_ugc": "photorealistic smartphone UGC video with available daylight, realistic smartphone depth of field, casual creator performance, natural skin texture, conversational pacing, and authentic social-media realism",
     "film_1970s": "1970s live-action film aesthetic with warm analog color response, soft optical contrast, practical lighting, and restrained film grain",
     "cinema_1980s": "1980s cinematic live action with era-authentic production design, analog color response, practical lighting, and subtle film grain",
     "cinema_1990s": "1990s live-action cinema with slightly soft optical rendering, subtle analog texture, and era-authentic lighting and color response",
     "early_2000s_digital_cinema": "early-2000s digital cinema aesthetic with slightly harsh highlights, restrained saturation, realistic digital sensor response, and a period-accurate production look",
     "modern_digital_cinema": "modern digital cinema with clean high dynamic range, natural skin texture, controlled highlight roll-off, and restrained cinematic grading",
 }
+
+
+CAMERA_STYLE_PRESET_PROMPTS = {
+    "none": "",
+    "handheld": "handheld camera texture with subtle organic operator sway",
+    "handheld_documentary": "documentary handheld texture with gentle shoulder-supported micro-movement",
+    "handheld_energetic": "energetic handheld texture with pronounced but readable operator shake",
+    "stabilized": "stabilized camera handling with vibration-free execution",
+    "steadicam": "Steadicam-style handling with fluid floating inertia and suppressed footstep vibration",
+    "gimbal": "gimbal-stabilized handling with precise, smoothly damped orientation",
+    "dolly_precision": "precision dolly-style handling with mechanically even travel and no handheld jitter",
+    "dynamic": "dynamic camera handling with assertive controlled execution of the specified path",
+    "restrained": "restrained camera handling with minimal incidental shake or drift",
+    "shoulder_mounted": "shoulder-mounted camera texture with gentle body-supported sway",
+}
+
+
+def _camera_style_prompt(presets: dict[str, str]) -> str:
+    style = CAMERA_STYLE_PRESET_PROMPTS.get(presets.get("camera_style", "none"), "")
+    if not style:
+        return ""
+    return (style + ". Apply only to this interval's camera handling, subordinate to explicit user camera text and configured path, speed, framing, roll and holds. "
+            "Do not add travel, cuts, targets or speed changes; an exact camera hold remains still.")
 
 
 def _normalize_shot_presets(value: Any) -> dict[str, str]:
@@ -399,6 +422,8 @@ def _normalize_shot_presets(value: Any) -> dict[str, str]:
         normalized[preset_name] = selected if selected in choices else "none"
     selected_style = _clean_text(raw.get("style")).lower()
     normalized["style"] = selected_style if selected_style in STYLE_PRESET_PROMPTS else "none"
+    camera_style = _clean_text(raw.get("camera_style")).lower()
+    normalized["camera_style"] = camera_style if camera_style in CAMERA_STYLE_PRESET_PROMPTS else "none"
     return normalized
 
 
@@ -1004,33 +1029,26 @@ _ADVANCED_DESTINATION_VIEW = {
 }
 _USER_CAMERA_PRIORITY = (
     "\n\nUSER CAMERA PRIORITY (always): Explicit camera instructions in TARGET_REQUEST and each Shot/Move visual_action outrank all camera panel defaults, including disabled/hold settings. "
-    "Resolve each interval in this order, silently: USER INTENT -> COMPATIBLE PANEL DEFAULTS -> ONE CAMERA INSTRUCTION. "
+    "Resolve each interval: USER INTENT -> COMPATIBLE PANEL DEFAULTS -> STYLE CAMERA DEFAULTS -> ONE CAMERA INSTRUCTION. Omit conflicting camera speed/motion from style presets, not user text; retain their visual style. "
     "SHOT SIZE IS NOT A TARGET: identify the requested object/body region and crop, including brief framing phrases without the word camera. Merely mentioning a target in subject action does not satisfy its requested framing. "
     "Preserve explicit travel, direction, angle, speed, distance/intensity, composition and roll. Distinguish subject motion from camera travel and orbital destination from travel direction. "
     "An explicit camera translation describes rig travel, not lens aim: never reverse that travel and compensate with a tilt to claim compliance. "
     "A user-specified target requires path adaptation, not a name substitution: revise distance, height, aim and coverage for its evidenced location, size and motion. Discard incompatible proxy-derived travel; retain unrelated compatible settings. "
-    "Following Moves inherit the resolved endpoint, never the original proxy endpoint. "
+    "Following Moves start at that actual endpoint: carry forward the resolved target, lens height and aim, not discarded proxy values. "
     "Do not invent target coordinates or vertical travel without evidence; use continuous reframing onto the named target when its spatial location is unknown. Track a moving target without freezing or turning the subject to simulate camera travel. "
-    "Absent a target: human CU/BCU defaults to face; ECU to eyes. "
-    "Write the resolved camera instruction once as natural prose in its interval, naming the actual target; never output camera_path tokens, user_camera tags, a second panel path, or unresolved 'requested target'. "
-    "A disabled item holds only in the absence of explicit user camera intent; after an override it holds the actual reached state, not the proxy state. "
+    "For external views with Auto level and no target, CU/BCU defaults to face and ECU to eyes; never override explicit height/tilt. "
+    "Write the resolved camera instruction once as natural prose in its interval, naming the actual target; never output internal markers, duplicate panel paths, or unresolved 'requested target'. "
+    "A disabled item holds only without user camera intent; after overrides, hold the resolved state, not the proxy. "
     "Apply global intent in scope and item-specific instructions locally. Preserve timing, image anchors and continuity unless explicitly changed; do not invent a solution to contradictory user constraints. Quoted dialogue is not a camera command."
 )
 _ADVANCED_CAMERA_SYSTEM = (
     "\n\nCAMERA ADVANCED OUTPUT OVERRIDE\n"
-    "ADVANCED_CAMERA_PLAN supplies the procedurally connected default camera route, not merely a list of endpoint views. "
-    "Preserve its physical travel and boundary continuity wherever compatible with user intent. Edit conflicting components and their dependent paths, not the entire route. "
-    "TARGET ADAPTATION OVERRIDES COMPONENT RETENTION: resolve the user's target and its dependent path FIRST. A target-only request authorizes this adaptation even without explicit travel verbs. "
-    "Only THEN retain EVERY remaining compatible travel component explicitly; preserve orbital direction, timing, roll and composition unless they conflict. Never preserve proxy ascent or tilt merely because it is listed as required. "
-    "Do not replace height travel with tilt, orbit with a destination view, or deceleration-and-reversal with the word reverses alone. "
-    "Only explicit user camera/target intent or a concrete frame anchor authorizes changing a conflicting component; ordinary subject action does not authorize omitting the camera route. "
-    "Compose the final camera prose yourself; no panel sentence will be inserted afterward. "
-    "Use compatible panel settings when the user leaves them unspecified. Establish the actual initial pose, "
-    "then connect each Move to the preceding resolved endpoint. A crop label does not make a seated subject stand. "
-    "Translate proxy body-range wording into coverage of the actual target: never attribute human anatomy to objects. "
-    "Describe how the camera reaches each destination: translation, orbit, aim and roll are distinct. A tilt alone does not change camera height, "
-    "a push alone does not reach a side view, and roll alone does not implement a requested left-to-right framing shift. "
-    "Keep requested actions, dialogue and style in their original temporal relationship to camera travel."
+    "Write EVERY interval as one continuous journey: preceding resolved state -> physical travel and axis-specific reversal -> resolved destination by its end time. "
+    "Preserve compatible travel AND destination crop, height, tilt, direction, roll and composition. Each orbit retains 'physically travels toward the left/right of its starting image', angle and destination; starting means THIS Move, not Shot 1. Unless the USER names an anatomical side, write 'side-profile view', never 'her left profile' or 'right-side profile'. Do not reduce travel to 'leftward/rightward orbit'. "
+    "Resolve user overrides FIRST: replace conflicting panel direction/speed, never combine both (user right+slow replaces panel left+fast). Adapt dependent endpoints and subsequent departures; keep unrelated travel. A target-only request authorizes dependent path adaptation. "
+    "Reverse only the named axes: decelerate them to zero without a held pause while other axes continue. "
+    "Ordinary subject action cannot erase the route; a crop cannot make a seated subject stand or give an object human anatomy. "
+    "Keep actions, dialogue and style timed to travel. Write natural prose, not panel commentary or planning keys; no camera sentence is inserted afterward."
 ) + _USER_CAMERA_PRIORITY
 _ADVANCED_ELEVATIONS = {"extreme_low": -60, "low_angle": -18, "eye_level": 0, "high_angle": 30, "extreme_high": 70, "overhead": 89.5}
 _ADVANCED_ROLLS = {str(v): v for v in (-90,-45,-30,-15,0,15,30,45,90,180)}
@@ -1084,13 +1102,51 @@ _ADVANCED_COMPOSITION_TEXT = {
 }
 
 
+_ADVANCED_VIEWPOINTS = ('external', 'ots', 'oth', 'pov')
+_ADVANCED_SUBJECT_FRAMING = ('auto', 'single', 'two', 'three', 'group')
+_ADVANCED_CAMERA_LEVELS = ('auto', 'ground', 'knee', 'hip', 'chest', 'eye', 'above_head', 'elevated', 'aerial')
+_ADVANCED_LEVEL_HEIGHTS = dict(ground=.12, knee=.65, hip=1.43, chest=2.28, eye=2.89, above_head=3.6, elevated=6, aerial=15)
+
+
+def _advanced_subject_offsets(config):
+    count = {'two': 2, 'three': 3, 'group': 4}.get(config.get('subject_framing'), 1)
+    return [((0,1,-1,2)[i]*1.6, 0, 0) for i in range(count)]
+
+
+def _advanced_scene_offsets(poses):
+    return list(dict.fromkeys(tuple(o) for p in poses for o in p.get('subjectOffsets', [(0,0,0)])))
+
+
+def _solve_level_camera(config, azimuth, requested, points, anchor, min_radius=.1):
+    # Explicit lens height and pitch are independent; crop supplies distance only.
+    nominal = _solve_advanced_camera(dict(config, viewpoint='external', camera_level='auto',
+                                        angle='eye_level', composition='center'))
+    height = _ADVANCED_LEVEL_HEIGHTS[config['camera_level']]
+    el, az = math.radians(requested), math.radians(azimuth)
+    distance = max(nominal['distance'], min_radius)
+    radius = distance*math.cos(el)
+    target = (0, height-distance*math.sin(el), 0)
+    sx, sy = _ADVANCED_COMPOSITIONS[config['composition']]
+    return dict(position=(math.sin(az)*radius,height,math.cos(az)*radius),target=target,anchor=target,
+                azimuth=azimuth,roll=_ADVANCED_ROLLS[config['roll']],tangent=nominal['tangent'],
+                effectiveLevel=config['camera_level'],explicitLevel=True,distance=distance,
+                elevation=requested,requestedElevation=requested,levelAdjusted=False,
+                subjectOffsets=_advanced_subject_offsets(config),shiftX=-sx,shiftY=-sy,
+                orbit_route=config['orbit_route'])
+
+
 def _normalize_advanced_camera(value):
     raw = value if isinstance(value, dict) else {}
     config = {key: raw.get(key) if isinstance(raw.get(key), str) and raw.get(key) in choices else fallback for key, choices, fallback in (
         ("motion", CAMERA_PRESET_PROMPTS["camera_motion"], "none"),
+        ("amplitude", ("auto", "small", "large"), "auto"),
+        ("speed", ("auto", "slow", "fast"), "auto"),
         ("roll", _ADVANCED_ROLLS, "0"),
         ("shot_size", _ADVANCED_RANGES, "full_shot"), ("direction", _ADVANCED_DIRECTIONS, "front"),
         ("angle", _ADVANCED_ELEVATIONS, "eye_level"),
+        ("viewpoint", _ADVANCED_VIEWPOINTS, "external"),
+        ("subject_framing", _ADVANCED_SUBJECT_FRAMING, "auto"),
+        ("camera_level", _ADVANCED_CAMERA_LEVELS, "auto"),
         ("composition", _ADVANCED_COMPOSITIONS, "center"),
         ("orbit_route", ("shortest", "left", "right"), "shortest"))}
     # Removed body_framing and look_at are discarded; retain shot, direction and angle.
@@ -1123,6 +1179,16 @@ def _solve_advanced_camera(value, previous=None):
         low, high = max(bottom,y-h/2), min(top,y+h/2)
         if low <= high:
             points.extend((px,py,pz) for px in (x-w/2,x+w/2) for py in (low,high) for pz in (z-d/2,z+d/2))
+    points = [tuple(p[i]+offset[i] for i in range(3)) for offset in _advanced_subject_offsets(config) for p in points]
+    if config['viewpoint'] != 'external':
+        chosen = dict(config)
+        if chosen['camera_level'] == 'auto': chosen['camera_level'] = 'hip' if config['viewpoint']=='oth' else 'eye'
+        pose = _solve_level_camera(chosen, azimuth, elevation, points, anchor, 3.2)
+        pose.update(viewpoint=config['viewpoint'], viewpointProxy=True)
+        if config['viewpoint'] != 'pov': pose['subjectOffsets'].append((-.95,0,1.6,180))
+        return pose
+    if config['camera_level'] != 'auto':
+        return _solve_level_camera(config, azimuth, elevation, points, anchor)
     def evaluate(distance):
         position = tuple(anchor[i]+radial[i]*distance for i in range(3))
         projected = []
@@ -1135,7 +1201,7 @@ def _solve_advanced_camera(value, previous=None):
         xs,ys,zs = zip(*projected)
         return position, min(xs),max(xs),min(ys),max(ys),min(zs)
     occupancy = {"wide_shot": .62, "extreme_wide_shot": .20}.get(config["shot_size"], .90)
-    low, high = .35, 30
+    low, high = .35, 128 if len(_advanced_subject_offsets(config))>1 else 30
     for _ in range(50):
         mid = (low+high)/2
         _,xmin,xmax,ymin,ymax,near = evaluate(mid)
@@ -1150,7 +1216,7 @@ def _solve_advanced_camera(value, previous=None):
         high = max(high, 3.04 / (2*tangent*occupancy))
     position,xmin,xmax,ymin,ymax,_ = evaluate(high)
     return dict(position=position,target=target,anchor=anchor,distance=high,azimuth=azimuth,elevation=elevation,roll=_ADVANCED_ROLLS[config['roll']],
-                shiftX=(xmin+xmax)/2-screen_x,shiftY=(ymin+ymax)/2-screen_y,tangent=tangent,orbit_route=config['orbit_route'])
+                shiftX=(xmin+xmax)/2-screen_x,shiftY=(ymin+ymax)/2-screen_y,tangent=tangent,orbit_route=config['orbit_route'],subjectOffsets=_advanced_subject_offsets(config))
 
 
 def _advanced_orbit_delta(a, b, route='shortest'):
@@ -1174,7 +1240,13 @@ def _interpolate_advanced_camera(a, b, t):
     target = tuple(mix(x,y) for x,y in zip(a['target'],b['target']))
     az,el = math.radians(azimuth),math.radians(elevation)
     radial = (math.sin(az)*math.cos(el),math.sin(el),math.cos(az)*math.cos(el))
-    return dict(position=tuple(anchor[i]+radial[i]*distance for i in range(3)),target=target,anchor=anchor,
+    if a.get('explicitLevel') or b.get('explicitLevel'):
+        height = mix(a['position'][1], b['position'][1])
+        target = (target[0], height-distance*math.sin(el), target[2])
+        anchor = target
+        el = math.radians(elevation)
+        radial = (math.sin(az)*math.cos(el),math.sin(el),math.cos(az)*math.cos(el))
+    return dict(subjectOffsets=_advanced_scene_offsets([a,b]),position=tuple(anchor[i]+radial[i]*distance for i in range(3)),target=target,anchor=anchor,
                 azimuth=azimuth,elevation=elevation,distance=distance,
                 **{key:mix(a.get(key,0),b.get(key,0)) for key in ('tangent','shiftX','shiftY','roll')})
 
@@ -1213,10 +1285,14 @@ def _interpolate_advanced_camera_path(nodes, index, t):
     target,anchor=vector('target'),vector('anchor')
     radius=distance*math.cos(math.radians(elevation))
     height=target[1]+distance*math.sin(math.radians(elevation))
+    if any(n['pose'].get('explicitLevel') for n in nodes):
+        height = hermite([n['pose']['position'][1] for n in nodes])
+        target = (target[0],height-distance*math.sin(math.radians(elevation)),target[2])
+        anchor = target
     az=math.radians(azimuth)
     position=(math.sin(az)*radius,height,math.cos(az)*radius)
     dy=height-target[1]
-    return dict(position=position,target=target,anchor=anchor,azimuth=azimuth,
+    return dict(subjectOffsets=_advanced_scene_offsets([n['pose'] for n in nodes]),position=position,target=target,anchor=anchor,azimuth=azimuth,
                 elevation=elevation,distance=distance,
                 **{key:scalar(key) for key in ('tangent','shiftX','shiftY','roll')})
 
@@ -1257,6 +1333,13 @@ def _advanced_camera_specs(project, effective_seconds):
                 if not k.startswith('rotate_') and abs((v-poses[-1]['azimuth']) % 360) < .001)
         else:
             poses.append(_solve_advanced_camera(config, poses[-1] if i and _is_move(project['shots'][i]) else None))
+    # Stable representative scene within each take: changing coverage never spawns actors.
+    take_start = 0
+    for boundary in range(1, len(poses)+1):
+        if boundary == len(poses) or not _is_move(project['shots'][boundary]):
+            offsets = _advanced_scene_offsets(poses[take_start:boundary])
+            for p in poses[take_start:boundary]: p['subjectOffsets'] = offsets
+            take_start = boundary
     elapsed=0.0; end_times=[]
     for item in project['shots']:
         elapsed+=float(item['duration'])*effective_seconds/total
@@ -1278,22 +1361,46 @@ def _advanced_camera_specs(project, effective_seconds):
                  "extreme_high": "an extreme high angle looking steeply downward (aerial view)",
                  "low_angle": "a low angle looking upward", "eye_level": "eye level",
                  "high_angle": "a high angle looking downward", "overhead": "a near-vertical overhead angle looking down"}[config["angle"]]
-        if config['shot_size'] in ('wide_shot','extreme_wide_shot') and config['angle'] in ('extreme_high','overhead'):
+        if config['shot_size'] in ('wide_shot','extreme_wide_shot') and config['angle'] in ('extreme_high','overhead') and not pose.get('explicitLevel'):
             angle += ", from high above the subject with a broad expanse of the surroundings visible below"
-        if config['angle'] == 'overhead':
+        if config['angle'] == 'overhead' and not pose.get('levelAdjusted'):
             direction = "with the orbital azimuth defining the overhead image orientation, not a frontal or profile view"
         framing = _ADVANCED_FRAMING[config['shot_size']]
+        if pose.get('explicitLevel'):
+            value = pose['elevation']
+            angle = (f"a viewing angle approximately {abs(value):.1f} degrees {'downward' if value>0 else 'upward'}" if abs(value)>1 else 'a horizontal viewing angle')
+            angle += f", with the lens at {pose.get('effectiveLevel', config['camera_level']).replace('_',' ')} level"
+        if config['subject_framing'] in ('two','three','group'):
+            framing += ' shared across ' + {'two':'the two established main subjects','three':'the three established main subjects','group':'the established group'}[config['subject_framing']]
         composition = _ADVANCED_COMPOSITION_TEXT[config['composition']]
         # "Centered on the face" describes a crop but conflicts with an off-center placement.
         if config['composition'] != 'center':
             framing = framing.replace('centered on the face', 'of the face')
         article = "an" if framing[0].lower() in "aeiou" else "a"
         framed = f"{article} {framing}"
+        if config['viewpoint'] in ('ots','oth'):
+            region = 'shoulder' if config['viewpoint']=='ots' else 'hip'
+            framed = f"an over-the-{region} {framing} beyond the established foreground person's {region}, keeping the requested main target visible"
+        elif config['viewpoint'] == 'pov':
+            direction = "from the established viewpoint owner's eyes toward the requested target"
         state = f"{framed} {direction} at {angle}, with the selected subject region positioned in {composition}"
+        if config['camera_level'] != 'auto' or config['viewpoint'] == 'pov':
+            size_label = config['shot_size'].replace('_', ' ')
+            viewpoint_label = {'ots':'over-the-shoulder ', 'oth':'over-the-hip ', 'pov':'subjective POV '}.get(config['viewpoint'], '')
+            # Both openings and Move destinations must use distance, not the
+            # legacy human-body crop that contradicts independent height/tilt.
+            framed = f"a {viewpoint_label}view at {size_label} shooting distance"
+            state = f"{framed} {direction} at {angle}, with {composition} composition"
+            if config['angle'] == 'eye_level' and config['camera_level'] != 'auto':
+                state += f", with the optical axis passing straight ahead at {config['camera_level'].replace('_',' ')} height rather than automatically through the subject's center"
         if pose.get('roll'):
             state += f", with the camera rolled {abs(pose['roll']):g} degrees {'clockwise' if pose['roll']>0 else 'counterclockwise'} around its optical axis"
         samples = []
         diagnostics = []
+        if pose.get('viewpointProxy'):
+            diagnostics.append('Viewpoint uses a fixed representative layout; actual foreground/eye-owner placement and crop must follow user text or references. No collision avoidance is assumed.')
+        if pose.get('levelAdjusted'):
+            diagnostics.append('Camera level and crop retained; preview uses a best-fit viewing angle instead of the selected angle. User camera instructions still take priority.')
         motions = []
         reversals = []
         if not is_move:
@@ -1343,14 +1450,11 @@ def _advanced_camera_specs(project, effective_seconds):
                 diagnostics.append('Fast orbit: over 60 degrees/second average before easing. Consider a longer Move; this is a planning heuristic, not a model limit.')
             orbital_endpoint = ""
             if abs(delta) > .001:
-                side = 'leftward' if delta < 0 else 'rightward'
                 screen_side = 'left' if delta < 0 else 'right'
                 degrees = abs(delta)
-                arc = ("quarter-circle" if abs(degrees-90) < .001 else
-                       "half-circle" if abs(degrees-180) < .001 else
-                       "full-circle" if abs(degrees-360) < .001 else f"{degrees:g}-degree")
-                motions.append(f"makes a smooth {side} {arc} orbit around the subject, "
-                               f"starting toward the {screen_side} edge of the camera image at {format_timestamp(cursor)}")
+                motions.append(f"physically travels toward the {screen_side} of its starting image "
+                               f"along a smooth {degrees:g}-degree arc around the subject "
+                               f"(the camera view at {format_timestamp(cursor)})")
                 # Signed travel is relative to this Move's starting axis, not
                 # the global front axis or the performer's anatomical sides.
                 # 180 degrees has one rear endpoint for either travel direction.
@@ -1368,7 +1472,8 @@ def _advanced_camera_specs(project, effective_seconds):
                                         "measured in that starting camera frame. ")
             # Dolly distance is measured to the interpolated framing target.
             # Horizontal radius alone shrinks on a crane-up even without a push-in.
-            radius = lambda p: p['distance']
+            independent_level = previous.get('explicitLevel') or pose.get('explicitLevel')
+            radius = lambda p: p['distance']*math.cos(math.radians(p['elevation'])) if independent_level else p['distance']
             radial_delta = radius(pose)-radius(previous)
             if abs(radial_delta) > .001:
                 motions.append("gradually pulls back" if radial_delta>0 else "gradually pushes in")
@@ -1433,6 +1538,24 @@ def _advanced_camera_specs(project, effective_seconds):
                     + "The focal length stays fixed throughout, and the subject's action continues without interruption.")
             else:
                 sentence = f"The same camera holds the inherited {state} through {format_timestamp(end)} without drifting, zooming, or repositioning."
+        # Qualitative H3 modifiers apply to travel, never to a hold or subject action.
+        moving = bool(motions) or (not is_move and 'use ' in sentence and 'in one uninterrupted take' in sentence)
+        if moving and item.get('camera_enabled') is not False:
+            modifiers = []
+            if config['amplitude'] != 'auto':
+                modifiers.append(f"with {config['amplitude']} amplitude")
+            if config['speed'] != 'auto':
+                modifiers.append(f"at {config['speed']} speed")
+                if config['speed'] == 'fast':
+                    sentence = sentence.replace('gradually pushes in', 'pushes in').replace('gradually pulls back', 'pulls back')
+                    motions = [m.replace('gradually pushes in', 'pushes in').replace('gradually pulls back', 'pulls back') for m in motions]
+            if modifiers:
+                qualifier = ' ' + ' '.join(modifiers)
+                if motions:
+                    sentence = sentence.replace(motions[0] + '.', motions[0] + qualifier + '.', 1)
+                else:
+                    sentence = sentence.replace(' in one uninterrupted take', qualifier + ' in one uninterrupted take', 1)
+                diagnostics.append('Amplitude/speed are qualitative prompt guidance; preview/render retain the calculated panel path and timing.')
         if min(p['position'][1] for p in (samples or [pose])) < 0:
             diagnostics.append('Camera path goes below the proxy ground plane. The selected framing, fixed lens and angle are not jointly ground-feasible; choose a less low angle or tighter shot. No silent correction was applied.')
         next_shot = next((j for j in range(index+1, len(project['shots']))
@@ -1451,6 +1574,79 @@ def _advanced_camera_specs(project, effective_seconds):
     return specs
 
 
+def _advanced_camera_shared_rules(specs):
+    """Emit only used combination semantics once; keep interval paths intact."""
+    active = [s['config'] for s in specs if s.get('enabled', True)]
+    if not active:
+        return ''
+    clauses = [
+        "SHARED CAMERA COMBINATION RULES: Apply user overrides to the entire journey, including its destination and the next departure. "
+        "Preview geometry is representative: never invent real coordinates or copy proxy foreground spacing. "
+        "Truck/pedestal translate the rig; pan/tilt rotate its aim; zoom changes focal length. Do not interchange these actions."
+    ]
+    if any(c['camera_level'] != 'auto' for c in active):
+        clauses.append(
+            "EXPLICIT LEVEL: Height fixes the lens position; tilt fixes its viewing direction. Shot size sets nominal distance, not an anatomical crop. "
+            "For zero tilt say horizontal, NEVER eye-level unless lens height is actually eye height. Ground+horizontal sees ground-height details, not centered faces. "
+            "Allow clipping/offscreen subjects; do not recenter or tilt to fit them. At fixed horizontal aim, subjects slide down as the lens rises, up as it descends. "
+            "Only user camera/target intent or exact frame anchors override these defaults."
+        )
+    views = {c['viewpoint'] for c in active}
+    if any(c.get('amplitude', 'auto') != 'auto' or c.get('speed', 'auto') != 'auto' for c in active):
+        clauses.append(
+            "TRAVEL MODIFIERS: Integrate selected amplitude and speed into the actual camera movement sentence. "
+            "They affect camera travel, not subject speed or slow-motion playback. User target/path/speed/range wins. "
+            "Keep compatible endpoint and interval constraints; fixed travel and duration determine average speed. "
+            "Do not add detours, cuts or holds to force a modifier. A static/disabled interval stays still unless user text overrides."
+        )
+    if views & {'ots', 'oth'}:
+        clauses.append(
+            "OTS/OTH: Bind the foreground person separately from the main target using user text or references. "
+            "Keep only a partial foreground shoulder for OTS or hip/waist edge for OTH; never substitute one for the other. "
+            "Do not turn the main target's rear view into the foreground anchor or invent an extra person."
+        )
+    if 'pov' in views:
+        clauses.append(
+            "POV: The lens belongs at the established owner's actual eyes, with their seated/standing pose respected. "
+            "A fixed-eye or head-only request forbids proxy dolly/pedestal motion: change gaze only, even when shot-size labels differ. "
+            "Do not show the owner's face or full body externally, invent shake, or orbit around the owner. "
+            "Entering/leaving POV within a Move requires a continuous physical connection to/from those eyes, not a cut."
+        )
+    if any(c['subject_framing'] not in ('auto', 'single') for c in active):
+        clauses.append(
+            "GROUP COVERAGE: Use the established main subjects together; a partial foreground anchor is not another main subject. "
+            "Adapt distance where compatible, but do not change an explicit level/tilt merely to fit the group or invent people."
+        )
+    return '\n'.join(clauses)
+
+
+def _advanced_camera_combination_text(config, previous=None):
+    """Short local constraints; shared explanations are supplied once per plan."""
+    clauses = []
+    viewpoint = config.get('viewpoint', 'external')
+    level = config.get('camera_level', 'auto')
+    framing = config.get('subject_framing', 'auto')
+    if viewpoint in ('ots', 'oth'):
+        region = 'shoulder' if viewpoint == 'ots' else 'hip'
+        clauses.append(f"Use an over-the-{region} view: retain the established foreground {region} edge while framing the actual main target.")
+    elif viewpoint == 'pov':
+        clauses.append("POV translation override: use the actual owner's eye position, not the external proxy distance. Unless the owner physically translates, omit proxy push/pull/pedestal components and their reversals; use gaze rotation only. Explicit user camera intent still wins.")
+    pitch = _ADVANCED_ELEVATIONS[config['angle']]
+    tilt = 'horizontal' if pitch == 0 else f"{abs(pitch):g} degrees {'down' if pitch > 0 else 'up'}"
+    clauses.append(
+        f"Destination defaults, unless user-overridden: {config['shot_size'].replace('_', ' ')}; "
+        f"lens {level.replace('_', ' ')}; aim {tilt}; {config['direction'].replace('_', ' ')}; "
+        f"roll {config['roll']} degrees; {config['composition']} composition."
+    )
+    if framing not in ('auto', 'single'):
+        count = {'two':'two main subjects','three':'three main subjects','group':'the established group'}[framing]
+        clauses.append(f"Coverage scope: {count}, not invented people.")
+    if previous and any(previous.get(k, d) != config.get(k, d) for k,d in
+                        (('viewpoint','external'),('subject_framing','auto'),('camera_level','auto'))):
+        clauses.append("Inherit the resolved endpoint, not discarded proxy height/aim; no cut/reset.")
+    return ' '.join(clauses)
+
+
 def _advanced_camera_timeline_text(specs):
     """Supply connected procedural paths as editable defaults, without assembly markers."""
     blocks = []
@@ -1461,10 +1657,20 @@ def _advanced_camera_timeline_text(specs):
         if not spec.get('enabled', True):
             block += "\ncamera: disabled; hold the actual preceding camera state unless user text requests otherwise"
         else:
-            settings = {key: config[key] for key in ('shot_size','direction','angle','roll','orbit_route','composition')}
+            settings = {key: config[key] for key in ('shot_size','direction','angle','roll','orbit_route','composition','viewpoint','subject_framing','camera_level')}
             settings['motion'] = config['motion'] if spec.get('motion_active') else 'none'
+            for key in ('amplitude', 'speed'):
+                if config[key] != 'auto':
+                    settings[key] = config[key]
             block += "\npanel_defaults: " + json.dumps(settings, ensure_ascii=False)
         block += "\nprocedural_camera_path: " + spec['sentence']
+        if spec.get('enabled', True):
+            previous = specs[len(blocks)-1]['config'] if spec['move'] and blocks else None
+            combination = _advanced_camera_combination_text(config, previous)
+            if combination:
+                block += "\ncombination_path_adaptation: " + combination
+            if any('best-fit' in d for d in spec.get('diagnostics', [])):
+                block += "\nresolved_angle: The procedural route uses a best-fit angle. Describe that angle consistently; an oblique downward view is not overhead/top-down. Do not repeat the conflicting angle label from panel_defaults unless explicit user text overrides the route."
         if spec.get('travel_components'):
             block += "\nrequired_travel_components (apply target adaptation first; retain compatible components only): " + " | ".join(spec['travel_components'])
         if spec.get('reversal_axes'):
@@ -1474,7 +1680,8 @@ def _advanced_camera_timeline_text(specs):
         if spec.get('user_request'):
             block += "\nlocal_user_request (overrides conflicting path components and dependent aim/height/crop; preserve all other travel): " + spec['user_request']
         blocks.append(block)
-    return "\n\n".join(blocks)
+    shared = _advanced_camera_shared_rules(specs)
+    return "\n\n".join(([shared] if shared else []) + blocks)
 
 
 def _normalize_shot(raw: Any, index: int) -> dict[str, Any]:
@@ -1698,13 +1905,13 @@ def normalize_project(project_data: Any) -> tuple[dict[str, Any], list[str]]:
     raw_enhance_level = _clean_text(raw.get("enhance_level")).lower()
     project["enhance_level"] = (
         raw_enhance_level if raw_enhance_level in {"none", "normal", "strong"}
-        else "normal" if raw.get("enhance") is True else "none"
+        else "none" if raw.get("enhance") is False else "normal"
     )
     # Retain the legacy boolean for old workflows and callers. Any expansion
     # level other than None uses the enhanced prompt family.
     project["enhance"] = project["enhance_level"] != "none"
     project["enhanced_prompt"] = _clean_text(raw.get("enhanced_prompt"))
-    project["preview_mode"] = "camera_advanced" if raw.get("preview_mode") == "camera_advanced" else "video"
+    project["preview_mode"] = "video" if raw.get("preview_mode") == "video" else "camera_advanced"
     project["advanced_camera_enabled"] = raw.get("advanced_camera_enabled", raw.get("preview_mode") == "camera_advanced") is True
     project['camera_render'] = raw.get('camera_render') is True
 
@@ -4890,7 +5097,10 @@ def build_video_prompt(project: dict[str, Any], effective_seconds: float,
         shot_preset_lines = []
         preset_style = STYLE_PRESET_PROMPTS.get(shot_presets["style"], "")
         if preset_style:
-            shot_preset_lines.append(f"style: {preset_style}")
+            shot_preset_lines.append(f"visual_style: {preset_style}")
+        camera_style = _camera_style_prompt(shot_presets)
+        if camera_style:
+            shot_preset_lines.append(f"camera_style: {camera_style}")
         for preset_name, choices in CAMERA_PRESET_PROMPTS.items():
             if project.get("advanced_camera_enabled"):
                 continue
@@ -4905,7 +5115,7 @@ def build_video_prompt(project: dict[str, Any], effective_seconds: float,
         sections.append(
             "PROMPT_PRESETS:\n"
             "scope: each block applies only to its named shot or Move timeline item; a Move preset is a continuous target state inside its owning Shot\n"
-            "status: mandatory explicit user selections; preserve every non-none value in its named timeline item\n"
+            "status: preserve selected visual style; camera style is handling only, subordinate to user camera text and configured camera states and travel\n"
             "style_expression: when a Shot has style, state it naturally in that Shot's opening sentence; when a Move has style, develop it continuously inside the owning Shot without implying a cut\n"
             "conflicts: explicit user camera text overrides camera presets in its applicable scope; other presets remain binding unless explicitly changed\n"
             "direction_basis: in camera_direction, camera-left and camera-right identify viewpoint positions to the left or right of the frontal camera axis while looking at the subject; they never mean the subject's anatomical sides. This preset describes viewpoint only and does not itself request camera travel\n"
@@ -4990,7 +5200,7 @@ def build_video_prompt(project: dict[str, Any], effective_seconds: float,
         "AUDIO_POLICY:\n"
         "source: infer audio intent only from TARGET_REQUEST, SHOT_PLAN visual_action, and locked audio relationships in REFERENCE_PLAN\n"
         "diegetic_and_ambience: derive concise synchronized action sounds and plausible environmental ambience from requested visible events and setting\n"
-        "material_sound_fidelity: do not invent fabric rustle, clothing creak, plastic joint noise, smoke hiss, or another material sound unless that material and audible cause are established by user text or reference evidence\n"
+        "material_sound_fidelity: retain natural ambience and subtle plausible action sounds unless silence is requested; avoid exaggerated bodily/mechanical noises or sounds caused solely by camera travel\n"
         "music_routing: music with an in-scene source is diegetic and belongs in the shot timeline; requested BGM, background music, soundtrack, score, or source-free music belongs in non_diegetic_music\n"
         "when_music_unspecified: output non_diegetic_music: N/A",
     ))
@@ -5015,6 +5225,11 @@ def _build_qwen_system_prompt(project, effective_seconds, *, has_analysis=False,
         else MODE_LLM_SYSTEM_PROMPTS
     )
     system_prompt = _mode_prompt_preamble(mode) + "\n\n" + active_mode_prompts[mode]
+    # Image-anchor prose is irrelevant to text-only projects. Keep speech/cut
+    # rules and all actual anchor contracts unchanged in reference modes.
+    if mode == 'T2VA' and not project.get('references'):
+        anchor_rules = SYSTEM_PROMPT_CONFIG['common_addendum'].split('\n\nDIALOGUE ACROSS CUTS')[0]
+        system_prompt = system_prompt.replace(anchor_rules, '', 1)
     compact_motion = mode=='REF2VA' and bool(project['references']) and all(
         ref['type']=='video' and ref['role']=='motion' for ref in project['references'])
     if compact_motion:
@@ -6550,6 +6765,9 @@ def _build_omni_raw_prompt(project: dict[str, Any], effective_seconds: float) ->
         style = STYLE_PRESET_PROMPTS.get(presets["style"], "")
         if style:
             selected.append(style)
+        camera_style = _camera_style_prompt(presets)
+        if camera_style:
+            selected.append(camera_style)
         for name, choices in CAMERA_PRESET_PROMPTS.items():
             value = choices.get(presets[name], "")
             if value:
@@ -7124,6 +7342,12 @@ def compile_project(project_data: Any, use_enhanced: bool = True) -> dict[str, A
         "enhanced_prompt": project["enhanced_prompt"],
         "llm_prompt": "" if needs_video_reselection else build_llm_prompt(project, draft_video_prompt),
         "advanced_camera_timeline": advanced_camera_timeline,
+        "camera_prompt": "\n\n".join(
+            f"[Shot {spec['shot']}]" + (f" Move {spec['move']}" if spec['move'] else " opening")
+            + f" ({format_timestamp(spec['start'])}-{format_timestamp(spec['end'])})\n"
+            + spec["sentence"]
+            for spec in advanced_specs
+        ),
         "validation_report": "\n".join(report_lines),
         "errors": errors,
         "warnings": warnings,
@@ -7316,7 +7540,10 @@ def _render_camera_frame(pose, size=1024):
     light=np.array([-.5,1,1]);light/=np.linalg.norm(light)
     signs=np.array([[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]])
     def edge(a,b,x,y):return (b[0]-a[0])*(y-a[1])-(b[1]-a[1])*(x-a[0])
-    for part,(x,y,z,w,h,d) in enumerate(_ADVANCED_PARTS):
+    scene_parts = [(part, (x*(-1 if len(offset)>3 and offset[3]==180 else 1)+offset[0],y+offset[1],z*(-1 if len(offset)>3 and offset[3]==180 else 1)+offset[2],w,h,d))
+                   for offset in pose.get('subjectOffsets', [(0,0,0)])
+                   for part,(x,y,z,w,h,d) in enumerate(_ADVANCED_PARTS)]
+    for part,(x,y,z,w,h,d) in scene_parts:
         vertices=signs*np.array([w,h,d])/2+np.array([x,y,z])
         for ids in ((0,3,2,1),(4,5,6,7),(0,4,7,3),(1,2,6,5),(3,7,6,2),(0,1,5,4)):
             vs=vertices[list(ids)]; normal=np.cross(vs[1]-vs[0],vs[2]-vs[0]);normal/=np.linalg.norm(normal)
@@ -7635,6 +7862,7 @@ try:
                     "enhanced_prompt": result["enhanced_prompt"],
                     "llm_prompt": result["llm_prompt"],
                     "advanced_camera_timeline": result["advanced_camera_timeline"],
+                    "camera_prompt": result["camera_prompt"],
                     "validation_report": result["validation_report"],
                     "errors": result["errors"],
                     "warnings": result["warnings"],

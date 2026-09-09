@@ -2,19 +2,6 @@
 
 This is a custom node that collects the tools I use frequently.
 
-### MiniMax H3 camera render
-
-Enable **Camera render** in the camera panel to expose a `camera_render` IMAGE output.
-On node execution it renders the full panel camera timeline at **1024×1024, 24 fps**
-as a CPU float32 image batch. Connect it to Save Image for a PNG sequence or a video
-combine node (24 fps). The existing `length` output is its frame count.
-Rendering is off by default and writes no files itself. Allow roughly 1.5 GiB RAM
-per five seconds of output; long sequences require proportionally more RAM.
-It renders the preview mannequin, ground grid and white edges, without editor overlays.
-Shot cuts, Move interpolation, composition and roll match the preview. Text-only
-Motion presets and Qwen/user-text target changes are not 3D-solved and therefore
-are not animated in this output. This checkbox applies to the entire timeline and
-is separate from each item's prompt-camera enable checkbox.
 
 https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8536e96a-514a-48b2-b1aa-8eccbd3fa853
 
@@ -76,137 +63,81 @@ Direct Webcam capture workflow (without webcam app)
 
 ## Minimax-H3-prompter
 
-### Camera Advanced path controls
+Builds MiniMax H3 audiovisual prompts from a Shot/Move timeline and optional image,
+video, and audio references. It generates prompts, not the final AI video.
 
-- **Direction** selects the destination viewpoint; **Orbit route** selects how a Move reaches it in camera-relative coordinates. Choose camera-left or camera-right explicitly when the route matters. Shortest path preserves the previous behavior, with a leftward tie at 180 degrees. Identical directions do not imply a full revolution. The route control is inactive on a Shot opening, which establishes a new take.
-- Preview and compiled camera text share the signed orbit route. A profile-to-opposite-profile half-circle names the intervening front or rear view, rather than relying on the destination alone.
-- Continuous paths interpolate distance, elevation, azimuth and framing target with shape-preserving shared waypoint tangents. Reversing components slow at the boundary; the view does not reset. Camera height is derived from those quantities, so height need not be monotonic when both framing target and angle change.
-- **Composition** selects the screen position of the framed subject region: center, left/right thirds, upper/lower thirds, or four corner-third positions. It is independent of orbital Direction. The preview interpolates an off-axis framing offset rather than inventing subject movement or a physical orbit. Distance can increase to retain the requested body range near an edge; this can make the subject smaller. Camera prose includes the continuous reframing and resulting destination placement.
-- The Full camera timeline UI box has been removed. Verified camera sentences and diagnostic metadata remain in the raw plan. Diagnostics are not rendered into the final camera sentence. Ground-plane conflicts are reported, not silently corrected. The fast-orbit warning is a planning heuristic, not a measured model limit.
-- Geometry remains a standing mannequin proxy with a square preview, not a constraint on output aspect ratio or a simulation of arbitrary subject poses. Text-only video generation can still miss paths or insert cuts despite valid geometry.
-
-
-<img width="2190" height="1624" alt="image" src="https://github.com/user-attachments/assets/fc97abbe-d8ee-498b-8b5c-f248663cb749" />
-
-
-Builds MiniMax H3 audiovisual prompts from an editable shot timeline and optional image, video, and
-audio references. Supported modes are `Auto`, `T2VA`, `I2VA`, `FL2VA`, `L2VA`, and `REF2VA`.
-`Auto` selects a mode from the active reference layout.
-
-- `T2VA`: text-only generation
-- `I2VA`: exact first-frame continuation
-- `FL2VA`: continuous interpolation between exact first and last frames
-- `L2VA`: generation that converges on an exact final frame
-- `REF2VA` (`R2V`): subject, frame, video, and audio reference generation or editing
+<img width="2190" height="1624" alt="MiniMax H3 prompter interface" src="https://github.com/user-attachments/assets/fc97abbe-d8ee-498b-8b5c-f248663cb749" />
 
 ### Quick start
 
-1. Select a mode, duration, and model. `Auto` chooses a mode from the reference layout.
-2. Describe each shot naturally in **Prompt**, including actions, camera direction, dialogue,
-   visible text, sound, and music.
-3. Optionally use the preset menu below Prompt. **Camera** provides direction, angle, motion, and shot-framing presets using
-   the H3 camera vocabulary;
-   **Style** groups detailed presets by general cinema/drama, natural-light/outdoor, urban,
-   noir/thriller, horror/found footage, documentary/reality, action/fantasy, science fiction,
-   fashion/editorial, commercial/product, POV/social video, film era, physical-character animation,
-   animation/graphic,
-   and music/game/hybrid categories. Every preset defaults to
-   `None`. Presets are stored per shot and apply only to the currently
-   selected shot, so each shot can use independent camera and style instructions. Select
-   **Figurine animation** for a figurine, doll, puppet, or collectible that must retain its
-   physical materials and supports while performing visible articulated character motion.
-4. Enable **Raw Prompt** below Generated Prompt to inspect the complete system and user prompt channels
-   supplied to the prompt-generation model. After generation this includes the exact role-aware reference
-   evidence used by Qwen; before generation it shows the currently compiled model input.
-4. Add assets with **+ Image**, **+ Video**, or **+ Audio**. Enter aliases as plain words, then
-   type `@` in Prompt to insert one from the alias menu.
-5. Arrange and resize shots on the timeline. Shot badges show the actual time range and inclusive frame
-   range. Cuts and transitions are created only at shot boundaries; an image anchor inside a shot is a
-   continuous in-shot state, not a cut.
-6. Edit reference placement on the tracks below the shot timeline:
-   - First/last images are fixed to the first/final output frame. A `Frame` image can be dragged to an
-     exact zero-based output frame. The track uses a solid anchor line, with a small preview beside its
-     frame/time label. Subject images remain untimed.
-   - Drag a video clip to move it and drag either edge to trim it. Clips may extend past the fixed lane;
-     only the visible intersection is analyzed and output. Filmstrip thumbnails show the selected source
-     interval. The minimum visible trim is 10 frames.
-   - Timeline rulers, shot badges, image anchors, and clip overlays use the H3-aligned duration and
-     `length`, for example `5.17s / 124f` for a requested 5.00 seconds.
-7. Press **Generate Prompt**. Press it again while it displays **Stop** to cancel generation.
+1. Choose a model, mode, and duration. **Auto** selects the mode from your references.
+   Use 5–15 seconds as a practical starting range; the displayed frame count is H3-aligned.
+2. Enter the subject, action, setting, and any camera instructions in **Prompt**.
+   **+ Shot** starts a new take; **+ Move** continues the same Shot without a cut.
+   Drag timeline boundaries to adjust timing.
+3. Optionally set **Visual style** and **Camera style** for the selected Shot/Move.
+   Visual style controls appearance; Camera style adds handling such as handheld or
+   stabilized movement, without replacing the requested path or speed.
+4. Configure **Camera Advanced**, then select **Generate Prompt**.
+   **Enhance** defaults to **Normal**: None is concise, Normal expands the request,
+   and Strong produces a longer, richer description. **Stop** cancels generation.
+5. Connect `generated_prompt` and `length` to your H3 workflow.
+   Enable **Auto Run** to generate the prompt when ComfyUI executes the node.
 
-The last successful prompt remains available while inputs are edited and is replaced only after a
-new generation succeeds.
+### Camera and prompt display
 
-### Models
+Camera options are saved per Shot/Move. **Shot size**, **Shot viewpoint** (External,
+OTS, OTH, POV), and **Subject framing** control coverage. **Camera level** sets lens
+height independently of **Angle**; Ground + Level view looks horizontally at foot height.
+**Direction** chooses the destination, **Orbit route** chooses the route, **Camera roll**
+rotates the frame, and **Composition** places the target within the image.
 
-- **JonathanColetti/Qwen3.8-27B-Uncensored-GGUF · Q4_K_M + Vision F16:** supports every mode,
-  including `REF2VA`, and analyzes image references and selected video intervals.
-- **pytraveler MiniMax-H3 Prompt Rewriter LoRA Omni GGUF Q8_0 + Qwen2.5-Omni-7B Q4_K_M:**
-  supports every mode, including `REF2VA/R2V`, and reads ordered image, selected video-frame,
-  and audio references directly. It downloads the matching Omni base, projector, and LoRA adapter
-  and uses its dedicated trained rewriter profile (about 9 GB VRAM at a 12k-class context).
+**Movement range** and **Speed** are qualitative prompt instructions, not preview speed
+or distance controls. Motion presets apply to a Shot when its following Moves have
+camera disabled. Disabled intervals hold the preceding state unless user camera text
+requests otherwise.
 
-Missing model files download only after confirmation. With Qwen3.8, **Enhance** provides three detail levels:
-**None** keeps generation concise, **Normal** explicitly develops action steps and resolves hand, object, camera, and keyframe continuity, and **Strong** performs a substantially
-longer creative rewriter-style expansion. Strong preserves explicit actions, references, timing, dialogue, and shot
-structure while actively creating compatible staging, production design, lighting, micro-performance, physical
-responses, layered sound, and, unless prohibited, a fitting music treatment. Omni uses its own trained
-expansion behavior, so the Qwen3.8 enhancement-level selector is disabled for that bundle.
+Explicit user camera instructions take priority over panel defaults and camera style.
+The system describes connected physical paths between Move endpoints. The mannequin
+preview is representative: it does not solve the real scene, user-written targets,
+or handheld shake, and cannot guarantee the generated video's framing or continuity.
 
-### Managed llama.cpp runtime
+The display dropdown and **Copy** use the same text area:
 
-The node installs its own pinned llama.cpp `b10310` runtime on first use instead of depending on
-another custom node. Files are stored under
-`ComfyUI/user/toyxyz_minimax_h3/runtime/b10310-<backend>` and survive custom-node updates.
-Supported NVIDIA GPUs use the CUDA 13.3 package; other Windows GPUs use Vulkan by default, with
-CPU available through `TOYXYZ_LLAMA_BACKEND=cpu`. Download progress appears in the execution log,
-and the runtime is published only after all required executables have been extracted successfully.
-Set `TOYXYZ_LLAMA_COMPLETION`, `TOYXYZ_LLAMA_CLI`, `TOYXYZ_LLAMA_SERVER`, or
-`TOYXYZ_LLAMA_MTMD_CLI` only when intentionally overriding the managed runtime.
+- **Generated prompt:** the latest generated result.
+- **Raw prompt:** system and user input; after generation, includes the actual reference analysis.
+- **Camera prompt:** procedural camera timeline before Qwen applies user-text overrides.
 
-### References
+### References and models
 
-- **Image:** choose `First frame`, `Last frame`, `Frame`, or `Subject`. Subject preservation can be
-  `Weak`, `Normal`, or `Strong`; Strong also retains that subject's source visual medium/style.
-- **Video:** choose `None`, editing, continuation, motion/action timing, camera movement, or
-  cuts/rhythm/temporal structure. Analysis and VIDEO output use only the interval visible on the video timeline.
-  Prompt generation also emits a locked video timeline plan: placed clips apply only inside their visible
-  intervals, while uncovered intervals execute the corresponding shot prompt instead of freezing a clip.
-  For **Motion / action timing**, assign source objects in the main Prompt or reference description,
-  in Korean or English: `<Video 1> red object = woman in white; blue object = man in a black coat`.
-  This preset requests **reference generation**, including camera reference: transfer the specified
-  tracks' motion, placement, timing and relative occlusion, plus evidenced camera path/framing/pacing,
-  into a new target scene. Source appearance, environment, surfaces and lighting are excluded.
-  Explicit target action/camera instructions override conflicting reference evidence. Source-video
-  editing remains a separate preset. This is a prompt contract, not a pixel-tracking implementation.
-  Minimal color/shape selectors identify tracks; they are not transferred appearance. Analysis preserves
-  separate actor bindings, motion and interaction timing, and flags uncertain tracking or unobserved limbs.
-  Qwen's existing video-analysis pass emits a structured binding array with source selectors, stable actor
-  IDs, target descriptions and exact supporting user-text quotes. The application checks the schema,
-  quoted text, ambiguity and duplicate tracks, then assigns collision-free `<Subject N>` labels.
-  It assembles their definitions and retention lines and checks label presence in the summary and assigned
-  Shots. Missing output labels or uncertain mappings produce explicit errors instead of silent remapping.
-  These checks do not prove semantic correctness of the vision model's tracking or detect every omitted
-  free-text assignment; inspect the returned `motion_bindings` in reference analyses when diagnosing one.
-  Motion-only REF2VA uses a compact system instruction set; mixed-reference projects retain their
-  role-specific instructions. No extra Qwen call is introduced. Context estimates are logged against the
-  16,384-token runtime budget. Audio reuse still requires an independently enabled audio role; merely
-  loading a video never creates an Audio label or a source-signal-copy claim.
-- **Audio:** choose `None`, full/partial signal copy, voice and delivery, dialogue/lyrics, sound and
-  ambience, or music/rhythm. Audio is not inferred beyond the selected role and supplied metadata.
+Modes: **T2VA** (text), **I2VA** (first frame), **FL2VA** (first/last frames),
+**L2VA** (last frame), and **REF2VA** (reference generation/editing).
 
-References are numbered independently as `<Picture N>`, `<Video N>`, and `<Audio N>`. Their order in
-the node must match the downstream H3 reference-slot order.
+- **Image:** First frame, Last frame, Frame, or Subject. Drag Frame anchors to exact
+  timeline positions; first/last anchors stay fixed. Use reference strength for subject retention.
+- **Video:** select editing, continuation, or motion/action timing. Move and trim clips
+  on the timeline; only the visible source interval is used. For motion transfer, identify
+  source-to-target mappings in Prompt, e.g. “red figure = the woman; blue figure = the man.”
+  Motion references include camera behavior but do not copy source appearance or scenery.
+- **Audio:** select the intended reuse role. Loading a video alone does not request audio reuse.
 
-### Outputs
+Use aliases with `@`. Reference order must match downstream H3 slots.
+Outputs include `image_N`, `frame_N`, `video_N`, and `audio_N` as applicable.
 
-- `generated_prompt` — latest successfully generated H3 prompt
-- `length` — H3-aligned frame count on the 24fps `17k+5` grid
-- `image_N` — uploaded image references in downstream slot order
-- `frame_N` — exact zero-based timeline frame for each movable `Frame` image
-- `video_N` — the visible selected interval as a ComfyUI VIDEO object containing 24fps images,
-  synchronized trimmed audio when available, and video metadata; output does not exceed `length`
-- `audio_N` — uploaded audio reference trimmed to the aligned target duration
+**Qwen3.8 27B** supports all modes and Normal/Strong expansion.
+**MiniMax H3 Rewriter Omni** supports all modes with its own expansion behavior.
+Missing models require download confirmation; a managed llama.cpp runtime is installed
+on first use. Qwen runs with a 16,384-token context shared by input and output:
+many timeline items or reference analyses can exceed it. Check the execution log for
+download progress, context warnings, and reference-mapping errors.
+
+### Optional camera render
+
+**Camera render** adds a `camera_render` IMAGE batch of the preview scene at
+**1024×1024, 24 fps** for the full timeline. Connect it to Save Image or a video
+combine node. It writes no files itself and uses roughly **1.5 GiB RAM per five seconds**.
+This is a panel-geometry render, not the final AI video; text-only motion, camera style,
+and Qwen-resolved targets are not simulated.
 
 ## Cut Video
 

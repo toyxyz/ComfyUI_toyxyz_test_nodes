@@ -29,6 +29,11 @@ const ranges={extreme_close_up:[2.66,2.90],big_close_up:[2.56,3.00],close_up:[2.
   full_shot:[0,3.04],wide_shot:[0,3.04],extreme_wide_shot:[0,3.04]};
 export const compositions={center:[0,0],left:[-1/3,0],right:[1/3,0],top:[0,1/3],bottom:[0,-1/3],
   top_left:[-1/3,1/3],top_right:[1/3,1/3],bottom_left:[-1/3,-1/3],bottom_right:[1/3,-1/3]};
+export const cameraLevels={ground:.12,knee:.65,hip:1.43,chest:2.28,eye:2.89,above_head:3.6,elevated:6,aerial:15};
+export function subjectOffsets(config) {
+  const n=({two:2,three:3,group:4})[config.subject_framing]||1;
+  return Array.from({length:n},(_,i)=>[([0,1,-1,2][i])*1.6,0,0]);
+}
 export function framingConfig(config) {
   return {shot_size:Object.hasOwn(ranges,config.shot_size)?config.shot_size:'full_shot'};
 }
@@ -41,7 +46,7 @@ export function framingPoints(config) {
     if(lo>hi)return;
     for(const px of [x-w/2,x+w/2])for(const py of [lo,hi])for(const pz of [z-d/2,z+d/2])points.push([px,py,pz]);
   });
-  return {points,anchor:[0,(bottom+top)/2,0],shot_size};
+  return {points:subjectOffsets(config).flatMap(offset=>points.map(p=>add(p,offset))),anchor:[0,(bottom+top)/2,0],shot_size};
 }
 export function solveCamera(config,previous=null) {
   const turns={rotate_left_180:-180,rotate_right_180:180,rotate_left_360:-360,rotate_right_360:360};
@@ -50,6 +55,15 @@ export function solveCamera(config,previous=null) {
   const elevation=({extreme_low:-60,low_angle:-18,eye_level:0,high_angle:30,extreme_high:70,overhead:89.5})[config.angle]||0;
   const roll=[-90,-45,-30,-15,0,15,30,45,90,180].includes(Number(config.roll))?Number(config.roll):0;
   const {points,anchor,shot_size}=framingPoints(config);
+  if(['ots','oth','pov'].includes(config.viewpoint)) {
+    const level=Object.hasOwn(cameraLevels,config.camera_level)?config.camera_level:config.viewpoint==='oth'?'hip':'eye';
+    const pose=solveLevelCamera({...config,camera_level:level},azimuth,elevation,roll,points,anchor,shot_size,3.2);
+    pose.viewpoint=config.viewpoint;
+    pose.viewpointProxy=true;
+    if(config.viewpoint!=='pov')pose.subjectOffsets.push([-.95,0,1.6,180]);
+    return pose;
+  }
+  if(Object.hasOwn(cameraLevels,config.camera_level))return solveLevelCamera(config,azimuth,elevation,roll,points,anchor,shot_size);
   const [screenX,screenY]=compositions[config.composition]||compositions.center;
   const target=anchor, az=azimuth*Math.PI/180, el=elevation*Math.PI/180;
   const radial=[Math.sin(az)*Math.cos(el),Math.sin(el),Math.cos(az)*Math.cos(el)];
@@ -64,14 +78,26 @@ export function solveCamera(config,previous=null) {
       minY:Math.min(...projected.map(p=>p[1])),maxY:Math.max(...projected.map(p=>p[1])),near:Math.min(...projected.map(p=>p[2]))};
   };
   const occupancy=shot_size==='wide_shot'?.62:shot_size==='extreme_wide_shot'?.20:.90;
-  let lo=.35,hi=30;
+  let lo=.35,hi=subjectOffsets(config).length>1?128:30;
   for(let i=0;i<50;i++) {const mid=(lo+hi)/2,r=evaluate(mid);
     if(r.near<.1||r.maxX-r.minX>2*Math.min(occupancy,.95-Math.abs(screenX))||r.maxY-r.minY>2*Math.min(occupancy,.95-Math.abs(screenY))) lo=mid; else hi=mid;}
   // Match backend: do not approach merely because an overhead body foreshortens.
   if(shot_size==='wide_shot'||shot_size==='extreme_wide_shot')hi=Math.max(hi,3.04/(2*tangent*occupancy));
   const r=evaluate(hi);
   return {...r.pose,target,anchor,shiftX:(r.minX+r.maxX)/2-screenX,shiftY:(r.minY+r.maxY)/2-screenY,azimuth,elevation,distance:hi,
-    orbit_route:config.direction in turns ? config.direction : config.orbit_route||'shortest'};
+    subjectOffsets:subjectOffsets(config),orbit_route:config.direction in turns ? config.direction : config.orbit_route||'shortest'};
+}
+function solveLevelCamera(config,azimuth,requestedElevation,roll,points,anchor,shotSize,minRadius=.1) {
+  // Shot size controls nominal distance, never a forced anatomical aim.
+  const nominal=solveCamera({...config,viewpoint:'external',camera_level:'auto',angle:'eye_level',composition:'center'});
+  const height=cameraLevels[config.camera_level],el=requestedElevation*Math.PI/180,az=azimuth*Math.PI/180;
+  const distance=Math.max(nominal.distance,minRadius),radius=distance*Math.cos(el);
+  const target=[0,height-distance*Math.sin(el),0],position=[Math.sin(az)*radius,height,Math.cos(az)*radius];
+  const [sx,sy]=compositions[config.composition]||[0,0];
+  return {position,target,anchor:target,azimuth,roll,tangent:nominal.tangent,effectiveLevel:config.camera_level,
+    explicitLevel:true,distance,elevation:requestedElevation,requestedElevation,levelAdjusted:false,
+    subjectOffsets:subjectOffsets(config),shiftX:-sx,shiftY:-sy,
+    orbit_route:config.direction?.startsWith('rotate_')?config.direction:config.orbit_route||'shortest'};
 }
 export function orbitDelta(a,b,route='shortest') {
   const turns={rotate_left_180:-180,rotate_right_180:180,rotate_left_360:-360,rotate_right_360:360};
@@ -86,11 +112,16 @@ export function interpolateCamera(a,b,t) {
   t=Math.max(0,Math.min(1,t)); const s=t*t*t*(t*(t*6-15)+10);
   const mix=(x,y)=>x+(y-x)*s;
   const delta=orbitDelta(a.azimuth,b.azimuth,b.orbit_route);
-  const azimuth=a.azimuth+delta*s,elevation=mix(a.elevation,b.elevation),distance=mix(a.distance,b.distance);
+  const azimuth=a.azimuth+delta*s;
+  let elevation=mix(a.elevation,b.elevation),distance=mix(a.distance,b.distance);
   const target=a.target.map((v,i)=>mix(v,b.target[i]));
   const anchor=a.anchor.map((v,i)=>mix(v,b.anchor[i]));
+  if(a.explicitLevel||b.explicitLevel){
+    const height=mix(a.position[1],b.position[1]);
+    target[1]=height-distance*Math.sin(elevation*Math.PI/180);anchor[1]=target[1];
+  }
   const az=azimuth*Math.PI/180,el=elevation*Math.PI/180;
-  return {target,anchor,position:add(anchor,mul([Math.sin(az)*Math.cos(el),Math.sin(el),Math.cos(az)*Math.cos(el)],distance)),
+  return {subjectOffsets:takeOffsets([a,b]),target,anchor,position:add(anchor,mul([Math.sin(az)*Math.cos(el),Math.sin(el),Math.cos(az)*Math.cos(el)],distance)),
     tangent:mix(a.tangent,b.tangent),shiftX:mix(a.shiftX,b.shiftX),shiftY:mix(a.shiftY,b.shiftY),roll:mix(a.roll||0,b.roll||0),azimuth,elevation,distance};
 }
 function unwrapAngles(nodes) {
@@ -114,18 +145,21 @@ function hermite(values,times,index,t) {
 }
 // A complete Shot path shares waypoint velocity across adjacent Moves. Only the
 // reversing or held scalar stops at its waypoint; other axes keep moving.
+function takeOffsets(poses) {return [...new Map(poses.flatMap(p=>p.subjectOffsets||[[0,0,0]]).map(o=>[JSON.stringify(o),o])).values()];}
 export function interpolateCameraPath(nodes,index,t) {
   if(nodes.length<2)return nodes[0]?.pose;
   index=Math.max(0,Math.min(nodes.length-2,index));
   const times=nodes.map(n=>n.time),azimuths=unwrapAngles(nodes);
   const scalar=key=>hermite(nodes.map(n=>n.pose[key]),times,index,t);
   const vector=key=>[0,1,2].map(axis=>hermite(nodes.map(n=>n.pose[key][axis]),times,index,t));
-  const azimuth=hermite(azimuths,times,index,t),distance=scalar('distance');
-  const elevation=scalar('elevation'),target=vector('target'),anchor=vector('anchor');
-  const radius=distance*Math.cos(elevation*Math.PI/180);
-  const height=target[1]+distance*Math.sin(elevation*Math.PI/180);
+  const azimuth=hermite(azimuths,times,index,t),target=vector('target'),anchor=vector('anchor');
+  let distance=scalar('distance'),elevation=scalar('elevation'),radius=distance*Math.cos(elevation*Math.PI/180),height=target[1]+distance*Math.sin(elevation*Math.PI/180);
+  if(nodes.some(n=>n.pose.explicitLevel)){
+    height=hermite(nodes.map(n=>n.pose.position[1]),times,index,t);
+    target[1]=height-distance*Math.sin(elevation*Math.PI/180);anchor[1]=target[1];
+  }
   const az=azimuth*Math.PI/180,position=[Math.sin(az)*radius,height,Math.cos(az)*radius];
-  return {target,anchor,position,tangent:scalar('tangent'),shiftX:scalar('shiftX'),shiftY:scalar('shiftY'),roll:scalar('roll'),azimuth,elevation,distance};
+  return {viewpointProxy:nodes.some(n=>n.pose.viewpointProxy),levelAdjusted:nodes.some(n=>n.pose.levelAdjusted),subjectOffsets:takeOffsets(nodes.map(n=>n.pose)),target,anchor,position,tangent:scalar('tangent'),shiftX:scalar('shiftX'),shiftY:scalar('shiftY'),roll:scalar('roll'),azimuth,elevation,distance};
 }
 export function projectPoint(p,pose) {
   const b=basis(pose),v=sub(p,pose.position),z=dot(v,b.forward);
@@ -134,7 +168,9 @@ export function projectPoint(p,pose) {
 export function modelFaces(pose,size) {
   const screen=p=>{const q=projectPoint(p,pose);return [(q[0]+1)*size/2,(1-q[1])*size/2,q[2]];};
   const faces=[];
-  parts.forEach(([cx,cy,cz,wx,hy,dz],index)=>{
+  (pose.subjectOffsets||[[0,0,0]]).forEach(offset=>parts.forEach(([x,y,z,wx,hy,dz],index)=>{
+    const facing=offset[3]===180?-1:1;
+    const [cx,cy,cz]=add([x*facing,y,z*facing],offset);
     const vs=[[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]]
       .map(([a,c,d])=>[cx+a*wx/2,cy+c*hy/2,cz+d*dz/2]);
     for(const ids of [[0,3,2,1],[4,5,6,7],[0,4,7,3],[1,2,6,5],[3,7,6,2],[0,1,5,4]]){
@@ -143,7 +179,7 @@ export function modelFaces(pose,size) {
       const ps=vertices.map(screen);if(ps.some(p=>p[2]<.05))continue;
       faces.push({ps,depth:ps.reduce((s,p)=>s+p[2],0)/4,light:.55+.45*Math.max(0,dot(normal,unit([-.5,1,1]))),index});
     }
-  });
+  }));
   return faces;
 }
 
@@ -220,11 +256,13 @@ export function drawCameraPreview(canvas,pose,path=[]) {
   if(canvas.width!==Math.round(size*dpr)||canvas.height!==Math.round(size*dpr)){canvas.width=Math.round(size*dpr);canvas.height=Math.round(size*dpr);}
   const ctx=canvas.getContext('2d');if(!ctx)return;ctx.setTransform(dpr,0,0,dpr,0,0);ctx.lineWidth=1;
   const radius=Math.max(7,pose.distance*1.8);
-  const overview={position:[radius,.7*radius,radius],target:[0,1.5,0],tangent:.65};
+  const overview={subjectOffsets:pose.subjectOffsets,position:[radius,.7*radius,radius],target:[0,1.5,0],tangent:.65};
   scene(ctx,[0,0,size],overview,pose,path);
   const w=size*.47,x=size-w-10,y=30;
   scene(ctx,[x,y,w],pose);ctx.strokeStyle='#65b9ff';ctx.strokeRect(x,y,w,w);
   ctx.fillStyle='#d8edff';ctx.font='10px sans-serif';ctx.fillText('CAMERA OUTPUT 1:1',x+6,y+14);
+  if(pose.levelAdjusted){ctx.fillStyle='#ffc663';ctx.font='11px sans-serif';ctx.fillText('Level + crop: best-fit angle (panel angle adjusted).',10,size-40);}
+  if(pose.viewpointProxy){ctx.fillStyle='#ffc663';ctx.font='11px sans-serif';ctx.fillText('Viewpoint proxy: fixed example layout, not user scene.',10,size-55);}
   if([pose,...path].some(p=>p.position[1]<0)) {
     ctx.fillStyle='#ffc663';ctx.font='11px sans-serif';
     ctx.fillText('Warning: camera path below ground.',10,size-26);

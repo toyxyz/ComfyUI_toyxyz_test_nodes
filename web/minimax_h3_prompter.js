@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { solveCamera, interpolateCameraPath, drawCameraPreview } from "./h3_camera_geometry.js";
+import { solveCamera, interpolateCameraPath, drawCameraPreview, subjectOffsets } from "./h3_camera_geometry.js";
 
 const NODE_NAME = "MinimaxH3Prompter";
 const ENDPOINT = "/toyxyz/minimax_h3_prompter/compile";
@@ -21,7 +21,8 @@ const OMNI_MODEL = "hf:pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-Omni-GGUF/Q8_0
 // Includes the model selector/enhancement controls without forcing the whole
 // editor into a nested scrollbar. Long reference lists and prompt previews
 // retain their own scoped scroll areas.
-const UI_HEIGHT = 900;
+// Reserve height for the square preview and all camera option rows.
+const UI_HEIGHT = 1100;
 const UI_WIDTH = 1380;
 const VIDEO_PREVIEW_WIDTH = 440;
 const NODE_HEIGHT = UI_HEIGHT + 95;
@@ -128,6 +129,11 @@ const ADVANCED_COMPOSITIONS = {
   center: "Center", left: "Left third", right: "Right third", top: "Upper third", bottom: "Lower third",
   top_left: "Upper left", top_right: "Upper right", bottom_left: "Lower left", bottom_right: "Lower right",
 };
+const ADVANCED_VIEWPOINTS = {external: "External", ots: "Over-the-shoulder", oth: "Over-the-hip", pov: "POV"};
+const ADVANCED_AMPLITUDES = {auto: "Auto", small: "Small", large: "Large"};
+const ADVANCED_SPEEDS = {auto: "Auto", slow: "Slow", fast: "Fast"};
+const ADVANCED_SUBJECT_FRAMING = {auto: "Auto", single: "Single", two: "Two-shot", three: "Three-shot", group: "Group"};
+const ADVANCED_CAMERA_LEVELS = {auto: "Auto", ground: "Ground", knee: "Knee", hip: "Hip", chest: "Chest", eye: "Eye", above_head: "Above head", elevated: "Elevated", aerial: "Aerial"};
 const DEFAULT_ADVANCED_CAMERA = () => ({
   shot_size: "full_shot", direction: "front", angle: "eye_level",
 });
@@ -137,8 +143,13 @@ function normalizeAdvancedCamera(value) {
   let shot_size=Object.hasOwn(ADVANCED_CAMERA_SHOTS,raw.shot_size)?raw.shot_size:"full_shot";
   return {
     shot_size,
+    viewpoint: Object.hasOwn(ADVANCED_VIEWPOINTS, raw.viewpoint) ? raw.viewpoint : "external",
+    subject_framing: Object.hasOwn(ADVANCED_SUBJECT_FRAMING, raw.subject_framing) ? raw.subject_framing : "auto",
+    camera_level: Object.hasOwn(ADVANCED_CAMERA_LEVELS, raw.camera_level) ? raw.camera_level : "auto",
     roll: Object.hasOwn(ADVANCED_CAMERA_ROLLS, raw.roll) ? String(raw.roll) : "0",
     motion: Object.hasOwn(CAMERA_MOTION_PRESETS, raw.motion) ? raw.motion : "none",
+    amplitude: Object.hasOwn(ADVANCED_AMPLITUDES, raw.amplitude) ? raw.amplitude : "auto",
+    speed: Object.hasOwn(ADVANCED_SPEEDS, raw.speed) ? raw.speed : "auto",
     direction: Object.hasOwn(ADVANCED_CAMERA_DIRECTIONS, raw.direction) ? raw.direction : "front",
     angle: Object.hasOwn(ADVANCED_CAMERA_ANGLES, raw.angle) ? raw.angle : "eye_level",
     orbit_route: Object.hasOwn(ADVANCED_ORBIT_ROUTES, raw.orbit_route) ? raw.orbit_route : "shortest",
@@ -221,7 +232,7 @@ const STYLE_PRESETS = {
   mountain_adventure_cinema: "Mountain adventure cinema",
   survival_expedition_film: "Survival / expedition film",
   blue_hour_urban_cinema: "Blue-hour urban cinema",
-  rainy_city_one_take: "Rainy city one-take",
+  rainy_city_one_take: "Rainy city cinema",
   urban_editorial: "Urban editorial",
   night_city_timelapse: "Night city timelapse",
   modern_neo_noir: "Modern neo-noir",
@@ -248,7 +259,7 @@ const STYLE_PRESETS = {
   performance_car_commercial: "Performance car commercial",
   food_macro_commercial: "Food macro commercial",
   dark_surreal_commercial: "Dark / surreal commercial",
-  ultra_realistic_pov: "Ultra-realistic POV",
+  ultra_realistic_pov: "Ultra-realistic immersive",
   smartphone_ugc: "Smartphone UGC",
   film_1970s: "1970s film",
   cinema_1980s: "1980s cinema",
@@ -267,7 +278,7 @@ const STYLE_PRESET_GROUPS = [
   ["Science fiction", ["neon_cyberpunk_cinema", "dark_dystopian_scifi", "prestige_scifi_drama", "cyberpunk_live_action", "scifi_mystery", "retro_futuristic_scifi"]],
   ["Fashion / editorial", ["high_fashion_editorial", "korean_fashion_campaign", "streetwear_fashion_film"]],
   ["Commercial / product", ["minimalist_premium_product", "luxury_automotive_commercial", "performance_car_commercial", "food_macro_commercial", "dark_surreal_commercial", "premium_product_film", "japanese_commercial", "food_commercial", "high_saturation_commercial", "phone_ugc_ad"]],
-  ["POV / social video", ["ultra_realistic_pov", "smartphone_ugc", "authentic_smartphone_vlog", "smartphone_video"]],
+  ["Immersive / social video", ["ultra_realistic_pov", "smartphone_ugc", "authentic_smartphone_vlog", "smartphone_video"]],
   ["Film / era", ["film_1970s", "cinema_1980s", "cinema_1990s", "early_2000s_digital_cinema", "modern_digital_cinema", "cinematic_35mm", "vhs_analog", "vhs_rental_movie"]],
   ["2D animation — General", ["animation_2d", "rough_hand_drawn_2d", "watercolor_2d", "ink_wash_2d", "modern_flat_cartoon", "vintage_western_cartoon", "western_cartoon", "comic_book_2d", "manga_monochrome_2d", "paper_cutout_2d", "sprite_16bit", "sketch_anime", "lineart_anime"]],
   ["2D animation — Anime", ["contemporary_anime", "contemporary_action_anime", "anime_1990s", "anime_1980s_ova", "anime_early_2000s_tv", "theatrical_anime_2d", "retro_anime_motion_graphics", "retro_anime_noir_jazz", "anime_music_video"]],
@@ -277,9 +288,22 @@ const STYLE_PRESET_GROUPS = [
   ["Graphic / mixed media", ["graphic_poster_animation", "minimalist_motion_design", "photoreal_graphic_hybrid"]],
   ["Music", ["music_video"]],
 ];
+const CAMERA_STYLE_PRESETS = {
+  none: "None",
+  handheld: "Handheld",
+  handheld_documentary: "Documentary handheld",
+  handheld_energetic: "Energetic handheld",
+  stabilized: "Stabilized",
+  steadicam: "Steadicam / floating",
+  gimbal: "Gimbal stabilized",
+  dolly_precision: "Precision dolly",
+  dynamic: "Dynamic camera",
+  restrained: "Restrained camera",
+  shoulder_mounted: "Shoulder-mounted",
+};
 const DEFAULT_SHOT_PRESETS = () => ({
   camera_angle: "none", camera_direction: "none", camera_motion: "none", camera_shot: "none",
-  style: "none",
+  style: "none", camera_style: "none",
 });
 function normalizeShotPresets(value) {
   const raw = value && typeof value === "object" ? value : {};
@@ -289,6 +313,7 @@ function normalizeShotPresets(value) {
     camera_motion: Object.hasOwn(CAMERA_MOTION_PRESETS, raw.camera_motion) ? raw.camera_motion : "none",
     camera_shot: Object.hasOwn(CAMERA_SHOT_PRESETS, raw.camera_shot) ? raw.camera_shot : "none",
     style: Object.hasOwn(STYLE_PRESETS, raw.style) ? raw.style : "none",
+    camera_style: Object.hasOwn(CAMERA_STYLE_PRESETS, raw.camera_style) ? raw.camera_style : "none",
   };
 }
 const REFERENCE_ROLE_LABELS = {
@@ -365,10 +390,10 @@ const DEFAULT_PROJECT = () => ({
   enhance_model: DEFAULT_ENHANCE_MODEL,
   image_model: DEFAULT_MODEL_BUNDLE,
   auto_run: false,
-  enhance: false,
-  enhance_level: "none",
+  enhance: true,
+  enhance_level: "normal",
   enhanced_prompt: "",
-  preview_mode: "video",
+  preview_mode: "camera_advanced",
   advanced_camera_enabled: false,
   camera_render: false,
 });
@@ -497,10 +522,10 @@ function normalizeProject(value) {
     ? savedImageModel : DEFAULT_MODEL_BUNDLE;
   project.auto_run = raw.auto_run === true;
   project.enhance_level = Object.hasOwn(ENHANCE_LEVELS, raw.enhance_level)
-    ? raw.enhance_level : raw.enhance === true ? "normal" : "none";
+    ? raw.enhance_level : raw.enhance === false ? "none" : "normal";
   project.enhance = project.enhance_level !== "none";
   project.enhanced_prompt = String(raw.enhanced_prompt || "");
-  project.preview_mode = raw.preview_mode === "camera_advanced" ? "camera_advanced" : "video";
+  project.preview_mode = raw.preview_mode === "video" ? "video" : "camera_advanced";
   project.advanced_camera_enabled = raw.advanced_camera_enabled ?? (raw.preview_mode === "camera_advanced");
   project.camera_render = raw.camera_render === true;
   if (Array.isArray(raw.shots) && raw.shots.length) {
@@ -685,13 +710,13 @@ function installStyles() {
       padding:24px; color:#7f8996; text-align:center; background:#0d1218; pointer-events:none; }
     .mmh3p-video-preview-empty[hidden] { display:none; }
     .mmh3p-video-preview-status { min-height:30px; color:#aeb8c4; font:10px/1.4 ui-monospace,Consolas,monospace; }
-    .mmh3p-camera-advanced { min-height:0; overflow:hidden; display:flex; flex-direction:column; gap:8px; }
+    .mmh3p-camera-advanced { flex:0 0 auto; min-height:0; display:flex; flex-direction:column; gap:8px; }
     .mmh3p-camera-viewport-wrap { position:relative; width:100%; aspect-ratio:1 / 1; flex:0 0 auto;
       border:1px solid #36404b; border-radius:6px; overflow:hidden; background:#0b1016; }
-    .mmh3p-camera-viewport { display:block; width:100%; height:100%; }
+    .mmh3p-camera-viewport { position:absolute; inset:0; display:block; width:100%; height:100%; }
     .mmh3p-camera-viewport-label { position:absolute; left:8px; top:7px; color:#a9d8ff;
       font:700 9px ui-monospace,Consolas,monospace; pointer-events:none; }
-    .mmh3p-camera-controls { display:grid; grid-template-columns:1fr; gap:7px; padding:8px;
+    .mmh3p-camera-controls { display:grid; flex:0 0 auto; grid-template-columns:1fr; gap:7px; padding:8px;
       border:1px solid #36404b; border-radius:6px; background:#171b21; }
     .mmh3p-camera-control { display:grid; grid-template-columns:88px minmax(0,1fr); align-items:center; gap:7px; }
     .mmh3p-camera-control span { color:var(--muted); font-size:10px; font-weight:700; }
@@ -770,14 +795,11 @@ function installStyles() {
     .mmh3p-visual-action-field .mmh3p-mention-wrap { flex:1 1 auto; height:auto; min-height:0; }
     .mmh3p-visual-action-field .mmh3p-mention-wrap textarea { height:100%; min-height:0; resize:none; overflow:auto; }
     .mmh3p-presets { flex:0 0 auto; border-top:1px solid #343b45; padding-top:6px; }
-    .mmh3p-preset-tabs { display:flex; gap:5px; margin-bottom:5px; }
-    .mmh3p-preset-tabs button { min-width:72px; padding:4px 10px; }
-    .mmh3p-preset-tabs button.active { color:#d9efff; border-color:var(--accent); background:#263746; }
     .mmh3p-preset-panel { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:6px; }
     .mmh3p-preset-panel[hidden] { display:none; }
     .mmh3p-preset-panel.style { grid-template-columns:minmax(0,1fr); }
     .mmh3p-preset-field { min-width:0; display:flex; align-items:center; gap:5px; }
-    .mmh3p-preset-field span { flex:0 0 auto; color:var(--muted); font-size:9px; }
+    .mmh3p-preset-field span { flex:0 0 66px; color:var(--muted); font-size:9px; }
     .mmh3p-preset-field select { min-width:0; width:100%; height:25px; font-size:10px; }
     .mmh3p-field { display:flex; flex-direction:column; gap:3px; }
     .mmh3p-field span { color:var(--muted); font-size:10px; }
@@ -868,6 +890,7 @@ function installStyles() {
       padding:3px 6px; border:1px solid #30353d; border-radius:5px; background:#181b20; }
     .mmh3p-enhance-level { display:flex; align-items:center; gap:6px; color:var(--muted); font-size:10px; }
     .mmh3p-enhance-level select { width:92px; min-width:92px; height:25px; }
+    [data-el="prompt-display-mode"] { width:142px; max-width:100%; min-width:0; height:25px; font-size:10px; }
     .mmh3p-copy-button { min-width:52px; height:25px; padding:2px 9px; white-space:nowrap; }
     .mmh3p-log-panel { min-width:0; min-height:0; display:flex; flex-direction:column; }
     .mmh3p-log { flex:1; min-height:0; overflow:auto; margin-top:6px; padding:6px 8px;
@@ -897,7 +920,7 @@ class PrompterUI {
     this.selectedShotId = this.project.shots[0]?.id;
     this.previewData = null;
     this.autoRunPreview = null;
-    this.rawPromptEnabled = false;
+    this.promptDisplayMode = "generated";
     this.lastRawModelPrompt = "";
     this.lastRawModelSource = "";
     this.compileTimer = null;
@@ -949,8 +972,12 @@ class PrompterUI {
             <label class="mmh3p-auto-run" title="Render the entire panel camera timeline to the camera_render IMAGE batch when this node executes. 1024×1024, 24fps. Proxy mannequin and grid only; text-only Motion and Qwen path changes are not rendered. Uses about 1.5 GiB RAM per 5 seconds."><input type="checkbox" data-el="camera-render"><span>Camera render · 1024×1024 · Full timeline</span></label>
             <label class="mmh3p-auto-run" title="Apply panel defaults to this Shot/Move. Explicit camera instructions in your prompt always take priority, even when unchecked. Without such text, disabled items hold their camera state. The 3D preview represents panel settings only."><input type="checkbox" data-el="advanced-camera-enabled"><span>Use Camera Advanced for this Shot / Move</span></label>
             <label class="mmh3p-camera-control"><span>Motion</span><select data-advanced-camera="motion"></select></label>
-            <small data-el="camera-motion-note" hidden>Motion is a prompt instruction; its endpoint is not simulated in the 3D preview.</small>
+            <label class="mmh3p-camera-control" title="Qualitative camera travel range for the prompt. Preview/render retain the calculated endpoints and timing. User camera instructions take priority."><span>Movement range</span><select data-advanced-camera="amplitude"></select></label>
+            <label class="mmh3p-camera-control" title="Qualitative camera travel speed for the prompt. Preview/render retain the calculated path and timing. User camera instructions take priority."><span>Speed</span><select data-advanced-camera="speed"></select></label>
             <label class="mmh3p-camera-control"><span>Shot size</span><select data-advanced-camera="shot_size"></select></label>
+            <label class="mmh3p-camera-control"><span>Shot viewpoint</span><select data-advanced-camera="viewpoint"></select></label>
+            <label class="mmh3p-camera-control"><span>Subject framing</span><select data-advanced-camera="subject_framing"></select></label>
+            <label class="mmh3p-camera-control"><span>Camera level</span><select data-advanced-camera="camera_level"></select></label>
             <label class="mmh3p-camera-control" title="Left/right are camera-based. 45–135° specify a destination from the front axis; 180°/360° continue from the previous direction in a Move."><span>Direction</span><select data-advanced-camera="direction"></select></label>
             <label class="mmh3p-camera-control"><span>Angle</span><select data-advanced-camera="angle"></select></label>
             <label class="mmh3p-camera-control" title="Fixed camera rotation around the optical axis, not an orbit around the subject."><span>Camera roll</span><select data-advanced-camera="roll"></select></label>
@@ -962,14 +989,14 @@ class PrompterUI {
       <div class="mmh3p-workspace">
       <div class="mmh3p-main">
       <div class="mmh3p-panel mmh3p-row mmh3p-top">
-        <span class="mmh3p-label">Mode</span><select data-el="mode"></select>
-        <span class="mmh3p-label">Duration</span><input data-el="duration" type="number" min="0.1" max="60" step="0.1" style="width:76px">
+        <span class="mmh3p-label">Mode</span><select data-el="mode" title="Generation mode; Auto follows the reference layout."></select>
+        <span class="mmh3p-label">Duration</span><input data-el="duration" title="Requested seconds; output is aligned to H3 frames." type="number" min="0.1" max="60" step="0.1" style="width:76px">
         <span class="mmh3p-badge" data-el="effective">calculating</span>
         <span class="mmh3p-badge" data-el="path">fl2va</span>
       </div>
       <div class="mmh3p-panel mmh3p-row">
         <span class="mmh3p-label">Model</span>
-        <select class="mmh3p-grow" data-el="model-bundle"><option value="">Loading Qwen3.8 bundle…</option></select>
+        <select class="mmh3p-grow" data-el="model-bundle" title="Choose the local prompt-writing and reference-analysis model."><option value="">Loading Qwen3.8 bundle…</option></select>
         <span class="mmh3p-badge" data-el="model-status"></span>
       </div>
       <div class="mmh3p-panel">
@@ -980,7 +1007,7 @@ class PrompterUI {
           <span class="mmh3p-playback-time" data-el="playback-time">00:00.000</span>
           <div class="mmh3p-scrubber" data-el="timeline-scrubber-track">
             <div class="mmh3p-scrubber-rail"></div><div class="mmh3p-scrubber-handle"></div>
-            <input data-el="timeline-scrubber" type="range" min="0" max="5" step="0.001" value="0" aria-label="Timeline playhead">
+            <input data-el="timeline-scrubber" type="range" min="0" max="5" step="0.001" value="0" aria-label="Timeline playhead" title="Scrub the camera or reference-video preview.">
           </div>
         </div>
         <div class="mmh3p-label" style="margin-top:6px">Drag a boundary to resize adjacent items · Shot starts a new camera take · Move continues the current take without a cut</div>
@@ -999,11 +1026,9 @@ class PrompterUI {
             </div>
           </div>
           <div class="mmh3p-presets">
-            <div class="mmh3p-preset-tabs">
-              <button data-action="preset-tab" data-preset-tab="style" type="button" title="Show the visual style preset for the selected Shot or Move">Style</button>
-            </div>
-            <div class="mmh3p-preset-panel style" data-el="style-presets" hidden>
-              <label class="mmh3p-preset-field"><span>Style</span><select data-preset="style"></select></label>
+            <div class="mmh3p-preset-panel style" data-el="style-presets">
+              <label class="mmh3p-preset-field"><span>Visual style</span><select data-preset="style" title="Image aesthetic for this Shot/Move; does not set camera travel."></select></label>
+              <label class="mmh3p-preset-field"><span>Camera style</span><select data-preset="camera_style" title="Camera handling texture; user instructions and panel paths take priority."></select></label>
             </div>
           </div>
         </div>
@@ -1020,12 +1045,14 @@ class PrompterUI {
           <pre class="mmh3p-preview" data-el="preview">Compiling…</pre>
           <div class="mmh3p-row mmh3p-preview-modebar">
             <label class="mmh3p-enhance-level" title="None: concise standard prompt. Normal: materially expands action steps and resolves hands, objects, camera, and keyframe continuity. Strong: creates a much longer rewriter-style scene with compatible new staging, lighting, performance, sound, and atmosphere details.">
-              <span>Enhance</span><select data-el="enhance"></select>
+              <span>Enhance</span><select data-el="enhance" title="None: concise. Normal: expanded (default). Strong: longer and richer."></select>
             </label>
-            <button class="mmh3p-copy-button" data-action="copy-prompt" type="button" title="Copy the prompt currently displayed above, including Raw Prompt when enabled">Copy</button>
-            <label class="mmh3p-auto-run" title="Show the complete system and user prompts supplied to the selected prompt-generation model">
-              <input data-el="raw-prompt" type="checkbox"><span>Raw Prompt</span>
-            </label>
+            <button class="mmh3p-copy-button" data-action="copy-prompt" type="button" title="Copy the currently displayed prompt">Copy</button>
+            <select data-el="prompt-display-mode" aria-label="Prompt display" title="Camera prompt shows the procedural panel path before Qwen applies user overrides">
+              <option value="generated">Generated prompt</option>
+              <option value="raw">Raw prompt</option>
+              <option value="camera">Camera prompt</option>
+            </select>
           </div>
         </div>
       </div>
@@ -1061,10 +1088,29 @@ class PrompterUI {
     };
     const fillAdvancedCamera = (name, options) => {
       const select = this.root.querySelector(`[data-advanced-camera="${name}"]`);
+      const hints = {
+        amplitude: "Travel range in the prompt; preview distance is unchanged.",
+        speed: "Travel speed in the prompt; preview timing is unchanged.",
+        shot_size: "Framing scale; with explicit height, sets nominal shooting distance.",
+        viewpoint: "External, over-the-shoulder, over-the-hip, or first-person view.",
+        subject_framing: "Single, two, three, or group coverage; preview figures are examples.",
+        camera_level: "Physical lens height, independent of viewing angle.",
+        direction: "Destination viewpoint; left/right are camera-relative.",
+        angle: "Vertical viewing tilt, independent of lens height.",
+        roll: "Rotate the frame around the lens axis, not around the subject.",
+        orbit_route: "Choose how a Move travels around the subject.",
+        composition: "Place the framing target within the image.",
+      };
+      if (hints[name]) select.title = hints[name];
       Object.entries(options).forEach(([value, label]) => select.add(new Option(label, value)));
     };
     fillAdvancedCamera("shot_size", ADVANCED_CAMERA_SHOTS);
+    fillAdvancedCamera("viewpoint", ADVANCED_VIEWPOINTS);
+    fillAdvancedCamera("subject_framing", ADVANCED_SUBJECT_FRAMING);
+    fillAdvancedCamera("camera_level", ADVANCED_CAMERA_LEVELS);
     fillAdvancedCamera("motion", CAMERA_MOTION_PRESETS);
+    fillAdvancedCamera("amplitude", ADVANCED_AMPLITUDES);
+    fillAdvancedCamera("speed", ADVANCED_SPEEDS);
     const directionSelect = this.root.querySelector('[data-advanced-camera="direction"]');
     ADVANCED_DIRECTION_GROUPS.forEach(([label, values]) => {
       const group = document.createElement("optgroup");
@@ -1077,6 +1123,8 @@ class PrompterUI {
     fillAdvancedCamera("orbit_route", ADVANCED_ORBIT_ROUTES);
     fillAdvancedCamera("composition", ADVANCED_COMPOSITIONS);
     const styleSelect = this.root.querySelector('[data-preset="style"]');
+    const cameraStyleSelect = this.root.querySelector('[data-preset="camera_style"]');
+    Object.entries(CAMERA_STYLE_PRESETS).forEach(([value, label]) => cameraStyleSelect.add(new Option(label, value)));
     styleSelect.add(new Option(STYLE_PRESETS.none, "none"));
     STYLE_PRESET_GROUPS.forEach(([label, values]) => {
       const group = document.createElement("optgroup");
@@ -1084,7 +1132,6 @@ class PrompterUI {
       values.forEach(value => group.append(new Option(STYLE_PRESETS[value], value)));
       styleSelect.append(group);
     });
-    this.activePresetTab = "style";
     this.bind();
   }
 
@@ -1110,9 +1157,13 @@ class PrompterUI {
     this.previewIntersectionObserver.observe(this.els["video-preview-panel"]);
     if (typeof ResizeObserver !== "undefined") {
       this.cameraViewportResizeObserver = new ResizeObserver(() => {
-        if (this.project.preview_mode === "camera_advanced") this.renderAdvancedCamera();
+        if (this.project.preview_mode === "camera_advanced") {
+          this.fitCameraPanelHeight();
+          this.renderAdvancedCamera();
+        }
       });
       this.cameraViewportResizeObserver.observe(this.els["camera-viewport"].parentElement);
+      this.cameraViewportResizeObserver.observe(this.root.querySelector(".mmh3p-camera-controls"));
     }
     this.root.querySelectorAll('[data-action="preview-mode"]').forEach(button => {
       button.addEventListener("click", () => {
@@ -1195,12 +1246,6 @@ class PrompterUI {
     });
     this.root.querySelector('[data-action="enhance"]').addEventListener("click", () => this.enhancePrompt());
     this.root.querySelector('[data-action="copy-prompt"]').addEventListener("click", event => this.copyDisplayedPrompt(event.currentTarget));
-    this.root.querySelectorAll('[data-action="preset-tab"]').forEach(button => {
-      button.addEventListener("click", () => {
-        this.activePresetTab = button.dataset.presetTab;
-        this.renderPresets();
-      });
-    });
     this.root.querySelectorAll("[data-preset]").forEach(select => {
       select.addEventListener("change", () => {
         const shot = this.selectedShot();
@@ -1232,8 +1277,8 @@ class PrompterUI {
         "auto-run",
       );
     });
-    this.els["raw-prompt"].addEventListener("change", () => {
-      this.rawPromptEnabled = this.els["raw-prompt"].checked;
+    this.els["prompt-display-mode"].addEventListener("change", () => {
+      this.promptDisplayMode = this.els["prompt-display-mode"].value;
       this.renderPreview();
     });
     this.els["model-bundle"].addEventListener("change", () => {
@@ -2008,7 +2053,6 @@ class PrompterUI {
       this.lastRawModelPrompt = String(data.raw_model_prompt || "");
       this.lastRawModelSource = sourceProject;
       this.autoRunPreview = null;
-      this.disableRawPromptPreview();
       if (modelInfo) {
         modelInfo.installed = true;
         modelInfo.text_installed = true;
@@ -2115,6 +2159,29 @@ class PrompterUI {
     this.scheduleCompile();
   }
 
+  fitCameraPanelHeight() {
+    if (this.project.preview_mode !== "camera_advanced" || !this.root.isConnected) return;
+    const panel = this.els["video-preview-panel"];
+    const camera = this.els["camera-advanced"];
+    if (!panel.offsetWidth || !camera.offsetHeight) return;
+    const verticalEdges = element => {
+      const css = getComputedStyle(element);
+      return [css.paddingTop, css.paddingBottom, css.borderTopWidth, css.borderBottomWidth]
+        .reduce((sum, value) => sum + (parseFloat(value) || 0), 0);
+    };
+    const tabs = panel.querySelector(".mmh3p-preview-tabs");
+    const height = Math.ceil(camera.offsetHeight + tabs.offsetHeight
+      + (parseFloat(getComputedStyle(panel).rowGap) || 0)
+      + verticalEdges(panel) + verticalEdges(this.root));
+    this.node._mmh3CameraUIHeight = height;
+    const nodeHeight = height + (NODE_HEIGHT - UI_HEIGHT);
+    if (Math.abs(this.node.size[1] - nodeHeight) > 1) {
+      this.node.setSize([this.node.size[0], nodeHeight]);
+      this.node._widgetSlotsDirty = true;
+      this.node.setDirtyCanvas?.(true, true);
+    }
+  }
+
   renderPreviewMode() {
     const mode = this.project.preview_mode === "camera_advanced" ? "camera_advanced" : "video";
     this.els["video-preview-stage"].hidden = mode !== "video";
@@ -2125,7 +2192,10 @@ class PrompterUI {
     });
     if (mode === "camera_advanced") {
       this.els["reference-video-preview"]?.pause();
-      requestAnimationFrame(() => this.renderAdvancedCamera());
+      requestAnimationFrame(() => {
+        this.fitCameraPanelHeight();
+        this.renderAdvancedCamera();
+      });
     } else {
       this.syncReferenceVideoPreview(true);
     }
@@ -2153,6 +2223,17 @@ class PrompterUI {
       pose=item.camera_enabled === false && pose ? {...pose,orbit_route:"shortest"}
         : solveCamera(normalizeAdvancedCamera(item.camera_advanced),item.kind === "move" ? pose : null);
     }
+    let start=index,end=index;
+    while(start>0&&this.project.shots[start].kind==="move")start--;
+    while(end+1<this.project.shots.length&&this.project.shots[end+1].kind==="move")end++;
+    let offsets=pose.subjectOffsets||[[0,0,0]];
+    for(let i=start;i<=end;i++) {
+      const item=this.project.shots[i];
+      if(item.camera_enabled===false)continue;
+      const candidate=subjectOffsets(normalizeAdvancedCamera(item.camera_advanced));
+      offsets=[...new Map([...offsets,...candidate,...(['ots','oth'].includes(item.camera_advanced?.viewpoint)?[[-.95,0,1.6,180]]:[])].map(o=>[JSON.stringify(o),o])).values()];
+    }
+    pose.subjectOffsets=offsets;
     return pose;
   }
 
@@ -2173,8 +2254,7 @@ class PrompterUI {
     const ownerMotion=normalizeAdvancedCamera(owner.camera_advanced).motion;
     const inheritedMotion=shot.kind === "move" && !enabled && !hasEnabledMove
       && (owner.camera_enabled ?? this.project.advanced_camera_enabled) === true && !["none","static"].includes(ownerMotion);
-    this.els["camera-motion-note"].hidden = !inheritedMotion && config.motion === "none" && motionAllowed;
-    this.els["camera-motion-note"].textContent = inheritedMotion
+    const motionTooltip = inheritedMotion
       ? "Holds the preceding Shot's motion endpoint. That endpoint is text-directed; the 3D preview shows starting framing only."
       : !motionAllowed ? "Motion is available on a Shot when all following Moves in that Shot have camera disabled."
       : "Motion is a prompt instruction; the 3D preview shows starting framing only. Following camera-disabled Moves hold its endpoint.";
@@ -2182,6 +2262,12 @@ class PrompterUI {
     this.els["camera-render"].checked = this.project.camera_render === true;
     this.root.querySelectorAll("[data-advanced-camera]").forEach(select => {
       select.value = config[select.dataset.advancedCamera];
+      if (select.dataset.advancedCamera === "motion") select.closest("label").title = motionTooltip;
+      if (["viewpoint", "subject_framing", "camera_level"].includes(select.dataset.advancedCamera)) {
+        select.closest("label").title = select.dataset.advancedCamera === "viewpoint"
+          ? "OTS/OTH use a fixed example foreground person; POV uses a representative eye position. Actual user scene, gaze and clearance are not solved. User camera text takes priority."
+          : "Representative standing subjects and camera height are simulated, not actual scene geometry. Explicit level and tilt are retained independently; shot size controls nominal distance, without automatic body recentering. User camera text takes priority.";
+      }
       select.disabled = !enabled || (select.dataset.advancedCamera === "orbit_route" && (shot.kind !== "move" || config.direction.startsWith("rotate_")));
       if (select.dataset.advancedCamera === "motion") select.disabled = !enabled || !motionAllowed;
     });
@@ -2201,11 +2287,6 @@ class PrompterUI {
   }
 
   renderPresets() {
-    const tab = "style";
-    this.els["style-presets"].hidden = tab !== "style";
-    this.root.querySelectorAll('[data-action="preset-tab"]').forEach(button => {
-      button.classList.toggle("active", button.dataset.presetTab === tab);
-    });
     this.root.querySelectorAll("[data-preset]").forEach(select => {
       select.value = this.selectedShot()?.presets?.[select.dataset.preset] || "none";
     });
@@ -2774,8 +2855,9 @@ class PrompterUI {
       strength.className = "subject-strength";
       SUBJECT_STRENGTHS.forEach(value => strength.add(new Option(SUBJECT_STRENGTH_LABELS[value], value)));
       strength.value = SUBJECT_STRENGTHS.includes(ref.strength) ? ref.strength : "normal";
-      strength.title = "weak_reference: broad similarity; partially_preserved: core identity; fully_preserved: complete visible identity and local source style; attribute_transfer: transfer explicitly requested physical attributes; style_transfer: transfer only visual medium and rendering treatment while preserving target identity and appearance";
+      strength.title = "How much subject identity, appearance, or style to retain.";
       const alias = document.createElement("input"); alias.placeholder = "alias";
+      alias.title = "Reference name to insert with @ in Prompt.";
       alias.value = String(ref.alias || "").replace(/^@+/, "");
       const desc = ref.type === "picture" && ref.role !== "storyboard"
         ? null : document.createElement("textarea");
@@ -2789,6 +2871,7 @@ class PrompterUI {
           ? "Map motion here or in Prompt: e.g. <Video 1> red object = woman; blue object = man. Reference their motion and camera behavior in a new scene. Describe target setting/style; source appearance/environment is excluded. Audio reuse is separate."
           : "Describe how this video should guide the target in English";
         desc.value = ref.description;
+        desc.title = "Describe this reference's role or source-to-target motion mapping.";
       }
       const del = document.createElement("button"); del.className = "delete"; del.textContent = "×"; del.title = "Delete reference"; del.setAttribute("aria-label", "Delete reference");
       const preview = document.createElement("div"); preview.className = "mmh3p-ref-preview";
@@ -3141,7 +3224,12 @@ class PrompterUI {
   }
 
   renderPreview() {
-    if (this.rawPromptEnabled) {
+    if (this.promptDisplayMode === "camera") {
+      this.els.preview.textContent = this.previewData?.camera_prompt
+        || "No procedural camera timeline is available for the current settings.";
+      return;
+    }
+    if (this.promptDisplayMode === "raw") {
       this.els.preview.textContent = this.lastRawModelPrompt
         || this.previewData?.llm_prompt
         || "Raw model input is not available yet.";
@@ -3191,7 +3279,7 @@ class PrompterUI {
       clearTimeout(this.copyButtonResetTimer);
       this.copyButtonResetTimer = setTimeout(() => { button.textContent = "Copy"; }, 1200);
       this.appendLog(
-        `${this.rawPromptEnabled ? "Raw prompt" : "Generated prompt"} copied to the clipboard.`,
+        `${{generated: "Generated prompt", raw: "Raw prompt", camera: "Camera prompt"}[this.promptDisplayMode]} copied to the clipboard.`,
         "copy-prompt",
       );
     } catch (error) {
@@ -3199,15 +3287,9 @@ class PrompterUI {
     }
   }
 
-  disableRawPromptPreview() {
-    this.rawPromptEnabled = false;
-    if (this.els["raw-prompt"]) this.els["raw-prompt"].checked = false;
-  }
-
   showAutoRunPrompt(value) {
     const prompt = String(Array.isArray(value) ? value[0] || "" : value || "").trim();
     if (!prompt) return;
-    this.disableRawPromptPreview();
     this.autoRunPreview = prompt;
     this.renderPreview();
     this.appendLog("Auto Run generated prompt is ready.", "auto-run-result");
@@ -3237,9 +3319,9 @@ app.registerExtension({
       const root = document.createElement("div");
       const domWidget = this.addDOMWidget("minimax_h3_prompter_ui", "minimax_h3_prompter_ui", root, {
         getValue: () => "", setValue: () => {},
-        getMinHeight: () => UI_HEIGHT,
+        getMinHeight: () => this._mmh3CameraUIHeight || UI_HEIGHT,
         getMaxHeight: () => Math.max(
-          UI_HEIGHT,
+          this._mmh3CameraUIHeight || UI_HEIGHT,
           (Number(this.size?.[1]) || NODE_HEIGHT) - (NODE_HEIGHT - UI_HEIGHT),
         ),
       });

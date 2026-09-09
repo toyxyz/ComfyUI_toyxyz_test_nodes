@@ -2,6 +2,7 @@ import base64
 import copy
 import glob
 import json
+import logging
 import math
 import mimetypes
 import os
@@ -95,7 +96,7 @@ RICH_ENHANCE_MAX_NEW_TOKENS = 3072
 STRONG_ENHANCE_MAX_NEW_TOKENS = 4096
 REF_ENHANCE_MAX_NEW_TOKENS = 3072
 ENHANCE_CONTEXT_SIZE = 16384
-_ENHANCE_LOCK = threading.Lock()
+_ENHANCE_LOCK = threading.RLock()
 LLAMA_RUNTIME_RELEASE = "b10310"
 LLAMA_RUNTIME_REPO = "ggml-org/llama.cpp"
 LLAMA_RUNTIME_URL = (
@@ -2061,7 +2062,7 @@ def validate_project(project: dict[str, Any], parse_warnings: list[str] | None =
             errors.append(f"{ref['label']} video preset '{ref['role']}' is no longer supported. Please reselect Motion / action timing, Video continuation, or Video editing.")
 
     if len(aliases) != len(set(aliases)):
-        errors.append("Reference aliases must be unique so each @mention resolves to exactly one reference.")
+        warnings.append("Reference aliases are duplicated; @mentions may resolve ambiguously. Use unique aliases.")
 
     if duration < 4.0 or duration > 15.0:
         errors.append(f"H3 output duration must be between 4 and 15 seconds; received {duration:.2f}s.")
@@ -2077,7 +2078,7 @@ def validate_project(project: dict[str, Any], parse_warnings: list[str] | None =
         *(ref["description"] for ref in project["references"]),
     ]
     if any("\ufffd" in text for text in descriptive_text):
-        errors.append(
+        warnings.append(
             "Prompt text contains the Unicode replacement character (U+FFFD), indicating that text was "
             "damaged before compilation. Re-enter the affected text as UTF-8."
         )
@@ -2566,7 +2567,8 @@ def _attach_motion_subjects(model, bindings):
         source=binding['source']
         owner=model['label_plan'].get(source)
         if not owner or owner['role'] != 'motion':
-            raise ValueError('Motion binding refers to a video without the motion role.')
+            _quality_warning("Motion binding source is not a motion reference; automatic binding omitted.")
+            continue
         number+=1
         label=f'<Subject {number}>'
         definition=(f"{label} is {binding['target']}, assigned only to the {binding['selector']} in {source}. "
@@ -3813,7 +3815,22 @@ def _enforce_reference_definition_provenance(
     return prompt[:section_match.start()] + replacement + prompt[section_match.end():]
 
 
-def _assemble_motion_definitions(prompt, reference_model):
+def _quality_warning(message, progress=None):
+    message = " ".join(str(message).split())
+    logging.warning("MiniMax H3: %s", message)
+    if progress:
+        progress(stage="quality_warning", message="Warning: " + message)
+
+
+def _assemble_motion_definitions(prompt, reference_model, progress=None):
+    try:
+        return _assemble_motion_definitions_strict(prompt, reference_model)
+    except ValueError as exc:
+        _quality_warning(f"{exc} Generated prompt retained; continuing.", progress)
+        return prompt
+
+
+def _assemble_motion_definitions_strict(prompt, reference_model):
     bindings={label:plan for label,plan in reference_model['label_plan'].items() if plan.get('binding')}
     if not bindings:return prompt
     sections=_ref_prompt_sections(prompt)
@@ -3829,8 +3846,9 @@ def _assemble_motion_definitions(prompt, reference_model):
             if not match or label not in match.group(1):
                 raise ValueError(f'Motion mapping: {label} is missing from its assigned Shot {shot}.')
     allowed=set(reference_model['label_plan'])
-    if any(label not in allowed for label in re.findall(r'<(?:Subject|Video|Picture|Audio) \d+>',prompt)):
-        raise ValueError('Motion mapping: output introduced an unauthorized reference label.')
+    unexpected = sorted(set(re.findall(r'<(?:Subject|Video|Picture|Audio) \d+>', prompt)) - allowed)
+    if unexpected:
+        raise ValueError('Motion mapping: unplanned reference labels: ' + ', '.join(unexpected) + '.')
     # Own the binding definitions, not the user's generated performance prose.
     definitions=sections['subject_definitions']
     for label in bindings:
@@ -5929,11 +5947,13 @@ class _LlamaServerSession:
 
     def start(self, timeout: float = 600.0) -> None:
         command = [
-            self.executable, "-m", self.model_path, "--mmproj", self.mmproj_path,
+            self.executable, "-m", self.model_path,
             "--host", "127.0.0.1", "--port", str(self.port), "-c", str(self.context_size),
             "-ngl", "all", "-np", "1", "--no-webui", "--log-disable",
             "--jinja", "--timeout", "1800",
         ]
+        if self.mmproj_path:
+            command.extend(["--mmproj", self.mmproj_path])
         if self.image_model_id == QWEN_IMAGE_MODEL_ID:
             command.extend([
                 "--chat-template-kwargs", '{"enable_thinking":false}',
@@ -5947,8 +5967,11 @@ class _LlamaServerSession:
         )
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if self.process.poll() is not None:
-                raise RuntimeError(f"llama-server exited during startup with code {self.process.returncode}.")
+            process = self.process
+            if process is None:
+                raise EnhancementCancelled("Model startup was cancelled.")
+            if process.poll() is not None:
+                raise RuntimeError(f"llama-server exited during startup with code {process.returncode}.")
             try:
                 with urllib.request.urlopen(f"{self.base_url}/health", timeout=2) as response:
                     if response.status == 200:
@@ -5969,11 +5992,12 @@ class _LlamaServerSession:
             process.kill()
             process.wait(timeout=5)
 
-    def _chat(self, messages: list[dict[str, Any]], max_tokens: int, temperature: float) -> str:
+    def _chat(self, messages: list[dict[str, Any]], max_tokens: int, temperature: float,
+              top_p: float = 0.9, top_k: int = 40, repeat_penalty: float = 1.05) -> str:
         payload = json.dumps({
             "model": "local-model", "messages": messages, "stream": False,
             "max_tokens": max_tokens, "temperature": temperature,
-            "top_p": 0.9, "top_k": 40, "repeat_penalty": 1.05,
+            "top_p": top_p, "top_k": top_k, "repeat_penalty": repeat_penalty,
         }).encode("utf-8")
         request = urllib.request.Request(
             f"{self.base_url}/v1/chat/completions", data=payload,
@@ -5989,6 +6013,9 @@ class _LlamaServerSession:
             content = result["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError("llama-server returned an unexpected chat-completion response.") from exc
+        self.last_metrics = {"usage": result.get("usage", {}),
+                             "timings": result.get("timings", {}),
+                             "finish_reason": result["choices"][0].get("finish_reason")}
         if isinstance(content, list):
             content = "".join(
                 str(item.get("text", "")) for item in content if isinstance(item, dict)
@@ -6024,8 +6051,8 @@ class _LlamaServerSession:
         return self._chat([{"role": "user", "content": content}], max_tokens=max_tokens, temperature=0.2)
 
     def chat(self, messages: list[dict[str, Any]], max_tokens: int = 4096,
-             temperature: float = 0.0) -> str:
-        return self._chat(messages, max_tokens=max_tokens, temperature=temperature)
+             temperature: float = 0.0, **sampling) -> str:
+        return self._chat(messages, max_tokens=max_tokens, temperature=temperature, **sampling)
 
 
 def _start_persistent_image_server(image_model_id: str, progress=None) -> _LlamaServerSession:
@@ -6394,7 +6421,35 @@ def _clean_video_analysis(text: str) -> str:
     return re.sub(r"(?:^|\n)Exiting\.\.\.\s*$", "", text, flags=re.IGNORECASE).strip()
 
 
-def _parse_motion_bindings(analysis, context):
+def _parse_motion_bindings(analysis, context, progress=None):
+    """Keep verified bindings; a model's uncertain mapping is not an engine failure."""
+    match = re.search(r'(?:^|\n)SOURCE_BINDINGS:\s*(.*?)(?=\n[A-Z_]+:|\Z)', analysis, re.S)
+    try:
+        rows = json.loads(match.group(1)) if match else None
+    except (ValueError, TypeError):
+        rows = None
+    if not isinstance(rows, list):
+        _quality_warning("Motion mapping is not a valid array; automatic bindings omitted, analysis retained.", progress)
+        return []
+    accepted = []
+    issues = []
+    actors, selectors = set(), set()
+    for row in rows:
+        try:
+            binding = _parse_motion_bindings_strict("SOURCE_BINDINGS: " + json.dumps([row]), context)[0]
+            if binding["actor"] in actors or binding["selector"].casefold() in selectors:
+                raise ValueError("duplicate source assignment")
+            actors.add(binding["actor"])
+            selectors.add(binding["selector"].casefold())
+            accepted.append(binding)
+        except ValueError as exc:
+            issues.append(str(exc))
+    if issues:
+        _quality_warning(f"Motion mapping: omitted {len(issues)} uncertain binding(s); kept {len(accepted)}. {issues[0]} Analysis retained.", progress)
+    return accepted
+
+
+def _parse_motion_bindings_strict(analysis, context):
     match=re.search(r'(?:^|\n)SOURCE_BINDINGS:\s*(.*?)(?=\n[A-Z_]+:|\Z)', analysis, re.S)
     try:
         rows=json.loads(match.group(1)) if match else None
@@ -6562,7 +6617,7 @@ def analyze_reference_video(video: dict[str, Any], role: str, duration: float,
     if not analysis:
         raise RuntimeError("The vision model returned an empty video analysis.")
     return {
-        "motion_bindings": _parse_motion_bindings(analysis, video.get('_motion_mapping_context','')) if role=='motion' else [],
+        "motion_bindings": _parse_motion_bindings(analysis, video.get('_motion_mapping_context',''), progress) if role=='motion' else [],
         "analysis": analysis, "model_path": model_path, "mmproj_path": mmproj_path,
         "analyzed_duration": f"{analysis_duration:.3f}",
         "analyzed_start": f"{start_time:.3f}",
@@ -6981,6 +7036,48 @@ def _qwen_generation_metrics(stderr, stdout, limit):
 def enhance_project(project_data: Any, model_id: str, image_model_id: str = DEFAULT_IMAGE_MODEL_ID,
                     progress=None, cancel_event: threading.Event | None = None,
                     job_id: str = "") -> dict[str, Any]:
+    # Own the model for the entire task, not just the visual-analysis stage.
+    sessions: list[_LlamaServerSession] = []
+    with _ENHANCE_LOCK:
+        finished = threading.Event()
+        cancelled = threading.Event()
+        if cancel_event is not None and cancel_event.is_set():
+            cancelled.set()
+        def watch_cancel():
+            while not finished.wait(0.2):
+                requested = cancel_event is not None and cancel_event.is_set()
+                try:
+                    import comfy.model_management as mm
+                    requested = requested or mm.processing_interrupted()
+                except (ImportError, AttributeError):
+                    pass
+                if requested:
+                    cancelled.set()
+                    for session in list(sessions):
+                        session.close()
+                    return
+        watcher = threading.Thread(target=watch_cancel, daemon=True)
+        watcher.start()
+        try:
+            return _enhance_project_session(
+                project_data, model_id, image_model_id, progress, cancelled, job_id, sessions,
+            )
+        except Exception:
+            if cancelled.is_set() or (cancel_event is not None and cancel_event.is_set()):
+                raise EnhancementCancelled("Prompt generation was stopped by the user.") from None
+            raise
+        finally:
+            finished.set()
+            watcher.join(timeout=16)
+            for session in sessions:
+                session.close()
+            if job_id:
+                _set_enhance_stopper(job_id, None)
+
+
+def _enhance_project_session(project_data, model_id, image_model_id, progress,
+                             cancel_event, job_id, sessions):
+
     def check_cancelled() -> None:
         if cancel_event is not None and cancel_event.is_set():
             raise EnhancementCancelled("Prompt generation was stopped by the user.")
@@ -7032,128 +7129,89 @@ def enhance_project(project_data: Any, model_id: str, image_model_id: str = DEFA
             pass
         with _ENHANCE_LOCK:
             total_assets = len(pictures_to_analyze) + len(videos_to_analyze)
-            server_session: _LlamaServerSession | None = None
-            try:
-                if progress:
-                    progress(
-                        stage="image_model_check",
-                        message="Starting the persistent visual-analysis server and loading the model once.",
-                    )
-                try:
-                    server_session = _start_persistent_image_server(image_model_id, progress)
-                    if job_id:
-                        _set_enhance_stopper(job_id, server_session.close)
+            model_path, mmproj_path = _resolve_image_model(image_model_id, progress)
+            server_session = _LlamaServerSession(
+                _find_llama_server(progress), model_path, mmproj_path, image_model_id,
+                context_size=ENHANCE_CONTEXT_SIZE,
+            )
+            sessions.append(server_session)
+            if job_id:
+                _set_enhance_stopper(job_id, server_session.close)
+            check_cancelled()
+            server_session.start()
+            if progress:
+                progress(stage="reference_analysis",
+                         message=f"Qwen loaded once; analyzing {total_assets} references, then writing the prompt.")
+            def run_analysis_batch(session: _LlamaServerSession | None) -> None:
+                for analysis_index, ref in enumerate(pictures_to_analyze, 1):
                     check_cancelled()
-                    if progress:
-                        progress(
-                            stage="reference_analysis",
-                            message=(
-                                f"Persistent visual-analysis server is ready; analyzing {total_assets} "
-                                f"reference asset{'s' if total_assets != 1 else ''} without reloading the model."
-                            ),
+                    image_payload = {
+                        "filename": ref["image_filename"],
+                        "subfolder": ref["image_subfolder"],
+                        "type": "input",
+                        "_analysis_index": analysis_index,
+                        "_analysis_total": total_assets,
+                    }
+                    if session is not None:
+                        analyzed = _analyze_reference_image_with_server(
+                            image_payload, ref["role"], session, progress,
                         )
-                except Exception as exc:
-                    if progress:
-                        progress(
-                            stage="reference_analysis",
-                            message=f"Persistent server unavailable; using llama-cli fallback: {exc}",
+                    else:
+                        analyzed = analyze_reference_image(
+                            image_payload, ref["role"], image_model_id, progress,
                         )
+                    label = picture_labels[ref["id"]]
+                    analysis = analyzed["analysis"]
+                    analysis_lines.append(f"{label} [role={ref['role']}]: {analysis}")
+                    reference_analyses.append({
+                        "id": ref["id"], "label": label,
+                        "role": ref["role"],
+                        "filename": ref["image_filename"],
+                        "analysis": analysis,
+                    })
+                for video_index, ref in enumerate(videos_to_analyze, len(pictures_to_analyze) + 1):
+                    check_cancelled()
+                    source_start, selected_duration, target_start = _visible_video_selection(
+                        ref,
+                        align_frame_count(float(project.get("requested_duration") or ref["duration"])) / MODEL_FPS,
+                    )
+                    video_payload = {
+                        "filename": ref["video_filename"],
+                        "subfolder": ref["video_subfolder"],
+                        "type": "input",
+                        "_analysis_index": video_index,
+                        "_analysis_total": total_assets,
+                        "_motion_mapping_context": json.dumps({
+                            'source_video': video_labels[ref['id']],
+                            'reference_description': ref.get('description', ''),
+                            'target_request': project.get('user_request', ''),
+                            'shot_requests': [s.get('visual_action', '') for s in project['shots']],
+                        }, ensure_ascii=False),
+                    }
+                    analyzed = analyze_reference_video(
+                        video_payload, ref["role"], selected_duration, image_model_id,
+                        session=session, progress=progress, start_time=source_start,
+                    )
+                    label = video_labels[ref["id"]]
+                    analysis = analyzed["analysis"]
+                    analysis_lines.append(
+                        f"{label} [role={ref['role']}, source_start_seconds={analyzed['analyzed_start']}, "
+                        f"selected_duration_seconds={analyzed['analyzed_duration']}, "
+                        f"target_start_seconds={target_start:.3f}]: {analysis}"
+                    )
+                    reference_analyses.append({
+                        "id": ref["id"], "label": label, "type": "video",
+                        "motion_bindings": analyzed.get('motion_bindings', []),
+                        "role": ref["role"], "filename": ref["video_filename"],
+                        "analysis": analysis, "analyzed_duration": analyzed["analyzed_duration"],
+                        "analyzed_start": analyzed["analyzed_start"],
+                        "timeline_start": f"{target_start:.3f}",
+                        "frame_count": analyzed["frame_count"],
+                    })
 
-                def run_analysis_batch(session: _LlamaServerSession | None) -> None:
-                    for analysis_index, ref in enumerate(pictures_to_analyze, 1):
-                        check_cancelled()
-                        image_payload = {
-                            "filename": ref["image_filename"],
-                            "subfolder": ref["image_subfolder"],
-                            "type": "input",
-                            "_analysis_index": analysis_index,
-                            "_analysis_total": total_assets,
-                        }
-                        if session is not None:
-                            analyzed = _analyze_reference_image_with_server(
-                                image_payload, ref["role"], session, progress,
-                            )
-                        else:
-                            analyzed = analyze_reference_image(
-                                image_payload, ref["role"], image_model_id, progress,
-                            )
-                        label = picture_labels[ref["id"]]
-                        analysis = analyzed["analysis"]
-                        analysis_lines.append(f"{label} [role={ref['role']}]: {analysis}")
-                        reference_analyses.append({
-                            "id": ref["id"], "label": label,
-                            "role": ref["role"],
-                            "filename": ref["image_filename"],
-                            "analysis": analysis,
-                        })
-                    for video_index, ref in enumerate(videos_to_analyze, len(pictures_to_analyze) + 1):
-                        check_cancelled()
-                        source_start, selected_duration, target_start = _visible_video_selection(
-                            ref,
-                            align_frame_count(float(project.get("requested_duration") or ref["duration"])) / MODEL_FPS,
-                        )
-                        video_payload = {
-                            "filename": ref["video_filename"],
-                            "subfolder": ref["video_subfolder"],
-                            "type": "input",
-                            "_analysis_index": video_index,
-                            "_analysis_total": total_assets,
-                            "_motion_mapping_context": json.dumps({
-                                'source_video': video_labels[ref['id']],
-                                'reference_description': ref.get('description', ''),
-                                'target_request': project.get('user_request', ''),
-                                'shot_requests': [s.get('visual_action', '') for s in project['shots']],
-                            }, ensure_ascii=False),
-                        }
-                        analyzed = analyze_reference_video(
-                            video_payload, ref["role"], selected_duration, image_model_id,
-                            session=session, progress=progress, start_time=source_start,
-                        )
-                        label = video_labels[ref["id"]]
-                        analysis = analyzed["analysis"]
-                        analysis_lines.append(
-                            f"{label} [role={ref['role']}, source_start_seconds={analyzed['analyzed_start']}, "
-                            f"selected_duration_seconds={analyzed['analyzed_duration']}, "
-                            f"target_start_seconds={target_start:.3f}]: {analysis}"
-                        )
-                        reference_analyses.append({
-                            "id": ref["id"], "label": label, "type": "video",
-                            "motion_bindings": analyzed.get('motion_bindings', []),
-                            "role": ref["role"], "filename": ref["video_filename"],
-                            "analysis": analysis, "analyzed_duration": analyzed["analyzed_duration"],
-                            "analyzed_start": analyzed["analyzed_start"],
-                            "timeline_start": f"{target_start:.3f}",
-                            "frame_count": analyzed["frame_count"],
-                        })
-
-                if server_session is not None:
-                    try:
-                        run_analysis_batch(server_session)
-                    except EnhancementCancelled:
-                        raise
-                    except Exception as exc:
-                        server_session.close()
-                        server_session = None
-                        analysis_lines.clear()
-                        reference_analyses.clear()
-                        if progress:
-                            progress(
-                                stage="reference_analysis",
-                                message=f"Persistent image analysis failed; retrying with llama-cli: {exc}",
-                            )
-                        run_analysis_batch(None)
-                else:
-                    run_analysis_batch(None)
-            finally:
-                if server_session is not None:
-                    server_session.close()
-                    if progress:
-                        progress(
-                            stage="reference_analysis",
-                            message="Persistent visual analysis completed; the vision model was released.",
-                        )
-                if job_id:
-                    _set_enhance_stopper(job_id, None)
+            # Never restart the model or repeat completed assets after a failed request.
+            # Real backend failures propagate; the task owner releases the session.
+            run_analysis_batch(server_session)
 
     # Raw Prompt remains the deterministic result of user-controlled fields.
     # Automatic image analyses are supplied only in the private LLM context.
@@ -7178,12 +7236,12 @@ def enhance_project(project_data: Any, model_id: str, image_model_id: str = DEFA
     if progress:
         progress(stage='context_usage', message=f'Estimated Qwen context: {estimated_input_tokens} input + {max_new_tokens} output reserve / {ENHANCE_CONTEXT_SIZE} tokens.')
     if estimated_total_tokens > ENHANCE_CONTEXT_SIZE:
-        raise ValueError(
+        _quality_warning(
             f"Estimated prompt context ({estimated_input_tokens} input + {max_new_tokens} output tokens) "
-            f"exceeds the {ENHANCE_CONTEXT_SIZE}-token Qwen runtime limit. Shorten references, Shot/Move text, "
-            "or use a lower Enhance level."
+            f"exceeds {ENHANCE_CONTEXT_SIZE}; estimate only, continuing without truncating input.",
+            progress,
         )
-    if progress and estimated_total_tokens > int(ENHANCE_CONTEXT_SIZE * 0.85):
+    elif progress and estimated_total_tokens > int(ENHANCE_CONTEXT_SIZE * 0.85):
         progress(
             stage="context_warning",
             message=(
@@ -7191,128 +7249,83 @@ def enhance_project(project_data: Any, model_id: str, image_model_id: str = DEFA
                 "generation is close to the runtime limit."
             ),
         )
-    with _ENHANCE_LOCK, tempfile.TemporaryDirectory(prefix="toyxyz_h3_") as temp_dir:
-        check_cancelled()
-        if progress:
-            progress(stage="model_check", message="Checking the selected GGUF model.")
-        model_path = _resolve_enhance_model(model_id or DEFAULT_ENHANCE_MODEL_ID, progress)
-        # llama-completion is the stable one-shot frontend in current
-        # llama.cpp releases.  The complete Qwen3 turn is rendered below and
-        # passed as a file so llama.cpp never enters conversation mode.
-        llama_completion = _find_llama_completion(progress)
-        user_file = os.path.join(temp_dir, "user.txt")
-        with open(user_file, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(user_prompt)
+    check_cancelled()
+    model_path = _resolve_enhance_model(model_id or DEFAULT_ENHANCE_MODEL_ID, progress)
+    if sessions:
+        session = sessions[0]
+        if os.path.normcase(os.path.realpath(session.model_path)) != os.path.normcase(os.path.realpath(model_path)):
+            raise RuntimeError("Analysis and writing require the same Qwen model for a single-load task.")
+    else:
         try:
             import comfy.model_management as model_management
-
             model_management.unload_all_models()
             model_management.soft_empty_cache(force=True)
         except (ImportError, AttributeError):
             pass
+        session = _LlamaServerSession(
+            _find_llama_server(progress), model_path, "", QWEN_IMAGE_MODEL_ID,
+            context_size=ENHANCE_CONTEXT_SIZE,
+        )
+        sessions.append(session)
+        if job_id:
+            _set_enhance_stopper(job_id, session.close)
+        session.start()
+    check_cancelled()
+    generation_metrics = {}
+    def run_generation(prompt_text: str, temperature: float = 0.22) -> str:
+        generation_started = time.monotonic()
         if progress:
-            progress(
-                stage="generating",
-                message=("Loading Qwen3.8 and generating a richly enhanced prompt."
-                         if rich_enhance else "Loading the model and generating the prompt."),
+            progress(stage="generating", message="Writing the final prompt with the loaded Qwen model; no reload.")
+        try:
+            output = session.chat(
+                [{"role": "system", "content": system_prompt},
+                 {"role": "user", "content": prompt_text}],
+                max_tokens=max_new_tokens, temperature=temperature,
+                top_p=0.95 if strong_enhance else 0.93 if rich_enhance else 0.88,
+                top_k=50 if strong_enhance else 40 if rich_enhance else 20,
+                repeat_penalty=1.03 if rich_enhance else 1.05,
             )
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-        generation_metrics = {}
-        def run_generation(prompt_text: str, temperature: float = 0.22) -> str:
-            generation_started = time.monotonic()
-            top_p = 0.95 if strong_enhance else 0.93 if rich_enhance else 0.88
-            top_k = 50 if strong_enhance else 40 if rich_enhance else 20
-            repeat_penalty = 1.03 if rich_enhance else 1.05
-            with open(user_file, "w", encoding="utf-8", newline="\n") as handle:
-                handle.write(_render_qwen3_text_prompt(system_prompt, prompt_text))
-            command = [
-                llama_completion, "-m", model_path, "--file", user_file,
-                "--special", "-no-cnv", "-st",
-                "--no-display-prompt", "--simple-io", "--no-context-shift",
-                "--no-warmup", "--color", "off",
-                "-c", str(ENHANCE_CONTEXT_SIZE), "-n", str(max_new_tokens),
-                "-ngl", "999", "--temp", str(temperature), "--top-p", str(top_p), "--top-k", str(top_k),
-                "--repeat-penalty", str(repeat_penalty),
-            ]
-            if cancel_event is None:
-                try:
-                    completed = subprocess.run(
-                        command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                        text=True, encoding="utf-8", errors="replace", timeout=1800,
-                        creationflags=creationflags, check=False,
-                    )
-                except subprocess.TimeoutExpired as exc:
-                    raise RuntimeError("Prompt enhancement exceeded the 30-minute timeout.") from exc
-            else:
-                process = subprocess.Popen(
-                    command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    text=True, encoding="utf-8", errors="replace", creationflags=creationflags,
-                )
-                if job_id:
-                    _set_enhance_stopper(job_id, process.terminate)
-                deadline = time.monotonic() + 1800
-                try:
-                    while True:
-                        check_cancelled()
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0:
-                            process.terminate()
-                            raise RuntimeError("Prompt enhancement exceeded the 30-minute timeout.")
-                        try:
-                            stdout, stderr = process.communicate(timeout=min(0.25, remaining))
-                            break
-                        except subprocess.TimeoutExpired:
-                            continue
-                finally:
-                    if process.poll() is None:
-                        process.terminate()
-                        try:
-                            process.wait(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            process.kill()
-                            process.wait(timeout=5)
-                    if job_id:
-                        _set_enhance_stopper(job_id, None)
-                completed = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
-            if completed.returncode != 0:
-                tail = "\n".join(completed.stderr.splitlines()[-12:])
-                frontend = os.path.basename(command[0]) or "llama.cpp frontend"
-                raise RuntimeError(f"{frontend} exited with code {completed.returncode}.\n{tail}")
-            generation_metrics.update(_qwen_generation_metrics(completed.stderr, completed.stdout, max_new_tokens))
-            generation_metrics['wall_seconds'] = round(time.monotonic()-generation_started, 3)
-            generation_metrics['estimated_input_tokens'] = estimated_input_tokens
-            if progress:
-                progress(stage='generation_metrics', message=json.dumps(generation_metrics, ensure_ascii=False))
-            return _clean_llm_output(completed.stdout)
-
-        # Enhancement is intentionally single-pass. Keep generated prose as-is;
-        # REF2VA receives only deterministic retention-prefix repair.
-        enhanced = run_generation(
-            user_prompt,
-            temperature=0.48 if strong_enhance else 0.38 if rich_enhance else 0.22,
-        )
-        if not enhanced:
-            raise RuntimeError("The selected model returned an empty prompt.")
-        if mode == "REF2VA" and reference_model:
-            enhanced = _enforce_retention_line_plan(enhanced, reference_model["label_plan"])
-            enhanced = _enforce_reference_definition_provenance(enhanced, reference_model)
-            enhanced = _assemble_motion_definitions(enhanced, reference_model)
-        enhanced = _finalize_generated_camera(
-            enhanced, result["project"], result["effective_duration"],
-        )
-        enhanced = _enforce_ref_frame_anchor_timing(
-            enhanced, result["project"], result["effective_duration"],
+        except (RuntimeError, OSError):
+            check_cancelled()
+            raise
+        check_cancelled()
+        generation_metrics.update(getattr(session, "last_metrics", {}))
+        generation_metrics.update(
+            wall_seconds=round(time.monotonic() - generation_started, 3),
+            estimated_input_tokens=estimated_input_tokens, model_loads=1,
         )
         if progress:
-            progress(stage="complete", message="Prompt generation completed.")
-        return {
-            "enhanced_prompt": enhanced,
-            "model": model_id,
-            "model_path": model_path,
-            "generation_metrics": generation_metrics,
-            "reference_analyses": reference_analyses,
-            "raw_model_prompt": _format_raw_model_prompt(system_prompt, user_prompt),
-        }
+            progress(stage="generation_metrics", message=json.dumps(generation_metrics, ensure_ascii=False))
+        return _clean_llm_output(output)
+
+    # Enhancement is intentionally single-pass. Keep generated prose as-is;
+    # REF2VA receives only deterministic retention-prefix repair.
+    enhanced = run_generation(
+        user_prompt,
+        temperature=0.48 if strong_enhance else 0.38 if rich_enhance else 0.22,
+    )
+    if not enhanced:
+        raise RuntimeError("The selected model returned an empty prompt.")
+    if mode == "REF2VA" and reference_model:
+        enhanced = _enforce_retention_line_plan(enhanced, reference_model["label_plan"])
+        enhanced = _enforce_reference_definition_provenance(enhanced, reference_model)
+        enhanced = _assemble_motion_definitions(enhanced, reference_model, progress)
+    enhanced = _finalize_generated_camera(
+        enhanced, result["project"], result["effective_duration"],
+    )
+    enhanced = _enforce_ref_frame_anchor_timing(
+        enhanced, result["project"], result["effective_duration"],
+    )
+    if progress:
+        progress(stage="complete", message="Prompt generation completed.")
+    return {
+        "enhanced_prompt": enhanced,
+        "model": model_id,
+        "model_path": model_path,
+        "generation_metrics": generation_metrics,
+        "reference_analyses": reference_analyses,
+        "raw_model_prompt": _format_raw_model_prompt(system_prompt, user_prompt),
+    }
 
 
 def compile_project(project_data: Any, use_enhanced: bool = True) -> dict[str, Any]:

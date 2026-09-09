@@ -125,6 +125,10 @@ Use aliases with `@`. Reference order must match downstream H3 slots.
 Outputs include `image_N`, `frame_N`, `video_N`, and `audio_N` as applicable.
 
 **Qwen3.8 27B** supports all modes and Normal/Strong expansion.
+Each Qwen task reuses one llama-server for reference analysis and final writing,
+then releases it on completion, cancellation, or failure. Text-only tasks do not
+load the vision projector. Analysis and writing use separate requests, without
+accumulating the full image conversation in the final writing context.
 **MiniMax H3 Rewriter Omni** supports all modes with its own expansion behavior.
 Missing models require download confirmation; a managed llama.cpp runtime is installed
 on first use. Qwen runs with a 16,384-token context shared by input and output:

@@ -66,7 +66,8 @@ Direct Webcam capture workflow (without webcam app)
 Builds MiniMax H3 audiovisual prompts from a Shot/Move timeline and optional image,
 video, and audio references. It generates prompts, not the final AI video.
 
-<img width="2190" height="1624" alt="MiniMax H3 prompter interface" src="https://github.com/user-attachments/assets/fc97abbe-d8ee-498b-8b5c-f248663cb749" />
+<img width="2618" height="1571" alt="image" src="https://github.com/user-attachments/assets/ceea6c19-1233-458e-a502-303a13a80115" />
+
 
 ### Quick start
 

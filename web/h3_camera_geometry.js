@@ -165,8 +165,19 @@ export function projectPoint(p,pose) {
   const b=basis(pose),v=sub(p,pose.position),z=dot(v,b.forward);
   return [dot(v,b.right)/(z*pose.tangent)-(pose.shiftX||0),dot(v,b.up)/(z*pose.tangent)-(pose.shiftY||0),z];
 }
-export function modelFaces(pose,size) {
-  const screen=p=>{const q=projectPoint(p,pose);return [(q[0]+1)*size/2,(1-q[1])*size/2,q[2]];};
+export const cameraRenderRatios={'1:1':1,'2:3':2/3,'3:2':3/2,'3:4':3/4,'4:3':4/3,'9:16':9/16,'16:9':16/9,'21:9':21/9};
+export function normalizeCameraRender(value={}) {
+  const raw=Number(value?.megapixels??0.1);
+  return {aspect_ratio:Object.hasOwn(cameraRenderRatios,value?.aspect_ratio)?value.aspect_ratio:'1:1',
+    megapixels:Number.isFinite(raw)?Math.min(4,Math.max(.0625,raw)):0.1};
+}
+export function cameraRenderResolution(value) {
+  const c=normalizeCameraRender(value),r=cameraRenderRatios[c.aspect_ratio];
+  return {width:Math.max(32,Math.round(Math.sqrt(c.megapixels*1e6*r)/32)*32),
+    height:Math.max(32,Math.round(Math.sqrt(c.megapixels*1e6/r)/32)*32)};
+}
+export function modelFaces(pose,size,height=size) {
+  const screen=p=>{const q=projectPoint(p,pose),x=(q[0]+(pose.shiftX||0))/(size/height)-(pose.shiftX||0);return [(x+1)*size/2,(1-q[1])*height/2,q[2]];};
   const faces=[];
   (pose.subjectOffsets||[[0,0,0]]).forEach(offset=>parts.forEach(([x,y,z,wx,hy,dz],index)=>{
     const facing=offset[3]===180?-1:1;
@@ -185,7 +196,8 @@ export function modelFaces(pose,size) {
 
 // Per-pixel depth: a large head face must never paint over a nearer facial marker
 // just because the face's average distance sorts ahead of the small marker.
-export function rasterizeFaces(faces,size,pixels=new Uint8ClampedArray(size*size*4),depth=new Float64Array(size*size),wireWidth=0) {
+export function rasterizeFaces(faces,size,pixels,depth,wireWidth=0,height=size) {
+  pixels??=new Uint8ClampedArray(size*height*4);depth??=new Float64Array(size*height);
   pixels.fill(0); depth.fill(0);
   const edge=(a,b,x,y)=>(b[0]-a[0])*(y-a[1])-(b[1]-a[1])*(x-a[0]);
   for(const face of faces) {
@@ -200,7 +212,7 @@ export function rasterizeFaces(faces,size,pixels=new Uint8ClampedArray(size*size
       const [a,b,c]=triangle.map(i=>face.ps[i]);
       const area=edge(a,b,c[0],c[1]); if(Math.abs(area)<1e-10)continue;
       const minX=Math.max(0,Math.floor(Math.min(a[0],b[0],c[0]))),maxX=Math.min(size-1,Math.ceil(Math.max(a[0],b[0],c[0])));
-      const minY=Math.max(0,Math.floor(Math.min(a[1],b[1],c[1]))),maxY=Math.min(size-1,Math.ceil(Math.max(a[1],b[1],c[1])));
+      const minY=Math.max(0,Math.floor(Math.min(a[1],b[1],c[1]))),maxY=Math.min(height-1,Math.ceil(Math.max(a[1],b[1],c[1])));
       for(let y=minY;y<=maxY;y++)for(let x=minX;x<=maxX;x++) {
         const u=edge(b,c,x+.5,y+.5)/area,v=edge(c,a,x+.5,y+.5)/area,t=1-u-v;
         if(u< -1e-9||v< -1e-9||t< -1e-9)continue;
@@ -218,6 +230,23 @@ export function rasterizeFaces(faces,size,pixels=new Uint8ClampedArray(size*size
 }
 
 const renderBuffers=new WeakMap();
+// Camera-only reference preview: same vertical FOV as CPU output, no overview or HUD.
+export function drawCameraOutput(canvas,pose,aspect=1) {
+  const width=Math.max(32,Math.min(480,Math.round(canvas.clientWidth||320))),height=Math.max(1,Math.round(width/aspect));
+  if(canvas.width!==width||canvas.height!==height){canvas.width=width;canvas.height=height;}
+  const ctx=canvas.getContext('2d');if(!ctx)return;
+  ctx.fillStyle='#111922';ctx.fillRect(0,0,width,height);
+  const screen=p=>{const q=projectPoint(p,pose),x=(q[0]+(pose.shiftX||0))/(width/height)-(pose.shiftX||0);return [(x+1)*width/2,(1-q[1])*height/2,q[2]];};
+  ctx.strokeStyle='#263540';
+  for(let i=-10;i<=10;i++)for(const [a,b] of [[[i,0,-10],[i,0,10]],[[-10,0,i],[10,0,i]]]){
+    const p=screen(a),q=screen(b);if(Math.min(p[2],q[2])<.05)continue;
+    ctx.beginPath();ctx.moveTo(p[0],p[1]);ctx.lineTo(q[0],q[1]);ctx.stroke();
+  }
+  const image=ctx.getImageData(0,0,width,height);
+  const rgba=rasterizeFaces(modelFaces(pose,width,height),width,undefined,undefined,1,height);
+  for(let i=0;i<rgba.length;i+=4)if(rgba[i+3])image.data.set(rgba.subarray(i,i+4),i);
+  ctx.putImageData(image,0,0);
+}
 function scene(ctx,rect,pose,active,path) {
   const [x,y,w]=rect;
   const screen=p=>{const q=projectPoint(p,pose);return [x+(q[0]+1)*w/2,y+(1-q[1])*w/2,q[2]];};

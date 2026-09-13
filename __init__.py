@@ -8,6 +8,7 @@ from .nodes.toyxyz_test_nodes import CaptureWebcam, LoadWebcamImage, LoadImageFr
 from .nodes.visual_area_mask import VisualAreaMask
 from .nodes.minimax_h3_prompter import MinimaxH3Prompter
 from .nodes.minimax_h3_frames import MiniMaxH3AddGuideFrames
+from .nodes.minimax_h3_camera import MinimaxH3Camera
 from .nodes.cut_video import CutVideo
 from .nodes.connect_video import ConnectVideo
 from .openposeeditor.openpose_editor_nodes import OpenposeEditorNode, PoseToMaskNode
@@ -27,6 +28,7 @@ NODE_CLASS_MAPPINGS = {
     "DrawAreaMask": DrawAreaMask,
     "VisualAreaMask": VisualAreaMask,
     "MinimaxH3Prompter": MinimaxH3Prompter,
+    "MinimaxH3Camera": MinimaxH3Camera,
     "MiniMaxH3AddGuideFrames": MiniMaxH3AddGuideFrames,
     "CutVideo": CutVideo,
     "ConnectVideo": ConnectVideo,
@@ -63,6 +65,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "DrawAreaMask": "Draw area mask",
     "VisualAreaMask": "Visual Area Mask",
     "MinimaxH3Prompter": "Minimax-H3-prompter",
+    "MinimaxH3Camera": "minimax h3 camera",
     "MiniMaxH3AddGuideFrames": "Add Guide for MiniMax H3 frames",
     "CutVideo": "Cut Video",
     "ConnectVideo": "Connect Video",

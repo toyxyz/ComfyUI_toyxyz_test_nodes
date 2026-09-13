@@ -79,7 +79,7 @@ video, and audio references. It generates prompts, not the final AI video.
 3. Optionally set **Visual style** and **Camera style** for the selected Shot/Move.
    Visual style controls appearance; Camera style adds handling such as handheld or
    stabilized movement, without replacing the requested path or speed.
-4. Configure **Camera Advanced**, then select **Generate Prompt**.
+4. Configure **Camera**, then select **Generate Prompt**.
    **Enhance** defaults to **Normal**: None is concise, Normal expands the request,
    and Strong produces a longer, richer description. **Stop** cancels generation.
 5. Connect `generated_prompt` and `length` to your H3 workflow.
@@ -87,21 +87,11 @@ video, and audio references. It generates prompts, not the final AI video.
 
 ### Camera and prompt display
 
-Camera options are saved per Shot/Move. **Shot size**, **Shot viewpoint** (External,
-OTS, OTH, POV), and **Subject framing** control coverage. **Camera level** sets lens
-height independently of **Angle**; Ground + Level view looks horizontally at foot height.
-**Direction** chooses the destination, **Orbit route** chooses the route, **Camera roll**
-rotates the frame, and **Composition** places the target within the image.
-
-**Movement range** and **Speed** are qualitative prompt instructions, not preview speed
-or distance controls. Motion presets apply to a Shot when its following Moves have
-camera disabled. Disabled intervals hold the preceding state unless user camera text
-requests otherwise.
-
-Explicit user camera instructions take priority over panel defaults and camera style.
-The system describes connected physical paths between Move endpoints. The mannequin
-preview is representative: it does not solve the real scene, user-written targets,
-or handheld shake, and cannot guarantee the generated video's framing or continuity.
+Camera options are saved per Shot/Move: framing, viewpoint, lens height, angle,
+route, roll and composition. **Camera level** sets height independently of **Angle**.
+**Movement range** and **Speed** guide the prompt, not preview distance or speed.
+User camera instructions take priority; the proxy preview is illustrative, not a
+guarantee of the generated video's framing.
 
 The display dropdown and **Copy** use the same text area:
 
@@ -123,26 +113,87 @@ Modes: **T2VA** (text), **I2VA** (first frame), **FL2VA** (first/last frames),
 - **Audio:** select the intended reuse role. Loading a video alone does not request audio reuse.
 
 Use aliases with `@`. Reference order must match downstream H3 slots.
+Long reference lists, media timeline tracks, and Camera controls scroll inside the
+node instead of expanding it. Saved node sizes remain adjustable; long prompt
+text and logs do not set the minimum node height.
 Outputs include `image_N`, `frame_N`, `video_N`, and `audio_N` as applicable.
+Workflow restoration preserves existing output connections and saved prompts until
+project and camera inputs are ready. If saved data or output names are ambiguous,
+the execution log warns and preserves the existing slots instead of deleting them.
+
+Reference videos are decoded sequentially into the selected 24 fps frames, preserving
+source resolution, float32 output, display rotation, and trimmed audio. Large video
+and camera buffers (256 MiB or more, or when RAM is low) use temporary file-backed
+storage under `test/cache/h3_video_memory/`. Files are released when their last tensor
+or cached output is released. Allow sufficient disk space; downstream resizing and
+VAE encoding still need memory. Existing ComfyUI RAM-cache eviction is used without
+unloading models or changing global settings.
 
 **Qwen3.8 27B** supports all modes and Normal/Strong expansion.
 Each Qwen task reuses one llama-server for reference analysis and final writing,
 then releases it on completion, cancellation, or failure. Text-only tasks do not
 load the vision projector. Analysis and writing use separate requests, without
 accumulating the full image conversation in the final writing context.
+R2V includes each source analysis only once, even when multiple targets share it.
+Explicit source-to-target associations are carried across editing, continuation,
+and motion roles; these associations never override user instructions or change
+the selected role's scope. A motion target explicitly naming an existing image
+alias reuses that Subject instead of creating another person. Ambiguous mappings
+remain best-effort diagnostics, not reasons to block or regenerate the prompt.
+Compacted associations retain source-local actor IDs, selectors and target descriptions
+so action evidence remains linked to the correct target. Uncertain or mismatched
+appendices remain visible as unverified evidence. Model-inferred associations are
+input guidance only: output checks warn without adding correspondence sentences or
+overwriting motion-target definitions. They do not establish semantic correctness;
+the user's explicit instructions remain authoritative.
 **MiniMax H3 Rewriter Omni** supports all modes with its own expansion behavior.
 Missing models require download confirmation; a managed llama.cpp runtime is installed
 on first use. Qwen runs with a 16,384-token context shared by input and output:
 many timeline items or reference analyses can exceed it. Check the execution log for
 download progress, context warnings, and reference-mapping errors.
 
-### Optional camera render
+### Camera sequence input
 
-**Camera render** adds a `camera_render` IMAGE batch of the preview scene at
-**1024×1024, 24 fps** for the full timeline. Connect it to Save Image or a video
-combine node. It writes no files itself and uses roughly **1.5 GiB RAM per five seconds**.
-This is a panel-geometry render, not the final AI video; text-only motion, camera style,
-and Qwen-resolved targets are not simulated.
+Connect **minimax h3 camera** through `prompter_camera` to use its duration and
+enabled video/prompt guidance instead of the local Camera panel. See controls below.
+Without this connection, **Camera render** optionally outputs the local panel's
+preview sequence; it is not automatically added as a video reference.
+
+## minimax h3 camera
+
+A 3D camera/keyframe editor for reference videos and procedural camera prompts.
+
+- **Translate / Rotate / Scale**, **World / Local**: edit the selected camera or
+  subject. Middle-mouse drag pans the editor; **Camera view** toggles the output preview.
+- **Shape**: Human, Box or Sphere; adjust subject color and transforms in the inspector.
+  The white T on a Human's face marks its front.
+- **Free / Orbit**: position the camera directly or move around a target.
+  **Aim** selects Track target or Free rotation per key; **Target height** (0–1)
+  selects the aim point from the subject's base to its top.
+- **+ Key / Auto key**: animate camera and subjects on separate tracks. Drag keys
+  to retime; playback and Undo/Redo are available. Extra tracks scroll.
+  **Smooth / Linear / Hold** applies from the previous key to the selected key.
+  Hold keeps the previous pose, then jumps; a changed camera view creates a Shot cut.
+- **Duration (s)**, aspect ratio and **MP**: set length and render size.
+  Output is 24 fps with H3-aligned frame counts; lower MP reduces rendering cost.
+- **Floor grid / Background grid**: toggle the opaque floor/grid and spherical
+  orientation grid in both previews and rendered video.
+- **refvid** (default on): send rendered video to the connected prompter.
+  Choose its video role (motion/action, editing or continuation), alias and description there.
+  Turning it off removes that video reference and its `video_N` output; reconnect
+  downstream video links if re-enabled.
+- **Use camera prompt** (default on): send procedural camera motion and shot views
+  to prompt generation. With refvid off, sends text only; both off sends neither.
+  User instructions take priority. Continuation uses the source as history, not a route to replay.
+
+Connect `prompter_camera` to the prompter's matching input. Its **Cam Shot** guide
+shows camera cuts and frame ranges; playheads synchronize, while Shot/Move edits
+remain separate. Generate a new prompt after changing the camera.
+
+Standalone outputs: `camera_render` is the rendered IMAGE sequence;
+`camera_prompt` is procedural text without Qwen. Both remain available regardless
+of the two guidance toggles. Prompter text overrides do not change rendered geometry,
+and generated-video camera accuracy is not guaranteed.
 
 ## Cut Video
 

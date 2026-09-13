@@ -1,6 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { solveCamera, interpolateCameraPath, drawCameraPreview, subjectOffsets } from "./h3_camera_geometry.js";
+import { normalizeScene, cameraCutFrames, resolution as sceneResolution } from "./h3_scene_math.js";
+import { solveCamera, interpolateCameraPath, drawCameraPreview, subjectOffsets, normalizeCameraRender, cameraRenderResolution } from "./h3_camera_geometry.js";
 
 const NODE_NAME = "MinimaxH3Prompter";
 const ENDPOINT = "/toyxyz/minimax_h3_prompter/compile";
@@ -18,11 +19,10 @@ const REMOVED_LIGHTX2V_MODELS = new Set([
   "hf:indhic-ai/MiniMax_H3-Prompt_Rewriter-8B-LORA-Merged-GGUF/Q8_0+vision-f16",
 ]);
 const OMNI_MODEL = "hf:pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-Omni-GGUF/Q8_0+Qwen2.5-Omni-7B-Q4_K_M";
-// Includes the model selector/enhancement controls without forcing the whole
-// editor into a nested scrollbar. Long reference lists and prompt previews
-// retain their own scoped scroll areas.
-// Reserve height for the square preview and all camera option rows.
+// Content scrolls inside the user's chosen size. Never turn the current node
+// height (which also includes dynamic output slots) into a widget minimum.
 const UI_HEIGHT = 1100;
+const UI_MIN_HEIGHT = 700;
 const UI_WIDTH = 1380;
 const VIDEO_PREVIEW_WIDTH = 440;
 const NODE_HEIGHT = UI_HEIGHT + 95;
@@ -349,7 +349,7 @@ const REFERENCE_ROLE_HELP = {
   video_continuation: "Continue naturally from the ending state of the source video.",
   subject_visual: "Reference only the specified visible person, object, or environment as reusable Subject content.",
   visual_style: "Reference only the source video's rendering medium, palette, lighting treatment, materials, and visual texture.",
-  motion: "Motion reference generation: map source tracks to targets, e.g. red object = woman, blue object = man. Reference motion, placement, timing and camera behavior; source appearance, background and lighting are excluded. Audio reuse requires a separate audio role.",
+  motion: "Motion reference generation: map source tracks to targets, e.g. red object = woman, blue object = man. Reference motion, placement and timing; include source camera behavior only when requested. Source appearance, background and lighting are excluded. Audio reuse requires a separate audio role.",
   motion_camera: "Transfer only actor-neutral body motion/action timing and synchronized camera movement. Source people, objects, props, architecture, environment, background events, identity, appearance, style, cuts, text, and audio are excluded; motion maps only to target entities already requested.",
   camera: "Reference the source video's camera movement and viewpoint behavior only.",
   cuts_rhythm: "Reference the source video's cuts, pacing, rhythm, and temporal structure only.",
@@ -396,6 +396,7 @@ const DEFAULT_PROJECT = () => ({
   preview_mode: "camera_advanced",
   advanced_camera_enabled: false,
   camera_render: false,
+  camera_render_settings: normalizeCameraRender(),
 });
 
 function hideWidget(widget) {
@@ -408,6 +409,16 @@ function hideWidget(widget) {
     widget.draw = () => {};
   }
   if (widget.element) widget.element.style.display = "none";
+}
+
+function restoredProject(value) {
+  try {
+    const raw = typeof value === "string" ? JSON.parse(value) : value;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    if (raw.references !== undefined && !Array.isArray(raw.references)) return null;
+    if (raw.shots !== undefined && !Array.isArray(raw.shots)) return null;
+    return raw;
+  } catch { return null; }
 }
 
 function uid(prefix) {
@@ -528,6 +539,13 @@ function normalizeProject(value) {
   project.preview_mode = raw.preview_mode === "video" ? "video" : "camera_advanced";
   project.advanced_camera_enabled = raw.advanced_camera_enabled ?? (raw.preview_mode === "camera_advanced");
   project.camera_render = raw.camera_render === true;
+  project.camera_render_settings = normalizeCameraRender(raw.camera_render_settings);
+  project._prompter_camera_signature = String(raw._prompter_camera_signature || "");
+  project.camera_reference = {
+    role: REFERENCE_ROLES.video.includes(raw.camera_reference?.role) ? raw.camera_reference.role : "motion",
+    alias: normalizeAlias(raw.camera_reference?.alias || ""),
+    description: String(raw.camera_reference?.description || ""),
+  };
   if (Array.isArray(raw.shots) && raw.shots.length) {
     project.shots = raw.shots.map((shot, index) => ({
       id: String(shot?.id || uid(`shot-${index + 1}`)),
@@ -645,6 +663,20 @@ function normalizeProject(value) {
   return project;
 }
 
+function copyMentionFont(target, style) {
+  // Computed `font` can be empty with e.g. tabular-nums. Copy longhands so
+  // the highlight/caret mirrors never fall back to a different size or weight.
+  for (const property of [
+    "fontFamily", "fontSize", "fontStyle", "fontWeight", "fontStretch",
+    "fontVariantCaps", "fontVariantNumeric", "fontVariantLigatures",
+    "fontVariantEastAsian", "fontVariantPosition", "fontVariantAlternates",
+    "fontFeatureSettings", "fontVariationSettings", "fontKerning",
+    "fontOpticalSizing", "fontSizeAdjust", "fontSynthesis", "textRendering",
+  ]) {
+    if (style[property] !== undefined) target.style[property] = style[property];
+  }
+}
+
 function installStyles() {
   if (document.getElementById("mmh3-prompter-styles")) return;
   const style = document.createElement("style");
@@ -664,10 +696,10 @@ function installStyles() {
     .mmh3p.preview-open > .mmh3p-log-panel { grid-row:2; }
     .mmh3p * { box-sizing:border-box; }
     .mmh3p-workspace { width:100%; height:100%; min-height:0; display:grid;
-      grid-template-columns:minmax(760px,1fr) minmax(380px,.44fr); gap:8px; }
-    .mmh3p-main { min-width:0; min-height:0; display:flex; flex-direction:column; gap:8px; overflow:hidden; }
+      grid-template-columns:minmax(760px,1fr) minmax(380px,.44fr); grid-template-rows:minmax(0,1fr); gap:8px; overflow:auto; }
+    .mmh3p-main { min-width:0; min-height:0; display:flex; flex-direction:column; gap:8px; overflow:auto; }
     .mmh3p-main > .mmh3p-panel { flex:0 0 auto; }
-    .mmh3p-main > .mmh3p-grid { flex:1 1 0; min-height:0; }
+    .mmh3p-main > .mmh3p-grid { flex:1 0 280px; min-height:280px; }
     .mmh3p-row { display:flex; gap:7px; align-items:center; min-width:0; }
     .mmh3p-grow { flex:1; min-width:0; }
     .mmh3p-panel { background:var(--panel); border:1px solid var(--line); border-radius:7px; padding:8px; }
@@ -710,7 +742,8 @@ function installStyles() {
       padding:24px; color:#7f8996; text-align:center; background:#0d1218; pointer-events:none; }
     .mmh3p-video-preview-empty[hidden] { display:none; }
     .mmh3p-video-preview-status { min-height:30px; color:#aeb8c4; font:10px/1.4 ui-monospace,Consolas,monospace; }
-    .mmh3p-camera-advanced { flex:0 0 auto; min-height:0; display:flex; flex-direction:column; gap:8px; }
+    .mmh3p-camera-advanced { flex:1 1 0; min-height:0; display:flex; flex-direction:column; gap:8px; overflow:auto; }
+    .mmh3p-camera-preview-note { flex:0 0 auto; margin:0; color:#aeb8c4; font-size:10px; line-height:1.4; }
     .mmh3p-camera-viewport-wrap { position:relative; width:100%; aspect-ratio:1 / 1; flex:0 0 auto;
       border:1px solid #36404b; border-radius:6px; overflow:hidden; background:#0b1016; }
     .mmh3p-camera-viewport { position:absolute; inset:0; display:block; width:100%; height:100%; }
@@ -723,6 +756,12 @@ function installStyles() {
     .mmh3p-camera-control select { width:100%; min-width:0; }
     .mmh3p-timeline { height:112px; display:flex; align-items:stretch; gap:0; padding-top:18px;
       position:relative; overflow-x:hidden; margin:0 7px; }
+    .mmh3p-timeline.has-camera-guide { height:140px; padding-top:46px; }
+    .mmh3p-camera-guide { position:absolute; inset:18px 0 auto; height:25px; display:flex; }
+    .mmh3p-camera-guide button { border-radius:0; min-width:0; padding:3px; overflow:hidden;
+      white-space:nowrap; text-overflow:ellipsis; font-size:9px; color:#a9d8ff; background:#233540; }
+    .mmh3p-camera-cut { position:absolute; top:43px; bottom:0; border-left:1px dashed #7fc7ef;
+      z-index:11; pointer-events:none; }
     .mmh3p-ruler { position:absolute; left:0; right:0; top:0; color:#707784; font-size:9px;
       display:flex; justify-content:space-between; pointer-events:none; }
     .mmh3p-playhead-line { position:absolute; z-index:12; top:16px; bottom:0;
@@ -746,7 +785,9 @@ function installStyles() {
       width:2px; border-radius:2px; background:#65b9ff; opacity:.45; }
     .mmh3p-resize-handle:hover::after,.mmh3p-resize-handle.active::after { opacity:1; width:3px; }
     .mmh3p.resizing,.mmh3p.resizing * { cursor:col-resize !important; user-select:none !important; }
-    .mmh3p-video-timeline { display:flex; flex-direction:column; gap:4px; margin-top:6px; }
+    .mmh3p-video-timeline { display:flex; flex-direction:column; gap:4px; margin-top:6px;
+      max-height:196px; overflow-y:auto; overflow-x:hidden; }
+    .mmh3p-video-timeline > * { flex:0 0 auto; }
     .mmh3p-video-timeline[hidden] { display:none; }
     .mmh3p-image-track { height:96px; position:relative; width:100%; }
     .mmh3p-image-lane { height:92px; position:relative; width:100%; overflow:hidden; border:1px solid #3d4651;
@@ -845,15 +886,16 @@ function installStyles() {
     .mmh3p-reference-actions button { white-space:nowrap; }
     .mmh3p-reference-help { margin-top:2px; color:var(--muted); font-size:9px; line-height:1.3; }
     .mmh3p-references-panel { display:flex; flex-direction:column; min-height:0; overflow:hidden; }
-    .mmh3p-reference-list { flex:1 1 auto; height:auto; min-height:0; overflow-y:auto; overflow-x:hidden;
+    .mmh3p-reference-list { flex:1 1 0; height:auto; min-height:0; overflow-y:auto; overflow-x:hidden;
       display:flex; flex-direction:column; gap:6px; }
-    .mmh3p-ref { box-sizing:border-box; width:100%; min-width:0; display:grid; grid-template-columns:96px minmax(0,1fr); gap:9px; align-items:stretch;
+    .mmh3p-reference-head { flex:0 0 auto; }
+    .mmh3p-ref { flex:0 0 auto; box-sizing:border-box; width:100%; min-width:0; display:grid; grid-template-columns:96px minmax(0,1fr); gap:9px; align-items:stretch;
       padding:7px; background:#191c20; border:1px solid #343944; border-radius:6px; }
     .mmh3p-ref-label { grid-column:1/-1; display:block; min-width:0; padding:0 2px 5px;
       border-bottom:1px solid #303640; color:#a9d8ff;
       font:600 10px ui-monospace,Consolas,monospace; white-space:nowrap; }
     .mmh3p-ref input,.mmh3p-ref select { box-sizing:border-box; width:100%; min-width:0; max-width:100%; font-size:10px; height:25px; }
-    .mmh3p-ref textarea { box-sizing:border-box; width:100%; max-width:100%; min-height:48px; resize:vertical; font-size:10px; }
+    .mmh3p-ref textarea { box-sizing:border-box; width:100%; max-width:100%; min-height:48px; max-height:160px; overflow:auto; resize:vertical; font-size:10px; }
     .mmh3p-ref-preview { min-width:0; height:96px; border:1px solid #3e4651; border-radius:5px;
       background:#111419; overflow:hidden; display:flex; align-items:center; justify-content:center; color:var(--muted);
       font-size:9px; text-align:center; cursor:pointer; }
@@ -862,6 +904,9 @@ function installStyles() {
     .mmh3p-ref-preview audio { width:92%; max-width:100%; }
     .mmh3p-ref-body { min-width:0; display:flex; flex-direction:column; gap:5px; }
     .mmh3p-ref.picture .mmh3p-ref-body { justify-content:center; }
+    .mmh3p-ref.camera .mmh3p-ref-body { justify-content:center; font-size:10px; }
+    .mmh3p-ref.camera .mmh3p-ref-preview { cursor:default; color:#a9d8ff; font-weight:600; }
+    .mmh3p-camera-ref-status { color:var(--muted); font-size:9px; }
     .mmh3p-ref-controls { min-width:0; display:grid; grid-template-columns:minmax(130px,1fr) 30px;
       gap:5px; align-items:center; }
     .mmh3p-ref-controls.metadata-alias { grid-template-columns:minmax(130px,1fr) minmax(80px,.65fr) 30px; }
@@ -872,7 +917,7 @@ function installStyles() {
       border-radius:5px; background:#141a20; color:#b8ddff;
       font:600 10px ui-monospace,Consolas,monospace; }
     .mmh3p-storyboard-scope { min-width:0; margin:0; padding:5px 7px 6px; border:1px solid #3e4651;
-      border-radius:5px; display:flex; flex-wrap:wrap; gap:5px 10px; }
+      border-radius:5px; display:flex; flex-wrap:wrap; gap:5px 10px; max-height:108px; overflow:auto; }
     .mmh3p-storyboard-scope legend { padding:0 4px; color:var(--muted); font-size:9px; font-weight:700;
       letter-spacing:.04em; text-transform:uppercase; }
     .mmh3p-storyboard-scope label { display:inline-flex; align-items:center; gap:4px; color:var(--text); font-size:9px; }
@@ -901,6 +946,8 @@ function installStyles() {
     .mmh3p-log-line.download { color:#8dceff; }
     .mmh3p-log-line.analysis { color:#b9dcff; padding:4px 6px; border-left:2px solid #5798ce; }
     .mmh3p-empty { color:#777f8b; padding:14px; text-align:center; border:1px dashed #3c424c; border-radius:5px; }
+    .mmh3p-reference-list,.mmh3p-video-timeline,.mmh3p-camera-advanced,.mmh3p-main,
+    .mmh3p-preview,.mmh3p-log,.mmh3p-storyboard-scope,.mmh3p textarea { overscroll-behavior:contain; }
     @media (max-width:850px) { .mmh3p-grid { grid-template-columns:1fr; }
       .mmh3p-ref { grid-template-columns:76px minmax(0,1fr); }
       .mmh3p-ref-controls { grid-template-columns:minmax(110px,1fr) 28px; }
@@ -912,6 +959,10 @@ function installStyles() {
 }
 
 class PrompterUI {
+  mutationBlocked() {
+    return this._disposed || this.node._h3Disposed || this.node._h3Restoring || app.configuringGraph;
+  }
+
   constructor(node, root, stateWidget) {
     this.node = node;
     this.root = root;
@@ -948,6 +999,72 @@ class PrompterUI {
     this.render();
     this.commit(false);
     this.loadModels();
+    this.cameraInputStamp = `${this.cameraConnected()}:${JSON.stringify(this.cameraScene())}`;
+    this.cameraSceneListener = event => {
+      if (event.detail?.node && this.cameraSource() === event.detail.node) this.externalCameraChanged();
+    };
+    window.addEventListener("h3-camera-scene-changed", this.cameraSceneListener);
+    this.cameraPlayheadListener = event => {
+      const detail = event.detail;
+      if (this._disposed || !detail?.node || detail.origin === this || this.cameraSource() !== detail.node) return;
+      this.stopTimelinePlayback();
+      this.setPlayheadTime(detail.frame / detail.fps, true);
+    };
+    window.addEventListener("h3-camera-playhead", this.cameraPlayheadListener);
+    this.followCameraPlayhead();
+  }
+
+  cameraConnected() { return this.node.inputs?.some(input => input.name === "prompter_camera" && input.link != null) || false; }
+  cameraVideoEnabled() { return this.cameraConnected() && this.cameraScene()?.refvid !== false; }
+  cameraSource() {
+    const graph = this.node.graph;
+    let input = this.node.inputs?.find(input => input.name === "prompter_camera");
+    const seen = new Set();
+    while (graph && input?.link != null && !seen.has(input.link)) {
+      seen.add(input.link);
+      const link = graph.links?.get?.(input.link) || graph.links?.[input.link];
+      const source = graph.getNodeById(link?.origin_id);
+      if (!source) break;
+      if (source.h3SceneEditor || source.widgets?.some(w => w.name === "scene_data")) return source;
+      input = source.inputs?.length === 1 ? source.inputs[0] : null;
+    }
+    return null;
+  }
+  cameraScene() {
+    const source = this.cameraSource();
+    return source ? normalizeScene(source.h3SceneEditor?.data || source.widgets?.find(w => w.name === "scene_data")?.value) : null;
+  }
+  requestProject() {
+    const scene = this.cameraScene();
+    return scene ? { ...this.project, _prompter_camera_scene: scene } : this.project;
+  }
+  followCameraPlayhead() {
+    const editor = this.cameraSource()?.h3SceneEditor;
+    if (editor && !editor.disposed) {
+      this.stopTimelinePlayback();
+      this.setPlayheadTime(editor.frame / editor.data.fps, true);
+    }
+  }
+  externalCameraChanged() {
+    if (this.mutationBlocked() || this.node._h3InvalidProject) return;
+    const stamp = `${this.cameraConnected()}:${JSON.stringify(this.cameraScene())}`;
+    if (this.cameraInputStamp !== stamp) {
+      // A previously unresolved source becoming available is initialization, not
+      // a user edit. Its connection change already invalidated the old prompt.
+      const sourceBecameReady = this.cameraInputStamp === "true:null" && stamp.startsWith("true:");
+      this.cameraInputStamp = stamp;
+      if (!sourceBecameReady) {
+        this.project.enhanced_prompt = "";
+        this.project._prompter_camera_signature = "";
+        this.commit(false, true);
+      }
+    }
+    this.autoRunPreview = null;
+    this.renderHeader(); this.renderReferences(); this.renderTimeline();
+    this.syncMentionHighlight();
+    this.renderAdvancedCamera();
+    this.followCameraPlayhead();
+    this.scheduleCompile();
   }
 
   build() {
@@ -956,7 +1073,7 @@ class PrompterUI {
       <aside class="mmh3p-panel mmh3p-video-preview-panel" data-el="video-preview-panel">
         <div class="mmh3p-preview-tabs">
           <button data-action="preview-mode" data-preview-mode="video" type="button" title="Show the selected reference video">Video</button>
-          <button data-action="preview-mode" data-preview-mode="camera_advanced" type="button" title="Configure and preview the selected Shot or Move camera state">Camera Advanced</button>
+          <button data-action="preview-mode" data-preview-mode="camera_advanced" type="button" title="Configure and preview the selected Shot or Move camera state">Camera</button>
         </div>
         <div class="mmh3p-video-preview-stage" data-el="video-preview-stage">
           <video data-el="reference-video-preview" muted playsinline preload="metadata"></video>
@@ -964,13 +1081,14 @@ class PrompterUI {
         </div>
         <div class="mmh3p-video-preview-status" data-el="video-preview-status">Video · no video reference</div>
         <div class="mmh3p-camera-advanced" data-el="camera-advanced" hidden>
+          <p class="mmh3p-camera-preview-note">Text-prompt preview only; not a direct video reference input (R2V).</p>
           <div class="mmh3p-camera-viewport-wrap">
-            <canvas class="mmh3p-camera-viewport" data-el="camera-viewport" aria-label="Advanced camera 3D viewport"></canvas>
+            <canvas class="mmh3p-camera-viewport" data-el="camera-viewport" aria-label="Camera 3D viewport"></canvas>
             <span class="mmh3p-camera-viewport-label">3D SCENE · CAMERA FRUSTUM</span>
           </div>
           <div class="mmh3p-camera-controls">
-            <label class="mmh3p-auto-run" title="Render the entire panel camera timeline to the camera_render IMAGE batch when this node executes. 1024×1024, 24fps. Proxy mannequin and grid only; text-only Motion and Qwen path changes are not rendered. Uses about 1.5 GiB RAM per 5 seconds."><input type="checkbox" data-el="camera-render"><span>Camera render · 1024×1024 · Full timeline</span></label>
-            <label class="mmh3p-auto-run" title="Apply panel defaults to this Shot/Move. Explicit camera instructions in your prompt always take priority, even when unchecked. Without such text, disabled items hold their camera state. The 3D preview represents panel settings only."><input type="checkbox" data-el="advanced-camera-enabled"><span>Use Camera Advanced for this Shot / Move</span></label>
+            <label class="mmh3p-auto-run" title="On node execution, output the full camera-view preview as an IMAGE sequence. Panel geometry only, not Qwen/user-text paths. A connected prompter_camera passes through its existing images."><input type="checkbox" data-el="camera-render"><span data-el="camera-render-label">Camera render</span></label>
+            <label class="mmh3p-auto-run" title="Apply panel defaults to this Shot/Move. Explicit camera instructions in your prompt always take priority, even when unchecked. Without such text, disabled items hold their camera state. The 3D preview represents panel settings only."><input type="checkbox" data-el="advanced-camera-enabled"><span>Use Camera for this Shot / Move</span></label>
             <label class="mmh3p-camera-control"><span>Motion</span><select data-advanced-camera="motion"></select></label>
             <label class="mmh3p-camera-control" title="Qualitative camera travel range for the prompt. Preview/render retain the calculated endpoints and timing. User camera instructions take priority."><span>Movement range</span><select data-advanced-camera="amplitude"></select></label>
             <label class="mmh3p-camera-control" title="Qualitative camera travel speed for the prompt. Preview/render retain the calculated path and timing. User camera instructions take priority."><span>Speed</span><select data-advanced-camera="speed"></select></label>
@@ -1149,17 +1267,20 @@ class PrompterUI {
       });
     };
     this.root.addEventListener("pointerdown", this.nativeSelectScaleHandler, true);
-    this.timelineVisibilityHandler = () => { if (document.hidden) this.stopTimelinePlayback(); };
+    this.timelineVisibilityHandler = () => {
+      if (document.hidden) this.stopTimelinePlayback();
+      else this.scheduleCameraLayout();
+    };
     document.addEventListener("visibilitychange", this.timelineVisibilityHandler);
     this.previewIntersectionObserver = new IntersectionObserver(entries => {
       if (!entries[0]?.isIntersecting) this.stopTimelinePlayback();
+      else this.scheduleCameraLayout();
     }, { threshold: .01 });
     this.previewIntersectionObserver.observe(this.els["video-preview-panel"]);
     if (typeof ResizeObserver !== "undefined") {
       this.cameraViewportResizeObserver = new ResizeObserver(() => {
         if (this.project.preview_mode === "camera_advanced") {
-          this.fitCameraPanelHeight();
-          this.renderAdvancedCamera();
+          this.scheduleCameraLayout();
         }
       });
       this.cameraViewportResizeObserver.observe(this.els["camera-viewport"].parentElement);
@@ -1185,11 +1306,6 @@ class PrompterUI {
         this.renderAdvancedCamera();
       });
     });
-    this.els["camera-render"].addEventListener("change", () => {
-      this.project.camera_render = this.els["camera-render"].checked;
-      this.commit();
-      this.syncReferenceOutputs();
-    });
     this.els["advanced-camera-enabled"].addEventListener("change", () => {
       const selected = this.selectedShot();
       if (!selected) return;
@@ -1200,6 +1316,12 @@ class PrompterUI {
       selected.camera_enabled = this.els["advanced-camera-enabled"].checked;
       this.project.advanced_camera_enabled = true;
       this.commit();
+      this.renderAdvancedCamera();
+    });
+    this.els["camera-render"].addEventListener("change", () => {
+      this.project.camera_render = this.els["camera-render"].checked;
+      this.commit();
+      this.syncReferenceOutputs();
       this.renderAdvancedCamera();
     });
     this.els.mode.addEventListener("change", () => { this.project.mode = this.els.mode.value; this.commit(); this.renderHeader(); });
@@ -1214,7 +1336,8 @@ class PrompterUI {
     this.root.querySelector('[data-action="delete-shot"]').addEventListener("click", () => this.deleteShot());
     this.root.querySelector('[data-action="timeline-play"]').addEventListener("click", () => this.toggleTimelinePlayback());
     this.els["timeline-scrubber"].addEventListener("input", () => {
-      this.setPlayheadTime(Number(this.els["timeline-scrubber"].value), true);
+      this.stopTimelinePlayback();
+      this.setPlayheadTime(Number(this.els["timeline-scrubber"].value), true, true);
     });
     const scrubberTrack = this.els["timeline-scrubber-track"];
     let scrubberPointerId = null;
@@ -1222,7 +1345,7 @@ class PrompterUI {
       const rect = scrubberTrack.getBoundingClientRect();
       if (rect.width <= 0) return;
       const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-      this.setPlayheadTime(ratio * this.timelineDuration(), true);
+      this.setPlayheadTime(ratio * this.timelineDuration(), true, true);
     };
     scrubberTrack.addEventListener("pointerdown", event => {
       this.stopTimelinePlayback();
@@ -1363,6 +1486,7 @@ class PrompterUI {
 
   mentionEntries() {
     const counts = { picture: -1, video: 0, audio: 0 };
+    const connected = this.cameraVideoEnabled();
     const seen = new Set();
     const entries = [];
     this.project.references.forEach(ref => {
@@ -1378,6 +1502,12 @@ class PrompterUI {
         strength: ref.type === "picture" && ref.role === "subject_identity" ? ref.strength : "",
         description: String(ref.description || ""),
       });
+    });
+    const cameraRef = this.project.camera_reference || {};
+    const cameraAlias = normalizeAlias(cameraRef.alias);
+    if (connected && cameraAlias.length > 1 && !seen.has(cameraAlias.toLowerCase())) entries.push({
+      alias: cameraAlias, label: `<Video ${counts.video + 1}>`, role: cameraRef.role || "motion",
+      strength: "", description: cameraRef.description || "",
     });
     return entries;
   }
@@ -1450,7 +1580,7 @@ class PrompterUI {
     mirror.style.boxSizing = style.boxSizing;
     mirror.style.padding = style.padding;
     mirror.style.border = style.border;
-    mirror.style.font = style.font;
+    copyMentionFont(mirror, style);
     mirror.style.letterSpacing = style.letterSpacing;
     mirror.style.lineHeight = style.lineHeight;
     mirror.style.tabSize = style.tabSize;
@@ -1499,7 +1629,7 @@ class PrompterUI {
     const style = getComputedStyle(editor);
     backdrop.style.width = `${editor.clientWidth}px`;
     backdrop.style.height = `${editor.clientHeight}px`;
-    backdrop.style.font = style.font;
+    copyMentionFont(backdrop, style);
     backdrop.style.letterSpacing = style.letterSpacing;
     backdrop.style.lineHeight = style.lineHeight;
     backdrop.style.padding = style.padding;
@@ -1528,7 +1658,7 @@ class PrompterUI {
   }
 
   totalDuration() { return this.project.shots.reduce((sum, shot) => sum + Number(shot.duration || 0), 0); }
-  timelineFrameCount() { return alignedFrameCount(this.totalDuration()); }
+  timelineFrameCount() { return this.cameraScene()?.frames || alignedFrameCount(this.totalDuration()); }
   timelineDuration() { return this.timelineFrameCount() / VIDEO_OUTPUT_FPS; }
   shotTimelineDuration(shot) {
     return Number(shot.duration || 0) * this.timelineDuration() / Math.max(0.1, this.totalDuration());
@@ -1558,7 +1688,7 @@ class PrompterUI {
     this.videoPreviewOpen = true;
     this.node.properties ||= {};
     this.node.properties.mmh3_video_preview_open = true;
-    if (adjustGeometry) {
+    if (adjustGeometry && !wasOpen && !this.node._h3Restoring) {
       this.videoPreviewBaseWidth = Math.max(UI_WIDTH, Number(this.node.size?.[0]) || UI_WIDTH);
       this.node.pos[0] -= VIDEO_PREVIEW_WIDTH;
       this.node.setSize([this.videoPreviewBaseWidth + VIDEO_PREVIEW_WIDTH, Math.max(NODE_HEIGHT, this.node.size?.[1] || 0)]);
@@ -1674,7 +1804,7 @@ class PrompterUI {
     this.updateTimelineActionButtons();
   }
 
-  setPlayheadTime(seconds, forceMedia = false) {
+  setPlayheadTime(seconds, forceMedia = false, publish = false) {
     const duration = Math.max(.001, this.timelineDuration());
     this.playheadTime = Math.max(0, Math.min(duration, Number(seconds) || 0));
     this.els["timeline-scrubber"].value = String(this.playheadTime);
@@ -1685,6 +1815,11 @@ class PrompterUI {
     this.syncSelectedShotToPlayhead();
     this.renderAdvancedCamera();
     this.syncReferenceVideoPreview(forceMedia);
+    this.updateTimelineActionButtons();
+    if (publish) {
+      const editor = this.cameraSource()?.h3SceneEditor;
+      if (editor && !editor.disposed) editor.seek(Math.round(this.playheadTime * editor.data.fps), this);
+    }
   }
 
   toggleTimelinePlayback() {
@@ -1695,6 +1830,7 @@ class PrompterUI {
   startTimelinePlayback() {
     if (this.timelinePlaying) return;
     if (this.playheadTime >= this.timelineDuration() - .001) this.setPlayheadTime(0, true);
+    this.setPlayheadTime(this.playheadTime, true, true);
     this.timelinePlaying = true;
     this.timelinePlaybackLastTime = performance.now();
     this.root.querySelector('[data-action="timeline-play"]').textContent = "Pause";
@@ -1714,12 +1850,22 @@ class PrompterUI {
     if (!this.timelinePlaying) return;
     const next = this.playheadTime + Math.min(.1, (time - this.timelinePlaybackLastTime) / 1000);
     this.timelinePlaybackLastTime = time;
-    this.setPlayheadTime(next, false);
+    this.setPlayheadTime(next, false, true);
     if (next >= this.timelineDuration()) { this.stopTimelinePlayback(); return; }
     this.timelinePlaybackRaf = requestAnimationFrame(nextTime => this.tickTimelinePlayback(nextTime));
   }
 
   dispose() {
+    this._disposed = true;
+    cancelAnimationFrame(this.cameraLayoutRaf);
+    this.cameraLayoutRaf = null;
+    clearTimeout(this.compileTimer);
+    clearTimeout(this.copyButtonResetTimer);
+    this.compileSequence++;
+    this.compileController?.abort();
+    this.enhanceController?.abort();
+    window.removeEventListener("h3-camera-scene-changed", this.cameraSceneListener);
+    window.removeEventListener("h3-camera-playhead", this.cameraPlayheadListener);
     this.stopTimelinePlayback();
     cancelAnimationFrame(this.videoSeekRaf);
     this.root.removeEventListener("pointerdown", this.nativeSelectScaleHandler, true);
@@ -1741,14 +1887,35 @@ class PrompterUI {
     return count;
   }
 
+  playheadSplit() {
+    const frame = Math.round(this.playheadTime * VIDEO_OUTPUT_FPS);
+    // At the initial playhead, preserve the original selected-interval workflow.
+    // Do not move the playhead or stretch the timeline to make room for an item.
+    if (frame === 0) {
+      const selected = this.selectedShot();
+      if (!selected) return null;
+      const left = selected.duration / 2, right = selected.duration - left;
+      if (left < MIN_SHOT_DURATION - 1e-9 || right < MIN_SHOT_DURATION - 1e-9) return null;
+      return {selected, index: this.project.shots.indexOf(selected), left, right};
+    }
+    const time = frame / this.timelineFrameCount() * this.totalDuration();
+    let start = 0;
+    for (const [index, selected] of this.project.shots.entries()) {
+      const left = time - start, right = selected.duration - left;
+      if (left >= MIN_SHOT_DURATION - 1e-9 && right >= MIN_SHOT_DURATION - 1e-9) return {selected, index, left, right};
+      start += selected.duration;
+    }
+    return null;
+  }
+
   addShot() {
-    const selected = this.selectedShot();
-    if (!selected || selected.duration < MIN_SHOT_DURATION * 2) return;
-    const selectedIndex = this.project.shots.findIndex(item => item.id === selected.id);
-    const firstHalf = selected.duration / 2;
-    selected.duration = firstHalf;
+    const split = this.playheadSplit();
+    if (!split) return;
+    this.stopTimelinePlayback();
+    const {selected, index: selectedIndex, left, right} = split;
+    selected.duration = left;
     const shot = {
-      id: uid("shot"), duration: firstHalf, visual_action: "",
+      id: uid("shot"), duration: right, visual_action: "",
       presets: DEFAULT_SHOT_PRESETS(),
       camera_advanced: DEFAULT_ADVANCED_CAMERA(),
       kind: "shot",
@@ -1758,13 +1925,13 @@ class PrompterUI {
   }
 
   addMove() {
-    const selected = this.selectedShot();
-    if (!selected || selected.duration < MIN_SHOT_DURATION * 2) return;
-    const selectedIndex = this.project.shots.findIndex(item => item.id === selected.id);
-    const firstHalf = selected.duration / 2;
-    selected.duration = firstHalf;
+    const split = this.playheadSplit();
+    if (!split) return;
+    this.stopTimelinePlayback();
+    const {selected, index: selectedIndex, left, right} = split;
+    selected.duration = left;
     const move = {
-      id: uid("move"), kind: "move", duration: firstHalf, visual_action: "",
+      id: uid("move"), kind: "move", duration: right, visual_action: "",
       presets: DEFAULT_SHOT_PRESETS(),
       camera_advanced: normalizeAdvancedCamera(selected.camera_advanced),
     };
@@ -1811,6 +1978,12 @@ class PrompterUI {
   }
 
   commit(refresh = true, preserveRawModelPrompt = false) {
+    if (this.mutationBlocked()) return;
+    if (this.node._h3InvalidProject && !refresh) return;
+    if (refresh) {
+      this.node._h3InvalidProject = false;
+      this.node._h3OutputRecovery = false;
+    }
     if (!preserveRawModelPrompt) {
       this.lastRawModelPrompt = "";
       this.lastRawModelSource = "";
@@ -1942,7 +2115,7 @@ class PrompterUI {
     const button = this.root.querySelector('[data-action="enhance"]');
     const bundleId = this.els["model-bundle"]?.value || this.project.image_model || DEFAULT_MODEL_BUNDLE;
     const profile = this.modelBundles.find(model => model.id === bundleId);
-    const mode = this.project.mode === "AUTO" ? inferAutoMode(this.project.references) : this.project.mode;
+    const mode = this.cameraVideoEnabled() ? "REF2VA" : this.project.mode === "AUTO" ? inferAutoMode(this.project.references) : this.project.mode;
     const supported = !profile?.supported_modes?.length || profile.supported_modes.includes(mode);
     const status = this.els["model-status"];
     const qwenEnhanceAvailable = (profile?.enhance_model || DEFAULT_ENHANCE_MODEL) === DEFAULT_ENHANCE_MODEL;
@@ -2010,7 +2183,7 @@ class PrompterUI {
     button.disabled = false;
     button.textContent = "Stop";
     button.title = "Stop the current prompt generation";
-    const sourceProject = JSON.stringify({ ...this.project, enhanced_prompt: "" });
+    const sourceProject = JSON.stringify({ ...this.requestProject(), enhanced_prompt: "" });
     this.appendLog("Prompt generation started.", `enhance-start-${jobId}`);
     const progressPromise = this.pollEnhanceProgress(jobId, controller, selectedBundle);
     try {
@@ -2027,7 +2200,8 @@ class PrompterUI {
       });
       const data = await response.json();
       if (!response.ok || data.status !== "success") throw new Error(data.message || "Prompt generation failed");
-      if (JSON.stringify({ ...this.project, enhanced_prompt: "" }) !== sourceProject) {
+      if (this.mutationBlocked()) return;
+      if (JSON.stringify({ ...this.requestProject(), enhanced_prompt: "" }) !== sourceProject) {
         throw new Error("The project changed while prompt generation was running; the stale result was discarded.");
       }
       if (data.reference_analyses?.length) {
@@ -2052,6 +2226,7 @@ class PrompterUI {
       this.project.enhanced_prompt = data.enhanced_prompt;
       this.lastRawModelPrompt = String(data.raw_model_prompt || "");
       this.lastRawModelSource = sourceProject;
+      this.project._prompter_camera_signature = data.prompter_camera_signature || "";
       this.autoRunPreview = null;
       if (modelInfo) {
         modelInfo.installed = true;
@@ -2104,13 +2279,15 @@ class PrompterUI {
   }
 
   scheduleCompile() {
+    if (this.mutationBlocked() || this.node._h3InvalidProject) return;
     clearTimeout(this.compileTimer);
     this.compileTimer = setTimeout(() => this.compile(), 300);
   }
 
   async compile() {
+    if (this.mutationBlocked() || this.node._h3InvalidProject) return;
     const sequence = ++this.compileSequence;
-    const sourceProject = JSON.stringify(this.project);
+    const sourceProject = JSON.stringify(this.requestProject());
     this.compileController?.abort();
     const controller = new AbortController();
     this.compileController = controller;
@@ -2123,8 +2300,9 @@ class PrompterUI {
         signal: controller.signal,
       });
       const data = await response.json();
+      if (this.mutationBlocked()) return;
       if (sequence !== this.compileSequence) return;
-      if (sourceProject !== JSON.stringify(this.project)) return;
+      if (sourceProject !== JSON.stringify(this.requestProject())) return;
       if (!response.ok || data.status !== "success") throw new Error(data.message || "Compilation failed");
       this.previewData = data;
       this.cameraTimelineSource = sourceProject;
@@ -2159,27 +2337,13 @@ class PrompterUI {
     this.scheduleCompile();
   }
 
-  fitCameraPanelHeight() {
-    if (this.project.preview_mode !== "camera_advanced" || !this.root.isConnected) return;
-    const panel = this.els["video-preview-panel"];
-    const camera = this.els["camera-advanced"];
-    if (!panel.offsetWidth || !camera.offsetHeight) return;
-    const verticalEdges = element => {
-      const css = getComputedStyle(element);
-      return [css.paddingTop, css.paddingBottom, css.borderTopWidth, css.borderBottomWidth]
-        .reduce((sum, value) => sum + (parseFloat(value) || 0), 0);
-    };
-    const tabs = panel.querySelector(".mmh3p-preview-tabs");
-    const height = Math.ceil(camera.offsetHeight + tabs.offsetHeight
-      + (parseFloat(getComputedStyle(panel).rowGap) || 0)
-      + verticalEdges(panel) + verticalEdges(this.root));
-    this.node._mmh3CameraUIHeight = height;
-    const nodeHeight = height + (NODE_HEIGHT - UI_HEIGHT);
-    if (Math.abs(this.node.size[1] - nodeHeight) > 1) {
-      this.node.setSize([this.node.size[0], nodeHeight]);
-      this.node._widgetSlotsDirty = true;
-      this.node.setDirtyCanvas?.(true, true);
-    }
+  scheduleCameraLayout() {
+    if (this.mutationBlocked() || this.cameraLayoutRaf != null) return;
+    this.cameraLayoutRaf = requestAnimationFrame(() => {
+      this.cameraLayoutRaf = null;
+      if (this.mutationBlocked()) return;
+      this.renderAdvancedCamera();
+    });
   }
 
   renderPreviewMode() {
@@ -2192,10 +2356,7 @@ class PrompterUI {
     });
     if (mode === "camera_advanced") {
       this.els["reference-video-preview"]?.pause();
-      requestAnimationFrame(() => {
-        this.fitCameraPanelHeight();
-        this.renderAdvancedCamera();
-      });
+      this.scheduleCameraLayout();
     } else {
       this.syncReferenceVideoPreview(true);
     }
@@ -2242,7 +2403,15 @@ class PrompterUI {
     if (!shot || !this.els["camera-viewport"]) return;
     const config = normalizeAdvancedCamera(shot.camera_advanced);
     shot.camera_advanced = config;
-    const enabled = shot.camera_enabled ?? (this.project.advanced_camera_enabled === true);
+    const external = this.cameraConnected();
+    const enabled = !external && (shot.camera_enabled ?? (this.project.advanced_camera_enabled === true));
+    this.els["camera-render"].checked = this.project.camera_render === true;
+    this.els["camera-render"].disabled = external && !this.cameraVideoEnabled();
+    const renderSize = cameraRenderResolution(this.project.camera_render_settings);
+    this.els["camera-render-label"].textContent = external
+      ? (this.cameraVideoEnabled() ? "Camera render · Connected camera sequence" : "Camera render · Disabled by refvid")
+      : `Camera render · ${renderSize.width}×${renderSize.height} · Full timeline`;
+    this.els["advanced-camera-enabled"].disabled = external;
     const itemIndex = this.project.shots.indexOf(shot);
     let ownerIndex=itemIndex;
     while(ownerIndex>0 && this.project.shots[ownerIndex].kind === "move") ownerIndex--;
@@ -2259,7 +2428,6 @@ class PrompterUI {
       : !motionAllowed ? "Motion is available on a Shot when all following Moves in that Shot have camera disabled."
       : "Motion is a prompt instruction; the 3D preview shows starting framing only. Following camera-disabled Moves hold its endpoint.";
     this.els["advanced-camera-enabled"].checked = enabled;
-    this.els["camera-render"].checked = this.project.camera_render === true;
     this.root.querySelectorAll("[data-advanced-camera]").forEach(select => {
       select.value = config[select.dataset.advancedCamera];
       if (select.dataset.advancedCamera === "motion") select.closest("label").title = motionTooltip;
@@ -2272,6 +2440,17 @@ class PrompterUI {
       if (select.dataset.advancedCamera === "motion") select.disabled = !enabled || !motionAllowed;
     });
     if (this.project.preview_mode !== "camera_advanced") return;
+    if (external) {
+      // Do not display the inactive local panel path as the connected camera route.
+      const canvas = this.els["camera-viewport"], ctx = canvas.getContext("2d");
+      const size = Math.max(320, Math.round(canvas.getBoundingClientRect().width || 512));
+      canvas.width = size; canvas.height = size;
+      ctx.fillStyle = "#101820"; ctx.fillRect(0,0,size,size);
+      ctx.fillStyle = "#a8d8ff"; ctx.font = "14px sans-serif";
+      ctx.fillText("Connected camera timeline",20,32);
+      ctx.fillText("Preview / edit in minimax h3 camera",20,56);
+      return;
+    }
     const index = this.project.shots.indexOf(shot);
     const end = this.cameraItemPose(index);
     const range = this.shotTimelineRange(index);
@@ -2294,9 +2473,12 @@ class PrompterUI {
 
   updateTimelineActionButtons() {
     const selected = this.selectedShot();
-    const canSplit = Boolean(selected && selected.duration >= MIN_SHOT_DURATION * 2);
+    const canSplit = Boolean(this.playheadSplit());
     this.root.querySelector('[data-action="add-shot"]').disabled = !canSplit;
     this.root.querySelector('[data-action="add-move"]').disabled = !canSplit;
+    for (const kind of ["shot", "move"]) this.root.querySelector(`[data-action="add-${kind}"]`).title = canSplit
+      ? `${Math.round(this.playheadTime * VIDEO_OUTPUT_FPS) === 0 ? "Split the selected interval in half" : "Split at the playhead"} and add a ${kind === "shot" ? "Shot (cut)" : "Move (no cut)"}.`
+      : "Place the playhead inside an interval, away from its edges, or at frame 0 to halve a selected interval long enough to split.";
     const shotCount = this.project.shots.filter(item => item.kind !== "move").length;
     this.root.querySelector('[data-action="delete-shot"]').disabled =
       !selected || (selected.kind !== "move" && shotCount <= 1);
@@ -2306,11 +2488,12 @@ class PrompterUI {
     this.els.mode.value = this.project.mode;
     this.els["auto-run"].checked = this.project.auto_run === true;
     this.els.enhance.value = this.project.enhance_level || (this.project.enhance ? "normal" : "none");
-    this.els.duration.value = this.totalDuration().toFixed(2);
-    const resolvedMode = this.project.mode === "AUTO"
+    this.els.duration.value = (this.cameraScene()?.requested_duration ?? this.totalDuration()).toFixed(2);
+    this.els.duration.disabled = this.cameraConnected();
+    const resolvedMode = this.cameraVideoEnabled() ? "REF2VA" : this.project.mode === "AUTO"
       ? inferAutoMode(this.project.references)
       : this.project.mode;
-    this.els.path.textContent = this.project.mode === "AUTO"
+    this.els.path.textContent = this.cameraConnected() ? `camera → ${resolvedMode.toLowerCase()}${this.cameraVideoEnabled() ? "" : " (refvid off)"}` : this.project.mode === "AUTO"
       ? `auto → ${resolvedMode.toLowerCase()}`
       : resolvedMode.toLowerCase();
     this.els["ruler-end"].textContent = `${this.timelineDuration().toFixed(2)}s · ${this.timelineFrameCount()}f`;
@@ -2330,7 +2513,41 @@ class PrompterUI {
     if (this.modelBundles.length) this.updateModelCompatibility(false);
   }
 
+  renderCameraGuide() {
+    const timeline = this.els.timeline, scene = this.cameraScene();
+    timeline.querySelectorAll(".mmh3p-camera-guide,.mmh3p-camera-cut").forEach(el => el.remove());
+    timeline.classList.toggle("has-camera-guide", Boolean(scene));
+    if (!scene) return;
+    const stamp = JSON.stringify(scene);
+    if (this.cameraGuideStamp !== stamp) {
+      this.cameraGuideStamp = stamp;
+      this.cameraGuideCuts = cameraCutFrames(scene);
+    }
+    const starts = [0, ...this.cameraGuideCuts], guide = document.createElement("div");
+    guide.className = "mmh3p-camera-guide";
+    starts.forEach((frame, index) => {
+      const end = starts[index + 1] ?? scene.frames;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.style.flex = `0 0 ${(end - frame) / scene.frames * 100}%`;
+      button.textContent = `Cam Shot ${index + 1} · F${frame}–${end - 1}`;
+      button.title = `${button.textContent} (zero-based frames). Click to seek; add Shot / Move to edit your separate timeline.`;
+      button.dataset.frame = String(frame);
+      button.addEventListener("click", event => {
+        event.stopPropagation(); this.stopTimelinePlayback();
+        this.setPlayheadTime(frame / scene.fps, true, true);
+      });
+      guide.appendChild(button);
+      if (frame > 0) {
+        const line = document.createElement("div"); line.className = "mmh3p-camera-cut";
+        line.style.left = `${frame / scene.frames * 100}%`; timeline.appendChild(line);
+      }
+    });
+    timeline.appendChild(guide);
+  }
+
   renderTimeline() {
+    this.renderCameraGuide();
     this.els.timeline.querySelectorAll(".mmh3p-shot").forEach(el => el.remove());
     const total = Math.max(0.1, this.totalDuration());
     this.project.shots.forEach((shot, index) => {
@@ -2360,7 +2577,7 @@ class PrompterUI {
       card.addEventListener("click", () => {
         this.selectedShotId = shot.id;
         this.stopTimelinePlayback();
-        this.setPlayheadTime(this.shotTimelineRange(index).startSeconds, true);
+        this.setPlayheadTime(this.shotTimelineRange(index).startSeconds, true, true);
         this.renderTimeline();
         this.renderShotEditor();
         this.renderPresets();
@@ -2821,11 +3038,78 @@ class PrompterUI {
     position.textContent = `Output frame ${frameIndex} / ${frameCount - 1} · ${(frameIndex / VIDEO_OUTPUT_FPS).toFixed(3)}s`;
   }
 
+
   renderReferences() {
     this.syncReferenceOutputs();
     this.syncReferenceVideoPreview(true);
     const container = this.els.references; container.replaceChildren();
-    if (!this.project.references.length) {
+    const external = this.cameraConnected();
+    if (external && !this.cameraVideoEnabled()) {
+      const status = document.createElement("div");
+      status.className = "mmh3p-empty";
+      status.textContent = this.cameraScene()?.use_camera_prompt
+        ? "Connected camera · Prompt only · refvid off (no video input)"
+        : "Connected camera · refvid and camera prompt off (no camera guidance)";
+      container.appendChild(status);
+    }
+    if (this.cameraVideoEnabled()) {
+      const card = document.createElement("div");
+      card.className = "mmh3p-ref camera";
+      card.dataset.el = "camera-reference";
+      const label = this.project.references.filter(r => r.type === "video").length + 1;
+      const scene = this.cameraScene();
+      const labelEl = document.createElement("span");
+      labelEl.className = "mmh3p-ref-label";
+      labelEl.textContent = `<Video ${label}>`;
+      const preview = document.createElement("div");
+      preview.className = "mmh3p-ref-preview";
+      preview.textContent = "Video input";
+      const body = document.createElement("div");
+      body.className = "mmh3p-ref-body";
+      const resolutionEl = document.createElement("div");
+      resolutionEl.dataset.el = "camera-reference-resolution";
+      resolutionEl.textContent = scene ? `${sceneResolution(scene).join(" × ")} px` : "Resolution pending";
+      const frames = document.createElement("div");
+      frames.dataset.el = "camera-reference-frames";
+      frames.textContent = scene ? `${scene.frames} frames` : "Frame count pending";
+      const status = document.createElement("div");
+      status.className = "mmh3p-camera-ref-status";
+      status.textContent = "Connected camera";
+      const settings = this.project.camera_reference ||= { role: "motion", alias: "", description: "" };
+      const controls = document.createElement("div");
+      controls.className = "mmh3p-ref-controls video-metadata";
+      const role = document.createElement("select");
+      REFERENCE_ROLES.video.forEach(value => role.add(new Option(REFERENCE_ROLE_LABELS[value] || value, value)));
+      role.value = settings.role;
+      role.title = REFERENCE_ROLE_HELP[settings.role] || "How this video should guide generation";
+      const alias = document.createElement("input");
+      alias.placeholder = "alias";
+      alias.value = settings.alias.replace(/^@+/, "");
+      alias.title = "Optional reference name to insert with @ in Prompt";
+      const description = document.createElement("textarea");
+      description.className = "desc";
+      description.value = settings.description;
+      description.placeholder = "Describe this video's role or source-to-target motion mapping";
+      description.title = "User instructions for this video reference";
+      const changed = () => {
+        this.project.enhanced_prompt = "";
+        this.project._prompter_camera_signature = "";
+        this.commit();
+      };
+      role.addEventListener("change", () => {
+        settings.role = role.value; changed(); this.renderReferences(); this.renderHeader(); this.renderTimeline();
+      });
+      alias.addEventListener("input", () => {
+        settings.alias = normalizeAlias(alias.value); this.syncMentionHighlight(); changed();
+      });
+      description.addEventListener("input", () => { settings.description = description.value; changed(); });
+      controls.append(role, alias);
+      body.append(controls, description, resolutionEl, frames, status);
+      card.append(labelEl, preview, body);
+      card.title = "Video reference from the connected render. Choose a role and alias. Procedural motion is sent only when Use camera prompt is enabled on the camera node. Disconnect prompter_camera to remove.";
+      container.appendChild(card);
+    }
+    if (!this.project.references.length && !external) {
       const empty = document.createElement("div"); empty.className = "mmh3p-empty";
       empty.textContent = "No references. Add metadata in the exact downstream order for each media type."; container.appendChild(empty); return;
     }
@@ -2868,7 +3152,7 @@ class PrompterUI {
           : ref.type === "audio"
           ? (AUDIO_DESCRIPTION_PLACEHOLDERS[ref.role] || AUDIO_DESCRIPTION_PLACEHOLDERS.none)
           : ref.role === "motion"
-          ? "Map motion here or in Prompt: e.g. <Video 1> red object = woman; blue object = man. Reference their motion and camera behavior in a new scene. Describe target setting/style; source appearance/environment is excluded. Audio reuse is separate."
+          ? "Map motion here or in Prompt: e.g. <Video 1> red object = woman; blue object = man. Reference their motion in a new scene; say explicitly if source camera behavior is also wanted. Describe target setting/style; source appearance/environment is excluded. Audio reuse is separate."
           : "Describe how this video should guide the target in English";
         desc.value = ref.description;
         desc.title = "Describe this reference's role or source-to-target motion mapping.";
@@ -3055,10 +3339,15 @@ class PrompterUI {
   }
 
   syncReferenceOutputs() {
+    if (this.mutationBlocked() || this.node._h3InvalidProject || this.node._h3OutputRecovery) return;
+    // During workflow restoration the camera may not be initialized yet. Keep
+    // saved ports/wires until refvid can be resolved instead of guessing ON.
+    if (this.cameraConnected() && !this.cameraScene()) return;
     const fixedOutputCount = 2;
     const pictures = this.project.references.filter(ref => ref.type === "picture").slice(0, MAX_REFERENCES.picture);
     const pictureCount = pictures.length;
-    const videoCount = Math.min(
+    const external = this.cameraVideoEnabled();
+    const videoCount = (external ? 1 : 0) + Math.min(
       MAX_REFERENCES.video,
       this.project.references.filter(ref => ref.type === "video").length,
     );
@@ -3070,6 +3359,39 @@ class PrompterUI {
     const targetOutputCount = fixedOutputCount + pictureCount + videoCount + audioCount
       + (hasFrameBundle ? 1 : 0) + (this.project.camera_render ? 1 : 0);
     this.node.outputs ||= [];
+    // These two fixed slots are positional across all workflow versions. Keep
+    // their objects/links even if serialized names were customized or stale.
+    if (this.node.outputs[0]) Object.assign(this.node.outputs[0], {name:"generated_prompt", type:"STRING"});
+    if (this.node.outputs[1]) Object.assign(this.node.outputs[1], {name:"length", type:"INT"});
+    // Preserve wires by semantic port name when a camera VIDEO is inserted before audio.
+    const wanted = ["generated_prompt", "length", ...pictures.map((_, i) => `image_${i}`),
+      ...Array.from({length:videoCount}, (_, i) => `video_${i + 1}`),
+      ...Array.from({length:audioCount}, (_, i) => `audio_${i + 1}`),
+      ...(hasFrameBundle ? ["frames"] : []), ...(this.project.camera_render ? ["camera_render"] : [])];
+    if (this.node._h3PreserveRestoredOutputs) {
+      // Never infer that a linked serialized output should be deleted just
+      // because saved metadata is incomplete or an old name is unrecognized.
+      const unknown = this.node.outputs.slice(fixedOutputCount)
+        .filter(output => output.links?.length && !wanted.includes(output.name));
+      const duplicates = this.node.outputs.some((output, i, all) =>
+        all.findIndex(other => other.name === output.name) !== i);
+      if (unknown.length || duplicates) {
+        this.node._h3OutputRecovery = true;
+        this.appendLog?.("Saved outputs do not match the project; existing connections were preserved. Check references before editing outputs.", "output-recovery", "warning");
+        return;
+      }
+    }
+    for (let i = this.node.outputs.length - 1; i >= fixedOutputCount; i--) {
+      if (!wanted.includes(this.node.outputs[i].name)) this.node.removeOutput(i);
+    }
+    for (const name of wanted) if (!this.node.outputs.some(o => o.name === name)) this.node.addOutput(name, "*");
+    this.node.outputs = wanted.map(name => this.node.outputs.find(o => o.name === name));
+    this.node.outputs.forEach((output, index) => {
+      for (const id of output.links || []) {
+        const link = this.node.graph?.links?.get?.(id) || this.node.graph?.links?.[id];
+        if (link) link.origin_slot = index;
+      }
+    });
     for (let index = this.node.outputs.length - 1; index >= fixedOutputCount; index -= 1) {
       if (/^frame_\d+$/.test(String(this.node.outputs[index]?.name || ""))) {
         this.node.removeOutput(index);
@@ -3115,9 +3437,8 @@ class PrompterUI {
       outputIndex += 1;
     }
     if (this.project.camera_render) {
-      const output = this.node.outputs[outputIndex];
-      output.name = "camera_render";
-      output.type = "IMAGE";
+      this.node.outputs[outputIndex].name = "camera_render";
+      this.node.outputs[outputIndex].type = "IMAGE";
     }
     this.node._widgetSlotsDirty = true;
     this.node.setDirtyCanvas?.(true, true);
@@ -3296,7 +3617,15 @@ class PrompterUI {
   }
 
   load(value) {
-    this.project = normalizeProject(value);
+    const saved = restoredProject(value);
+    if (!saved) {
+      this.node._h3InvalidProject = true;
+      this.appendLog("Saved project data could not be read; existing settings and connections were preserved.", "restore-project", "warning");
+      return;
+    }
+    this.project = normalizeProject(saved);
+    this.previewData = null;
+    this.cameraTimelineSource = "";
     this.autoRunPreview = null;
     this.lastRawModelPrompt = "";
     this.lastRawModelSource = "";
@@ -3310,8 +3639,7 @@ app.registerExtension({
   async beforeRegisterNodeDef(nodeType, nodeData) {
     if (nodeData.name !== NODE_NAME) return;
     const originalCreated = nodeType.prototype.onNodeCreated;
-    nodeType.prototype.onNodeCreated = function () {
-      originalCreated?.apply(this, arguments);
+    const createUI = function (restoring = false) {
       if (this._minimaxH3PrompterUI) return;
       installStyles();
       const stateWidget = this.widgets?.find(widget => widget.name === "project_data");
@@ -3319,39 +3647,111 @@ app.registerExtension({
       const root = document.createElement("div");
       const domWidget = this.addDOMWidget("minimax_h3_prompter_ui", "minimax_h3_prompter_ui", root, {
         getValue: () => "", setValue: () => {},
-        getMinHeight: () => this._mmh3CameraUIHeight || UI_HEIGHT,
-        getMaxHeight: () => Math.max(
-          this._mmh3CameraUIHeight || UI_HEIGHT,
-          (Number(this.size?.[1]) || NODE_HEIGHT) - (NODE_HEIGHT - UI_HEIGHT),
-        ),
+        getMinHeight: () => UI_MIN_HEIGHT,
       });
       domWidget.serialize = false;
       this._minimaxH3PrompterUI = new PrompterUI(this, root, stateWidget);
-      this.setSize([
-        Math.max(Number(this.size?.[0]) || 0, UI_WIDTH),
-        Math.max(Number(this.size?.[1]) || 0, NODE_HEIGHT),
-      ]);
-      this._minimaxH3PrompterUI.openVideoPreview(true);
-      this._widgetSlotsDirty = true;
-    };
-
-    const originalConfigured = nodeType.prototype.onConfigure;
-    nodeType.prototype.onConfigure = function (info) {
-      const previewWasExpanded = info?.properties?.mmh3_video_preview_open === true
-        || info?.properties?.mmh3_camera_preview_open === true;
-      originalConfigured?.apply(this, arguments);
-      setTimeout(() => {
-        const widget = this.widgets?.find(item => item.name === "project_data");
-        hideWidget(widget);
-        this._minimaxH3PrompterUI?.load(widget?.value);
+      if (!restoring) {
         this.setSize([
           Math.max(Number(this.size?.[0]) || 0, UI_WIDTH),
           Math.max(Number(this.size?.[1]) || 0, NODE_HEIGHT),
         ]);
-        this._minimaxH3PrompterUI?.openVideoPreview(!previewWasExpanded);
+        this._minimaxH3PrompterUI.openVideoPreview(true);
+      }
+      this._widgetSlotsDirty = true;
+    };
+    nodeType.prototype.onNodeCreated = function () {
+      this._h3Disposed = false;
+      originalCreated?.apply(this, arguments);
+      // Serialized geometry and ports have not been restored at creation time.
+      // Mount only after configure, instead of briefly expanding a default node.
+      if (app.configuringGraph || this._h3Restoring) {
+        // LiteGraph overlays saved outputs onto constructor defaults rather
+        // than replacing the whole array. Discard only unwired factory slots
+        // on a newly created, unattached node; saved slots are restored next.
+        if (!this.graph && this.outputs?.every(output => !output.links?.length))
+          this.outputs.splice(2);
+        return;
+      }
+      createUI.call(this);
+    };
+
+    // Guard before LiteGraph restores slots and emits connection callbacks.
+    const originalConfigure = nodeType.prototype.configure;
+    if (originalConfigure) nodeType.prototype.configure = function () {
+      this._h3Restoring = true;
+      return originalConfigure.apply(this, arguments);
+    };
+
+    const originalConfigured = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function (info) {
+      this._h3Restoring = true;
+      const epoch = this._h3RestoreEpoch = (this._h3RestoreEpoch || 0) + 1;
+      clearTimeout(this._h3ConfigureTimer);
+      clearTimeout(this._h3CameraConnectionTimer);
+      let ui = this._minimaxH3PrompterUI;
+      clearTimeout(ui?.compileTimer);
+      if (ui) {
+        ui.compileSequence++;
+        ui.compileController?.abort();
+        ui.enhanceController?.abort();
+        if (ui.cameraLayoutRaf != null) cancelAnimationFrame(ui.cameraLayoutRaf);
+        ui.cameraLayoutRaf = null;
+      }
+      originalConfigured?.apply(this, arguments);
+      const savedSize = info?.size ?? this.size;
+      const width = Number(savedSize?.[0]), height = Number(savedSize?.[1]);
+      this._h3RestoredSize = [
+        Number.isFinite(width) && width > 0 ? width : UI_WIDTH + VIDEO_PREVIEW_WIDTH,
+        Number.isFinite(height) && height > NODE_HEIGHT - UI_HEIGHT ? height : NODE_HEIGHT,
+      ];
+      createUI.call(this, true);
+      ui = this._minimaxH3PrompterUI;
+      // Mounting a DOM widget may request a default minimum; restore the saved
+      // size before the first paint. Missing legacy preview flags never add width.
+      if (this.size[0] !== this._h3RestoredSize[0] || this.size[1] !== this._h3RestoredSize[1])
+        this.setSize([...this._h3RestoredSize]);
+      if (!this.inputs?.some(input => input.name === "prompter_camera")) this.addInput("prompter_camera", "MINIMAX_H3_CAMERA");
+      const widget = this.widgets?.find(item => item.name === "project_data");
+      const saved = restoredProject(info?.widgets_values_named?.project_data ?? widget?.value);
+      hideWidget(widget);
+      this._h3InvalidProject = saved === null;
+      this._h3OutputRecovery = false;
+      if (saved) ui?.load(saved);
+      const finish = () => {
+        if (this._h3Disposed || ui?._disposed || this._h3RestoreEpoch !== epoch) return;
+        // Graph-completion hook normally runs first. The fallback also supports
+        // standalone configure/paste, without assuming zero-delay timer order.
+        if (app.configuringGraph) {
+          this._h3ConfigureTimer = setTimeout(finish, 25);
+          return;
+        }
+        clearTimeout(this._h3CameraConnectionTimer);
+        if (ui) ui.cameraInputStamp = `${ui.cameraConnected()}:${JSON.stringify(ui.cameraScene())}`;
+        // All source nodes and links are now available. Refresh duration and
+        // reference cards while writes/output mutation are still guarded.
+        ui?.render();
+        ui?.openVideoPreview(false);
+        this._h3Restoring = false;
+        this._h3FinishRestore = null;
+        this._h3PreserveRestoredOutputs = true;
+        try { ui?.syncReferenceOutputs(); }
+        finally { this._h3PreserveRestoredOutputs = false; }
+        ui?.scheduleCameraLayout();
+        if (!saved) ui?.appendLog("Saved project data could not be read; existing settings and connections were preserved.", "restore-project", "warning");
         this._widgetSlotsDirty = true;
         this.setDirtyCanvas?.(true, true);
-      }, 0);
+      };
+      this._h3FinishRestore = finish;
+      this._h3ConfigureTimer = setTimeout(finish, 0);
+    };
+
+    const originalGraphConfigured = nodeType.prototype.onAfterGraphConfigured;
+    nodeType.prototype.onAfterGraphConfigured = function () {
+      originalGraphConfigured?.apply(this, arguments);
+      if (!this._h3FinishRestore || this._h3Disposed) return;
+      clearTimeout(this._h3ConfigureTimer);
+      this._h3ConfigureTimer = setTimeout(this._h3FinishRestore, 0);
     };
 
     const originalExecuted = nodeType.prototype.onExecuted;
@@ -3360,8 +3760,27 @@ app.registerExtension({
       this._minimaxH3PrompterUI?.showAutoRunPrompt(message?.auto_run_prompt);
     };
 
+    const originalConnections = nodeType.prototype.onConnectionsChange;
+    nodeType.prototype.onConnectionsChange = function () {
+      originalConnections?.apply(this, arguments);
+      if (arguments[0] !== 1 || this.inputs?.[arguments[1]]?.name !== "prompter_camera") return;
+      if (this._h3Disposed || this._h3Restoring || app.configuringGraph) return;
+      // Link endpoints are finalized after LiteGraph's connection callback.
+      clearTimeout(this._h3CameraConnectionTimer);
+      const epoch = this._h3RestoreEpoch;
+      this._h3CameraConnectionTimer = setTimeout(() => {
+        if (!this._h3Disposed && !this._h3Restoring && epoch === this._h3RestoreEpoch)
+          this._minimaxH3PrompterUI?.externalCameraChanged();
+      }, 0);
+    };
+
     const originalRemoved = nodeType.prototype.onRemoved;
     nodeType.prototype.onRemoved = function () {
+      this._h3Disposed = true;
+      this._h3RestoreEpoch = (this._h3RestoreEpoch || 0) + 1;
+      this._h3FinishRestore = null;
+      clearTimeout(this._h3ConfigureTimer);
+      clearTimeout(this._h3CameraConnectionTimer);
       clearTimeout(this._minimaxH3PrompterUI?.compileTimer);
       this._minimaxH3PrompterUI?.compileController?.abort();
       this._minimaxH3PrompterUI?.enhanceController?.abort();

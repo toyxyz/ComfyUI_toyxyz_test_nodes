@@ -9,6 +9,8 @@ https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8536e96a-514a
 
 Update 
 
+2026/09/14 Add minimax h3 camera node
+
 2026/08/25 Add Minimax-H3-prompter node
 
 2026/04/18 Add Draw area mask, ComfyCouple Region multi, Crop area mask node
@@ -162,6 +164,9 @@ preview sequence; it is not automatically added as a video reference.
 ## minimax h3 camera
 
 A 3D camera/keyframe editor for reference videos and procedural camera prompts.
+
+<img width="2265" height="1498" alt="image" src="https://github.com/user-attachments/assets/07571bc7-ff03-46b8-af33-2d5e3c7dfa9e" />
+
 
 - **Translate / Rotate / Scale**, **World / Local**: edit the selected camera or
   subject. Middle-mouse drag pans the editor; **Camera view** toggles the output preview.

@@ -55,7 +55,10 @@ Update
 
 ### image prompter
 
-Turns Korean or English requests into English image prompts using local Qwen. Optionally connect an image reference and an `image prompter preset` node.
+<img width="1995" height="1461" alt="image" src="https://github.com/user-attachments/assets/48f93f03-23c9-4371-9d16-aefce5c35c08" />
+
+
+Turns requests into English image prompts using local Qwen. Optionally connect an image reference and an `image prompter preset` node.
 
 1. Enter your request in `prompt`.
 2. Optionally connect `image` and/or `preset`.
@@ -97,7 +100,6 @@ Supplies optional shot, angle, and style guidance to `image prompter`. Connect i
 
 Explicit user instructions override presets. Camera settings guide framing, not the subject's pose, clothing, or background. Selected styles guide the whole image unless the user specifies otherwise. Exact framing and style fidelity depend on the image model.
 
-After updating, restart ComfyUI and hard-refresh the browser. Existing preset selections are preserved. Replace the removed 3D `image camera` node with this preset node. For old API workflows, rename the prompter input `camera` to `preset` and supply `style_category: "All"` on the preset node.
 
 Default workflow
 ![workflow (36)](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/7a8644d2-59f9-4ed5-a32a-82c75cdb0997)

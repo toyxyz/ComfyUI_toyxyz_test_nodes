@@ -18,6 +18,7 @@ LOG = logging.getLogger(__name__)
 def scene_render_signature(scene):
     render_scene = normalize_scene(scene)
     render_scene.pop("use_camera_prompt", None)  # Prompt routing does not change pixels.
+    render_scene.pop("tracking", None)  # Prompt reference frame; proxy geometry is unchanged.
     render_scene.pop("refvid", None)  # Reference routing does not change the preview/render.
     render_scene["_renderer_version"] = "sphere-grid-white-face-t-opaque-floor-v3"
     if render_scene.get("show_grid", True):
@@ -97,6 +98,7 @@ def normalize_scene(value):
     out["frames"] = align_frame_count(out["requested_duration"])
     out["fps"] = 24
     out["use_camera_prompt"] = value.get("use_camera_prompt", True) is True
+    out["tracking"] = value.get("tracking") if value.get("tracking") in ("auto", "follow", "world") else "auto"
     out["refvid"] = value.get("refvid", True) is True
     out["show_grid"] = value.get("show_grid", True) is True
     out["show_background_grid"] = value.get("show_background_grid", True) is True
@@ -490,6 +492,11 @@ def camera_prompt(scene):
     orbit_spans = orbit_prompt_spans(scene, times, states, left_states)
     opening = camera_view(states[0], w/h)
     lines = [f"[Shot 1] The camera opens on {opening}."]
+    lines.append({
+        'auto': 'Tracking reference: Auto; resolve from explicit user instructions, without inventing subject travel.',
+        'follow': 'Tracking reference for all connected Moves: follow the selected target throughout each take, translating with its user-described travel WHILE performing the following compatible orbit, approach and height changes relative to it. A held relative camera pose continues following; never invent target locomotion.',
+        'world': 'Tracking reference for all connected Moves: world-relative, without following target translation. Apply the following camera travel in scene space; held camera position stays world-fixed while the subject may move or leave frame.'
+    }[scene.get('tracking', 'auto')] + ' Explicit user camera instructions override this setting. Measured coordinates below are proxy geometry, not a measured real-world target trajectory.')
     def target_description(state):
         camera = state["camera"]
         subject = next((s for s in state["subjects"] if s["id"] == camera["target"]), None)
@@ -603,7 +610,11 @@ def camera_prompt(scene):
         if reversed_axes and mode == "smooth":
             prefix += "smoothly decelerates and reverses only its " + ", ".join(reversed_axes) + "; it "
         if not moving and np.linalg.norm(f1-f0) < .001:
-            sentence = "holds its position, orientation and lens unchanged"
+            sentence = {
+                'follow': 'tracks the target translation continuously, maintaining its relative position, orientation and lens while the target performs the user-requested action',
+                'world': 'holds its world-space position, orientation and lens unchanged unless explicit user camera text overrides this setting',
+                'auto': 'holds its keyed position, orientation and lens in the reference frame resolved from user camera instructions; requested tracking continues with unchanged relative offsets'
+            }[scene.get('tracking', 'auto')]
         else:
             sentence = path[0] if len(path) == 1 else ", ".join(path[:-1]) + ", and " + path[-1]
         endpoint = camera_view(b, w/h)
@@ -640,7 +651,7 @@ def camera_prompt(scene):
     if has_travel:
         lines.append("Within each Shot, preserve the described continuous camera travel and timed stationary intervals; only the explicitly marked Hold cuts start a new Shot.")
     else:
-        lines.append("Each Shot holds its own camera state; only the explicitly marked Hold cuts change the view instantaneously. Do not add camera travel between or within these held views.")
+        lines.append("Each Shot holds its keyed camera offsets in the resolved tracking reference frame; only explicitly marked Hold cuts change those offsets instantaneously. A held offset does not cancel Follow target or explicit user tracking; world-relative holds keep the camera in place. Explicit user camera text overrides this default throughout the take.")
     return " ".join(lines)
 
 

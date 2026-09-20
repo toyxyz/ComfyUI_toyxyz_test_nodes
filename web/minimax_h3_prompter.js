@@ -143,6 +143,7 @@ function normalizeAdvancedCamera(value) {
   let shot_size=Object.hasOwn(ADVANCED_CAMERA_SHOTS,raw.shot_size)?raw.shot_size:"full_shot";
   return {
     shot_size,
+    tracking: ["inherit", "auto", "follow", "world"].includes(raw.tracking) ? raw.tracking : "inherit",
     viewpoint: Object.hasOwn(ADVANCED_VIEWPOINTS, raw.viewpoint) ? raw.viewpoint : "external",
     subject_framing: Object.hasOwn(ADVANCED_SUBJECT_FRAMING, raw.subject_framing) ? raw.subject_framing : "auto",
     camera_level: Object.hasOwn(ADVANCED_CAMERA_LEVELS, raw.camera_level) ? raw.camera_level : "auto",
@@ -1095,6 +1096,7 @@ class PrompterUI {
             <label class="mmh3p-camera-control"><span>Shot size</span><select data-advanced-camera="shot_size"></select></label>
             <label class="mmh3p-camera-control"><span>Shot viewpoint</span><select data-advanced-camera="viewpoint"></select></label>
             <label class="mmh3p-camera-control"><span>Subject framing</span><select data-advanced-camera="subject_framing"></select></label>
+            <label class="mmh3p-camera-control" title="Prompt reference frame only; preview remains proxy geometry. User text overrides. Moves inherit within a Shot."><span>Tracking</span><select data-advanced-camera="tracking"></select></label>
             <label class="mmh3p-camera-control"><span>Camera level</span><select data-advanced-camera="camera_level"></select></label>
             <label class="mmh3p-camera-control" title="Left/right are camera-based. 45–135° specify a destination from the front axis; 180°/360° continue from the previous direction in a Move."><span>Direction</span><select data-advanced-camera="direction"></select></label>
             <label class="mmh3p-camera-control"><span>Angle</span><select data-advanced-camera="angle"></select></label>
@@ -1226,6 +1228,7 @@ class PrompterUI {
     fillAdvancedCamera("viewpoint", ADVANCED_VIEWPOINTS);
     fillAdvancedCamera("subject_framing", ADVANCED_SUBJECT_FRAMING);
     fillAdvancedCamera("camera_level", ADVANCED_CAMERA_LEVELS);
+    fillAdvancedCamera("tracking", {inherit:"Inherit (Shot: Auto)",auto:"Auto",follow:"Follow target",world:"World-relative"});
     fillAdvancedCamera("motion", CAMERA_MOTION_PRESETS);
     fillAdvancedCamera("amplitude", ADVANCED_AMPLITUDES);
     fillAdvancedCamera("speed", ADVANCED_SPEEDS);

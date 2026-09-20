@@ -181,6 +181,7 @@ export class H3SceneEditor {
         const promptToggle=this.button(this.config,"Use camera prompt","Send procedural camera motion to the connected prompter when enabled. Explicit user instructions take priority. Camera render and the separate camera_prompt output are unchanged.",()=>{
             this.remember();this.data.use_camera_prompt=!this.data.use_camera_prompt;this.commit();
         });
+        this.select(this.config, [["auto","Tracking: Auto"],["follow","Tracking: Follow target"],["world","Tracking: World-relative"]], this.data.tracking || "auto", "Prompt reference frame for the whole take. User text overrides. Follow uses the selected target; it does not invent locomotion. Proxy preview is unchanged.", v=>{this.remember();this.data.tracking=v;this.commit();});
         promptToggle.classList.toggle("active",this.data.use_camera_prompt);
         promptToggle.setAttribute("aria-pressed",String(this.data.use_camera_prompt));
         const refvidToggle=this.button(this.config,"refvid","Send the 3D render as a video reference to the connected prompter. Off sends only camera text when Use camera prompt is enabled. Local previews and the separate camera_render output are unchanged.",()=>{

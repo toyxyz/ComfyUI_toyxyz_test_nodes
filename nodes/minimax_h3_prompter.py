@@ -1173,9 +1173,10 @@ _USER_CAMERA_PRIORITY = (
     "An explicit camera translation describes rig travel, not lens aim: never reverse that travel and compensate with a tilt to claim compliance. "
     "A user-specified target requires path adaptation, not a name substitution: revise distance, height, aim and coverage for its evidenced location, size and motion. Discard incompatible proxy-derived travel; retain unrelated compatible settings. "
     "Following Moves start at that actual endpoint: carry forward the resolved target, lens height and aim, not discarded proxy values. "
+    "Continue user travel/tracking across Moves unless overridden. Panel holds never cancel tracking. Combine relative camera moves with tracking; their completion never stops travel. Distinguish world-fixed from target-relative framing. Show supported environmental displacement; invent no stops, mounts, speeds or routes. "
     "Do not invent target coordinates or vertical travel without evidence; use continuous reframing onto the named target when its spatial location is unknown. Track a moving target without freezing or turning the subject to simulate camera travel. "
     "For external views with Auto level and no target, CU/BCU defaults to face and ECU to eyes; never override explicit height/tilt. "
-    "Write the resolved camera instruction once as natural prose in its interval, naming the actual target; never output internal markers, duplicate panel paths, or unresolved 'requested target'. "
+    "Write resolved camera prose once per interval, naming its target; omit internal markers, duplicate paths and unresolved 'requested target'. "
     "A disabled item holds only without user camera intent; after overrides, hold the resolved state, not the proxy. "
     "Apply global intent in scope and item-specific instructions locally. Preserve timing, image anchors and continuity unless explicitly changed; do not invent a solution to contradictory user constraints. Quoted dialogue is not a camera command."
 )
@@ -1285,6 +1286,7 @@ def _normalize_advanced_camera(value):
         ("viewpoint", _ADVANCED_VIEWPOINTS, "external"),
         ("subject_framing", _ADVANCED_SUBJECT_FRAMING, "auto"),
         ("camera_level", _ADVANCED_CAMERA_LEVELS, "auto"),
+        ("tracking", ("inherit", "auto", "follow", "world"), "inherit"),
         ("composition", _ADVANCED_COMPOSITIONS, "center"),
         ("orbit_route", ("shortest", "left", "right"), "shortest"))}
     # Removed body_framing and look_at are discarded; retain shot, direction and angle.
@@ -1790,20 +1792,37 @@ def _advanced_camera_combination_text(config, previous=None):
 def _advanced_camera_timeline_text(specs):
     """Supply connected procedural paths as editable defaults, without assembly markers."""
     blocks = []
+    take_requests = []
+    tracking = 'auto'
     for spec in specs:
+        if not spec['move']:
+            take_requests = []
+            tracking = 'auto'
         config = spec['config']
         block = (f"[Shot {spec['shot']}]" + (f" Move {spec['move']}" if spec['move'] else " opening")
                  + f"\ninterval: {format_timestamp(spec['start'])}-{format_timestamp(spec['end'])}")
         if not spec.get('enabled', True):
-            block += "\ncamera: disabled; hold the actual preceding camera state unless user text requests otherwise"
+            block += "\ncamera: panel guidance disabled; no panel framing, travel or stop instruction. Follow user camera intent and continue the resolved take."
         else:
+            if config.get('tracking', 'inherit') != 'inherit':
+                tracking = config['tracking']
+            block += '\ntracking_reference: ' + {
+                'auto': 'Auto: resolve from user text; do not invent target translation or tracking.',
+                'follow': 'Follow target throughout this interval and inherited Moves: translate with its user-described movement WHILE performing the compatible relative camera route. A held relative pose still follows. Never invent subject movement.',
+                'world': 'World-relative throughout this interval and inherited Moves: do not translate with the target. Execute the camera route in scene space; absent route travel, the camera stays fixed while the subject may move or exit frame.'
+            }[tracking] + ' Explicit user camera instructions override this setting. Preview remains proxy geometry, not inferred real target travel.'
             settings = {key: config[key] for key in ('shot_size','direction','angle','roll','orbit_route','composition','viewpoint','subject_framing','camera_level')}
             settings['motion'] = config['motion'] if spec.get('motion_active') else 'none'
             for key in ('amplitude', 'speed'):
                 if config[key] != 'auto':
                     settings[key] = config[key]
             block += "\npanel_defaults: " + json.dumps(settings, ensure_ascii=False)
-        block += "\nprocedural_camera_path: " + spec['sentence']
+        if spec.get('enabled', True):
+            block += "\nprocedural_camera_path: " + spec['sentence']
+            if tracking == 'follow':
+                block += '\nresolved_tracking_path: Execute this entire path WHILE translating with the selected moving target, including across this Move. Any easing to rest applies only to the relative orbit/approach, never to continuing tracking. User text overrides.'
+            elif tracking == 'world':
+                block += '\nresolved_tracking_path: Do not follow target translation in this interval. The above path is scene-relative; keep its travel but allow target screen position and framing to change instead of recentering. User text overrides.'
         if spec.get('enabled', True):
             previous = specs[len(blocks)-1]['config'] if spec['move'] and blocks else None
             combination = _advanced_camera_combination_text(config, previous)
@@ -1811,14 +1830,20 @@ def _advanced_camera_timeline_text(specs):
                 block += "\ncombination_path_adaptation: " + combination
             if any('best-fit' in d for d in spec.get('diagnostics', [])):
                 block += "\nresolved_angle: The procedural route uses a best-fit angle. Describe that angle consistently; an oblique downward view is not overhead/top-down. Do not repeat the conflicting angle label from panel_defaults unless explicit user text overrides the route."
-        if spec.get('travel_components'):
+        if spec.get('enabled', True) and spec.get('travel_components'):
             block += "\nrequired_travel_components (apply target adaptation first; retain compatible components only): " + " | ".join(spec['travel_components'])
-        if spec.get('reversal_axes'):
+        if spec.get('enabled', True) and spec.get('reversal_axes'):
             block += "\nrequired_boundary_transition: decelerate " + ', '.join(spec['reversal_axes']) + " to zero at the shared position, then reverse without a cut or held pause; keep other compatible axes continuous"
         if spec['move']:
             block += "\nconnection: start at the preceding resolved endpoint; preserve the continuous path after any user-directed target or route change"
+            if take_requests:
+                block += "\npreceding_user_requests_in_this_take: " + json.dumps(take_requests, ensure_ascii=False)
+            block += ("\naction_continuity: carry ongoing user actions and tracking into this interval; do not replay completed events. "
+                      "Local user changes override only affected components. Combine compatible panel travel with ongoing tracking "
+                      "relative to the moving target; never replace tracking with that travel or stop the subject to fit the proxy.")
         if spec.get('user_request'):
             block += "\nlocal_user_request (overrides conflicting path components and dependent aim/height/crop; preserve all other travel): " + spec['user_request']
+            take_requests.append(spec['user_request'])
         blocks.append(block)
     shared = _advanced_camera_shared_rules(specs)
     return "\n\n".join(([shared] if shared else []) + blocks)
@@ -5364,6 +5389,7 @@ def _frame_continuity_plan(project: dict[str, Any], effective_seconds: float,
     lines = [
         "FRAME_CONTINUITY_PLAN:",
         "role_separation: Shot starts a new camera take; Move is a timed event inside that take; Picture is an exact visual state the take passes through at one output frame",
+        "action_phase: first, intermediate and last Pictures are instants within the user's action, not holds. Carry ongoing action through each anchor without stopping, restarting or resetting speed; only explicit user phase changes introduce starts/stops. A frame timestamp does not start a new action interval.",
         "prose_structure: organize detailed_description primarily as chronological frame-to-frame From-to bridges; weave overlapping Move actions and camera instructions into those bridges without turning a Move boundary into a paragraph reset, completed scene, or cut",
         "camera_contract: declare the Shot's single camera/lens/path once, then mention camera behavior again only when an overlapping Move physically changes it",
         "identity_contract: infer the smallest useful set of recurring Subjects visible across two or more Picture anchors and use those Subject labels to bind identity, persistent objects, and the shared environment across the full take",
@@ -5442,6 +5468,7 @@ def _qwen_shot_plan(project: dict[str, Any], effective_seconds: float,
         number = int(anchor.get("shot", 1))
         frame_counts[number] = frame_counts.get(number, 0) + 1
     frame_driven_shots = {number for number, count in frame_counts.items() if count >= 2}
+    preceding_requests = []
     for item_index, shot in enumerate(project["shots"]):
         is_move = _is_move(shot)
         if is_move:
@@ -5449,6 +5476,7 @@ def _qwen_shot_plan(project: dict[str, Any], effective_seconds: float,
         else:
             shot_number += 1
             move_number = 0
+            preceding_requests = []
         shot_seconds = float(shot["duration"]) * scale
         end = cursor + shot_seconds
         label = f"[Move {move_number} within Shot {shot_number}]" if is_move else f"[Shot {shot_number}]"
@@ -5461,6 +5489,8 @@ def _qwen_shot_plan(project: dict[str, Any], effective_seconds: float,
                          else "type: continuous in-shot beat; never a new shot or cut")
             if has_route:
                 lines.append(f"timing_scope: actor action only; apply {route_plan} under its selected reference role, without retiming or restarting the source camera at this action boundary")
+                lines.append("preceding_user_requests_in_this_take: " + json.dumps(preceding_requests, ensure_ascii=False))
+                lines.append("continuity: continue ongoing user action and tracking; do not replay completed events. Local changes replace only affected actions. Inherit ALL preceding user camera constraints, including a world-fixed camera or disabled tracking, until explicitly changed; a new action does not restore an overridden procedural route. Compose compatible source camera travel relative to the moving target when tracking is requested; a Move does not stop travel.")
             elif shot_number in frame_driven_shots:
                 lines.extend((
                     f"internal_timing: {cursor:.3f}-{end:.3f} seconds",
@@ -5481,8 +5511,11 @@ def _qwen_shot_plan(project: dict[str, Any], effective_seconds: float,
         action = _replace_aliases(shot["visual_action"], aliases)
         if action:
             lines.append(f"visual_action: {action}")
+            preceding_requests.append(action)
             if not is_move:
                 lines.append("action_contract: preserve every explicit action above in the same order; omit none")
+                if project['mode'] in ('I2VA','FL2VA','L2VA'):
+                    lines.append("frame_action_timing: perform this Shot's requested action within this interval, not after the next Move begins. Combine anchored appearance with its requested action phase in the opening sentence. An ongoing action is already underway; an explicit start happens here unless timed otherwise; rest stays rest. An image does not insert a static prelude.")
                 lines.append(
                     "semantic_lock: translate faithfully; preserve every explicitly named actor, body part, "
                     "object, quantity, direction, simultaneity, and physical action verb"
@@ -5493,9 +5526,10 @@ def _qwen_shot_plan(project: dict[str, Any], effective_seconds: float,
                 )
         if project["mode"] == "FL2VA" and item_index == len(project["shots"]) - 1:
             lines.extend((
-                "opening_state: continue the incomplete transition from the preceding shot; do not reveal the completed Picture 2",
+                "opening_state: continue the preceding action and visual path without reset; reach Picture 2 only at its assigned final instant, not at this interval's start",
                 "entity_continuity: an entering entity that matches Picture 2 is the same final-frame entity; do not rename or duplicate it",
                 f"required_end_state: exact whole-frame match to Picture 2 at {effective_seconds:.2f} seconds",
+                "endpoint_motion: matching Picture 2 does not imply rest; continue or stop according to user action, not because the reference is a still image",
             ))
         blocks.append("\n".join(lines))
         cursor = end
@@ -5505,7 +5539,7 @@ def _qwen_shot_plan(project: dict[str, Any], effective_seconds: float,
         "- A Shot creates a numbered header; a Move creates no header or cut.\n"
         "- Moves are consecutive beats of the owning Shot's single take. When FRAME_CONTINUITY_PLAN exists, "
         "Picture-to-Picture bridges control the prose and Move ranges stay internal; otherwise copy each range cue. "
-        "Inherit the preceding state, name only needed physical camera travel, and keep an unchanged camera locked.\n\n"
+        "Inherit preceding action and tracking, name only needed physical camera travel, and keep unchanged camera parameters locked in the resolved reference frame, not necessarily world space.\n\n"
         if has_moves else
         "TIMELINE_RULES:\n"
         "- Preserve every explicit action, actor, body part, object, direction, simultaneity, and verb in order.\n"
@@ -5635,7 +5669,7 @@ def _connected_camera_motion_context(project):
             "Explicit user instructions in TARGET_REQUEST, SHOT_PLAN and CONSTRAINTS take priority; adapt dependent aim, framing and travel together. "
             "Apply compatible timed movements and destination views to the target output. Proxy names/colors are planning identifiers, "
             "not reference Subject IDs or requested appearances; resolve targets from the user request and actual references. "
-            "Preserve stated stationary intervals and instantaneous Hold cuts unless overridden by the user.\n"
+            "Preserve camera-only stationary intervals and instantaneous Hold cuts unless overridden by the user; these never freeze subject action or cancel requested tracking.\n"
             + route.strip()
         )
     return (
@@ -5645,7 +5679,7 @@ def _connected_camera_motion_context(project):
         "Use compatible measured camera behavior, not visual-analysis guesses. Video analysis supplies object identification and sampled screen layout only. "
         "Proxy names and Shot numbers are source-local, not target Subject IDs. For continuation the route is source history, not a command to replay it.\n"
         + ("OUTPUT_SHOT_SCHEDULE maps the measured Hold cuts to output Shot numbers without changing the user's editor action items. "
-           "Keep any interval described as unchanged stationary. A marked Hold cut is instantaneous; never replace it with a connecting arc.\n"
+           "Unchanged camera intervals hold only in the resolved camera reference frame, never freezing the subject or overriding user tracking. A marked Hold cut is instantaneous; never replace it with a connecting arc.\n"
            if _has_camera_cuts(project) else
            "These source Shot numbers do not automatically change the user's output Shot/Move timeline.\n")
         + route.strip()
@@ -5760,7 +5794,8 @@ def build_video_prompt(project: dict[str, Any], effective_seconds: float,
         if camera_style:
             shot_preset_lines.append(f"camera_style: {camera_style}")
         for preset_name, choices in CAMERA_PRESET_PROMPTS.items():
-            if project.get("advanced_camera_enabled"):
+            if (project.get("advanced_camera_enabled") or camera_motion
+                    or project.get("_external_camera", {}).get("camera_prompt")):
                 continue
             preset_prompt = choices.get(shot_presets[preset_name], "")
             if preset_prompt:
@@ -5895,8 +5930,9 @@ def build_video_prompt(project: dict[str, Any], effective_seconds: float,
             "ACTION_VISIBILITY_LOCK:\n"
             "A frame anchor is exact at its assigned time. Outside that instant, use one small motivated reframe "
             "only when the opening crop cannot show the requested body movement or interaction. Do not describe "
-            "off-frame foot placement, steps, or contact sounds as visible action. For forward locomotion from a "
-            "close crop, reveal enough of the stride to make locomotion observable."
+            "off-frame contacts as visible action. Make the requested action itself observable through appropriate "
+            "displacement, articulation, contact or state change at the selected crop; sound, sway and camera motion "
+            "alone do not substitute for that action. Do not invent a locomotion mechanism or widen an explicit user crop."
         )
     if project.get("enhance") is True:
         sections.append(_enhanced_output_budget(
@@ -5928,6 +5964,66 @@ def build_video_prompt(project: dict[str, Any], effective_seconds: float,
     return "\n\n".join(sections)
 
 
+_USER_ACTION_PHASE_POLICY = (
+    "\n\nUSER ACTION PHASE: User-specified temporal state overrides generic preparation/onset/final-state staging. "
+    "Distinguish already ongoing, starting, changing speed, stopping and completed actions. "
+    "If already underway, establish that motion in the opening composition sentence and continue it from the first instant; "
+    "do not invent a stationary prelude, launch, acceleration, deceleration or stop. Do not turn ongoing background motion into a transition into motion. "
+    "A still image fixes visible geometry at an instant, not zero velocity. Preserve its appearance/crop while honoring the user's ongoing motion. "
+    "Apply requested starts, speed changes and stops at their stated times; do not impose constant speed when unspecified. "
+    "Carry ongoing actions through Moves unless changed; completed events are not replayed. "
+    "A stable final state or end of camera travel does not require subject rest, and the end of one Shot is not an invented cut. "
+    "Audio must match the resolved phase, not introduce an unrequested action or speed change. "
+    "Write each interval around what the requested actor/object DOES and how it visibly changes; integrate compatible camera travel with that action. "
+    "Appearance supports identification, not a separate static opening inventory. Preserve each actor's semantic role; do not assign an object's action to a nearby person."
+)
+
+
+def _resolve_action_staging_instructions(system_prompt):
+    """Reconcile generic anchor staging with action-first writing before inference."""
+    return system_prompt.replace(
+        "The first sentence of [Shot 1] must establish Picture 1's actual composition, crop, viewpoint, pose, support, environment, and visible object state before describing any new action or camera movement.",
+        "The opening sentence combines Picture 1's actual composition and action-relevant visible state with the user's initial action phase. Preserve the exact anchor without a static descriptive prelude; do not move a later action to the opening.",
+    ).replace(
+        "For I2VA, begin from the complete Picture 1 state before any new action and resolve every held object before the hands perform another task.",
+        "For I2VA, integrate the complete Picture 1 state with the user's opening action phase; resolve held objects before the hands perform another task.",
+    ).replace(
+        "Use minimal motion and never invent a full rotation, orbit, dramatic performance, hybrid identity, duplicated object, or extra limb.",
+        "Minimize only unrequested bridging motion, never the user's requested action. Do not invent a full rotation, orbit, dramatic performance, hybrid identity, duplicated object, or extra limb.",
+    ).replace(
+        "Narrow differences progressively and stabilize on the exact Picture 2 composition only in the final frames.",
+        "Reach the exact Picture 2 composition at its assigned final instant; matching a still frame does not require settling, slowing or stopping an ongoing action.",
+    )
+
+
+_FRAME_ACTION_POLICY = (
+    "\n\nFRAME ACTION INTEGRATION: Image anchors specify appearance, pose, contacts and framing at assigned instants, not a stationary interval or measured velocity. "
+    "Resolve each Shot's opening user action before describing its image. In the opening sentence, describe the anchored subject performing that action in its requested temporal phase, rather than a static inventory followed by motion. "
+    "Already ongoing actions are underway at the first instant; requested starts start then or at their stated time; requested rest stays rest. If motion is unspecified, infer neither rest nor locomotion from a still image alone. "
+    "Interpret temporal aspect in the user's language: Korean dynamic '-고 있다' and '-는 중이다' describe an action already in progress at the applicable interval, not preparation followed by onset. Plain '-한다' alone does not require a start from rest. Distinguish stative descriptions such as sitting or holding from locomotion; preserve negation, explicit later times and requested transitions. "
+    "Keep later Move actions at their own times. Preserve exact anchor geometry without freezing it between frames, and never replace subject action with camera motion or sound. "
+    "This applies equally to first_frame, last_frame and reference role frame: an intermediate Picture is passed through during continuous action, not reached, held and restarted. Preserve its assigned time and geometry without inventing a pause or speed change. "
+    "For FL2VA, both endpoints may be instants within continuing motion; arriving at the final image is not an instruction to stop. For L2VA, the image anchors the end, not the opening. "
+    "Use visual image analysis for observable facts, but do not treat inferred 'parked', 'paused', 'posing' or 'stationary' as overriding explicit user motion. Do not invent a transition just to reconcile that inference."
+    " Background and audio must share the resolved temporal phase: do not add departure, acceleration or a location transformation to explain a still anchor when none was requested. Preserve visible anchor facts without converting uncertain location guesses into a new event."
+)
+
+
+_MOTION_FRAME_POLICY = (
+    "\n\nMOTION REFERENCE FRAMES: Resolve subject action and camera motion independently from explicit user instructions before composing the take. "
+    "Explicit user text overrides Tracking settings; otherwise Follow target explicitly requests tracking and World-relative disables target translation following. Auto adds no tracking requirement. Inherit carries the preceding setting within a take, with Auto at a new Shot. "
+    "A world-fixed camera stays in place while a moving subject changes position within or exits its frame; do not add tracking, recentering or a subject stop to preserve a panel composition. "
+    "A stationary subject stays stationary while a moving camera changes its view. In-place articulation or rotation is not translation. "
+    "When tracking is requested, combine target translation and compatible relative orbit/approach/height travel simultaneously, not as successive alternatives. "
+    "A camera hold stops only the specified camera component in its resolved reference frame, not the subject; a subject stop does not automatically stop independent camera travel. "
+    "Maintain separate action and camera clocks: an action Move boundary never delays, restarts or ends an overlapping camera path. "
+    "Establish any path starting at zero in the opening interval, and carry its remaining travel across later actions until its own endpoint. "
+    "Keep the physical route and timing, but integrate them with ongoing action instead of appending a second camera-only account. "
+    "Use user-specified setting over uncertain reference-location guesses; preserve actual anchored visible geometry without inventing a location change. "
+    "Before output, check each interval for user action, camera reference frame and compatible continuous travel; correct conflicts without inventing cuts or adding explanatory rules to the final prose."
+)
+
+
 def _build_qwen_system_prompt(project, effective_seconds, *, has_analysis=False, reference_model=None):
     """Shared Qwen system assembly for preview and execution; no model calls or mutation."""
     enhance_level = project.get("enhance_level", "normal" if project.get("enhance") else "none")
@@ -5942,6 +6038,16 @@ def _build_qwen_system_prompt(project, effective_seconds, *, has_analysis=False,
         else MODE_LLM_SYSTEM_PROMPTS
     )
     system_prompt = _mode_prompt_preamble(mode) + "\n\n" + active_mode_prompts[mode]
+    # Qualify generic staging before inference, not by repairing generated prose.
+    system_prompt = system_prompt.replace(
+        "preparation, onset, continuous physical execution, secondary motion and material response, immediate reaction, and a stable final state",
+        "the user-specified initial action phase, continuous physical execution, secondary motion and material response, and the requested continuing or completed state",
+    ).replace(
+        "Continue from the actual opening state through action onset, necessary physical development, and a stable result.",
+        "Continue from the actual opening state and user-specified motion phase through necessary physical development; introduce onset only for actions not already underway.",
+    )
+    system_prompt = _resolve_action_staging_instructions(system_prompt)
+    system_prompt += _USER_ACTION_PHASE_POLICY
     if _has_camera_cuts(project):
         # The template's fixed authored-shot lock is inapplicable to a derived
         # camera schedule. Resolve this input-rule conflict before model inference.
@@ -5995,9 +6101,9 @@ def _build_qwen_system_prompt(project, effective_seconds, *, has_analysis=False,
             )
         elif project["mode"] == "I2VA":
             system_prompt += (
-                "\n\nI2VA IMAGE EVIDENCE: The <Picture 1> analysis is the sole evidence for 0.00 seconds. "
+                "\n\nI2VA IMAGE EVIDENCE: The <Picture 1> analysis describes visible appearance and geometry at 0.00 seconds, not velocity or the user's temporal intent. "
                 "Discard demographic guesses, hidden details, and speculation even if present in the analysis. "
-                "The raw action starts after the anchor; never backfill it or an invented source into Picture 1."
+                "Preserve the exact anchor. User-stated ongoing action is already underway at that instant; only newly requested action starts afterward. Never backfill a later result or invent a source object."
             )
         elif project["mode"] == "REF2VA":
             system_prompt += (
@@ -6088,6 +6194,9 @@ def _build_qwen_system_prompt(project, effective_seconds, *, has_analysis=False,
             "proxy-derived front/side views, screen trajectories, percentages and crops. Adapt framing without changing compatible lens travel; "
             "do not turn, move or rescale actors to reproduce an incompatible old projection. Source scenery is observation, "
             "not a preservation instruction. Keep it only within the selected role and compatible user request.\n"
+            "TRACKING COMPOSITION: If the user requests following a moving target, describe the rig translating with it WHILE performing compatible measured orbit, approach and height changes relative to it. "
+            "Do not merely place a subject-motion sentence beside a fixed-center orbit. Carry this combined motion through later action beats unless explicitly changed; completing the relative move does not stop tracking. "
+            "Proxy XYZ and animated aim-height are not the target's real travel. Without a tracking request, do not invent one; explicit world-fixed cameras and user stops win.\n"
             "2. For each compatible movement, retain its exact start/end times, physical connecting path, left/right relative to that movement's "
             "starting view, supplied turn angle, and linear/smooth progression. Retain direction even for the final short arc. "
             "Keep fixed/changing focal length explicit; a constant lens may be stated once for the take. Shorten decoration, not these facts.\n"
@@ -6102,6 +6211,12 @@ def _build_qwen_system_prompt(project, effective_seconds, *, has_analysis=False,
                 "5. For continuation, the source route is history, not a route to replay. Start from CONTINUATION START VIEW when supplied, "
                 "then follow the user's next action/camera request. Do not default to a recentered view. All source constraints remain subordinate to user edits."
             )
+    system_prompt += _MOTION_FRAME_POLICY
+    if mode in ('I2VA', 'FL2VA', 'L2VA') or any(
+        ref.get('type') == 'picture' and ref.get('role') in ('frame', 'first_frame', 'last_frame')
+        for ref in project.get('references', [])
+    ):
+        system_prompt += _FRAME_ACTION_POLICY
     return system_prompt
 
 
@@ -6749,12 +6864,16 @@ class _LlamaServerSession:
             process.wait(timeout=5)
 
     def _chat(self, messages: list[dict[str, Any]], max_tokens: int, temperature: float,
-              top_p: float = 0.9, top_k: int = 40, repeat_penalty: float = 1.05) -> str:
-        payload = json.dumps({
+              top_p: float = 0.9, top_k: int = 40, repeat_penalty: float = 1.05,
+              seed: int | None = None) -> str:
+        parameters = {
             "model": "local-model", "messages": messages, "stream": False,
             "max_tokens": max_tokens, "temperature": temperature,
             "top_p": top_p, "top_k": top_k, "repeat_penalty": repeat_penalty,
-        }).encode("utf-8")
+        }
+        if seed is not None:
+            parameters["seed"] = seed
+        payload = json.dumps(parameters).encode("utf-8")
         request = urllib.request.Request(
             f"{self.base_url}/v1/chat/completions", data=payload,
             headers={"Content-Type": "application/json"}, method="POST",
@@ -6792,7 +6911,7 @@ class _LlamaServerSession:
         return self._chat(messages, max_tokens=700, temperature=0.2)
 
     def analyze_images(self, image_paths: list[str], captions: list[str], prompt: str,
-                       max_tokens: int = 1600) -> str:
+                       max_tokens: int = 1600, seed: int | None = None) -> str:
         if len(image_paths) != len(captions) or not image_paths:
             raise ValueError("Ordered image paths and captions are required for multimodal analysis.")
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
@@ -6804,7 +6923,8 @@ class _LlamaServerSession:
                 {"type": "text", "text": caption},
                 {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{encoded}"}},
             ))
-        return self._chat([{"role": "user", "content": content}], max_tokens=max_tokens, temperature=0.2)
+        sampling = {} if seed is None else {"seed": seed}
+        return self._chat([{"role": "user", "content": content}], max_tokens=max_tokens, temperature=0.2, **sampling)
 
     def chat(self, messages: list[dict[str, Any]], max_tokens: int = 4096,
              temperature: float = 0.0, **sampling) -> str:
@@ -8045,6 +8165,9 @@ def _enhance_project_session(project_data, model_id, image_model_id, progress,
                         "filename": ref["image_filename"],
                         "analysis": analysis,
                     })
+                    if progress:
+                        progress(stage="reference_complete", completed=analysis_index, total=total_assets,
+                                 message=f"Analyzed {analysis_index}/{total_assets} references.")
                 for video_index, ref in enumerate(videos_to_analyze, len(pictures_to_analyze) + 1):
                     check_cancelled()
                     source_start, selected_duration, target_start = _visible_video_selection(
@@ -8094,6 +8217,9 @@ def _enhance_project_session(project_data, model_id, image_model_id, progress,
                         "timeline_start": f"{target_start:.3f}",
                         "frame_count": analyzed["frame_count"],
                     })
+                    if progress:
+                        progress(stage="reference_complete", completed=video_index, total=total_assets,
+                                 message=f"Analyzed {video_index}/{total_assets} references.")
 
             # Never restart the model or repeat completed assets after a failed request.
             # Real backend failures propagate; the task owner releases the session.
@@ -8472,7 +8598,7 @@ def _render_camera_frame(pose, size=1024, height=None):
     return pixels
 
 
-def _render_camera_sequence(project, frame_count, size=None, height=None):
+def _render_camera_sequence(project, frame_count, size=None, height=None, progress_callback=None):
     import numpy as np
     if __package__:
         from .h3_video_memory import allocate_images
@@ -8485,7 +8611,7 @@ def _render_camera_sequence(project, frame_count, size=None, height=None):
     try:
         from comfy.utils import ProgressBar
         from comfy.model_management import throw_exception_if_processing_interrupted
-        progress=ProgressBar(frame_count)
+        progress=ProgressBar(frame_count) if progress_callback is None else None
     except ImportError:
         progress=None
         throw_exception_if_processing_interrupted=lambda:None
@@ -8493,10 +8619,12 @@ def _render_camera_sequence(project, frame_count, size=None, height=None):
         throw_exception_if_processing_interrupted()
         np.divide(_render_camera_frame(pose,width,height),255.,out=array[i])
         if progress:progress.update(1)
+        if progress_callback:progress_callback(i + 1, frame_count)
     return batch
 
 
-def _reference_media_outputs(project: dict[str, Any], target_frame_count: int, prompter_camera=None) -> tuple[Any, ...]:
+def _reference_media_outputs(project: dict[str, Any], target_frame_count: int, prompter_camera=None,
+                             progress_callback=None) -> tuple[Any, ...]:
     pictures = [ref for ref in project.get("references", []) if ref.get("type") == "picture"]
     videos = [ref for ref in project.get("references", []) if ref.get("type") == "video"]
     audios = [ref for ref in project.get("references", []) if ref.get("type") == "audio"]
@@ -8556,7 +8684,7 @@ def _reference_media_outputs(project: dict[str, Any], target_frame_count: int, p
         # A connected camera already owns the rendered frames; do not render a
         # conflicting panel path or allocate a second image sequence.
         outputs.append((prompter_camera.get("images") if prompter_camera.get("refvid", True) else blank.clone()) if prompter_camera is not None
-                       else _render_camera_sequence(project, target_frame_count))
+                       else _render_camera_sequence(project, target_frame_count, progress_callback=progress_callback))
     total_media_outputs = MAX_REF_IMAGES + MAX_REF_VIDEOS + MAX_REF_AUDIOS + 3
     outputs.extend(blank.clone() for _ in range(total_media_outputs - len(outputs)))
     return tuple(outputs)
@@ -8568,6 +8696,45 @@ class _FlexibleOutputType(str):
 
 
 FLEXIBLE_MEDIA_TYPE = _FlexibleOutputType("*")
+
+
+class _QueuePromptProgress:
+    """ComfyUI queue-only stage progress, not elapsed-time or token percentages.
+
+    Do not use from the standalone HTTP Generate action: that task has no queue
+    execution context and must not update another node's native progress bar.
+    """
+    def __init__(self):
+        try:
+            from comfy.utils import ProgressBar
+        except ImportError:
+            self.bar = None  # Pure compiler/test usage outside ComfyUI.
+        else:
+            self.bar = ProgressBar(100)
+        self.value = 0
+        self.advance(1)
+
+    def advance(self, value):
+        value = min(100, max(self.value, int(value)))
+        if value > self.value:
+            self.value = value
+            if self.bar is not None:
+                self.bar.update_absolute(value)
+
+    def __call__(self, *, stage, **event):
+        stages = {"compiling": 3, "downloading": 5, "model_ready": 10,
+                  "image_model_ready": 10, "reference_analysis": 20,
+                  "context_usage": 70, "generating": 75,
+                  "generation_metrics": 88, "complete": 90}
+        if stage == "reference_complete":
+            total = max(1, int(event.get("total", 1)))
+            completed = min(total, max(0, int(event.get("completed", 0))))
+            self.advance(20 + 50 * completed / total)
+        else:
+            self.advance(stages.get(stage, self.value))
+
+    def render(self, completed, total):
+        self.advance(95 + 4 * min(1, max(0, completed / max(1, total))))
 
 
 class MinimaxH3Prompter:
@@ -8628,21 +8795,29 @@ class MinimaxH3Prompter:
         if prompter_camera is not None and not enhanced_prompt:
             auto_run = True
             print("[INFO] Prompter Camera: generating a fresh prompt for the connected camera bundle.")
+        queue_progress = None
         if auto_run:
             if result["errors"]:
                 raise ValueError("Fix project validation errors before Auto Run can generate the prompt.")
+            queue_progress = _QueuePromptProgress()
             enhanced = enhance_project(
                 project_data,
                 result["project"].get("enhance_model") or DEFAULT_ENHANCE_MODEL_ID,
                 result["project"].get("image_model") or DEFAULT_IMAGE_MODEL_ID,
+                progress=queue_progress,
                 camera_images=prompter_camera.get("images") if prompter_camera is not None and prompter_camera.get("refvid", True) else None,
             )
             enhanced_prompt = enhanced["enhanced_prompt"]
+        if queue_progress:
+            queue_progress.advance(95)
         outputs = (
             enhanced_prompt,
             result["effective_frames"],
-            *_reference_media_outputs(result["project"], result["effective_frames"], prompter_camera),
+            *_reference_media_outputs(result["project"], result["effective_frames"], prompter_camera,
+                                      **({"progress_callback": queue_progress.render} if queue_progress else {})),
         )
+        if queue_progress:
+            queue_progress.advance(100)
         if auto_run:
             return {
                 "ui": {"auto_run_prompt": [enhanced_prompt], "prompter_camera_signature": [result["project"].get("_external_camera", {}).get("signature", "")]},

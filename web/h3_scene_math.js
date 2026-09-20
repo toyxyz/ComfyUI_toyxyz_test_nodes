@@ -44,6 +44,7 @@ export function normalizeScene(raw) {
     out.frames=alignedFrameCount(out.requested_duration);out.fps=24;
     out.megapixels = num(raw.megapixels, .1, .01, 4);
     out.use_camera_prompt = raw.use_camera_prompt === undefined || raw.use_camera_prompt === true;
+    out.tracking = ["auto", "follow", "world"].includes(raw.tracking) ? raw.tracking : "auto";
     out.refvid = raw.refvid === undefined || raw.refvid === true;
     out.show_grid = raw.show_grid === undefined || raw.show_grid === true;
     out.show_background_grid = raw.show_background_grid === undefined || raw.show_background_grid === true;

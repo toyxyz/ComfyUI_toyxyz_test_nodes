@@ -7,6 +7,8 @@ from .nodes.draw_area_mask import DrawAreaMask
 from .nodes.toyxyz_test_nodes import CaptureWebcam, LoadWebcamImage, LoadImageFromPath, SaveImagetoPath, LatentDelay, ImageResize_Padding, Direct_screenCap, Depth_to_normal, Remove_noise, Export_glb, Load_Random_Text_From_File
 from .nodes.visual_area_mask import VisualAreaMask
 from .nodes.minimax_h3_prompter import MinimaxH3Prompter
+from .nodes.image_prompter import ImagePrompter
+from .nodes.image_camera_presets import ImageCameraPresets
 from .nodes.minimax_h3_frames import MiniMaxH3AddGuideFrames
 from .nodes.minimax_h3_camera import MinimaxH3Camera
 from .nodes.cut_video import CutVideo
@@ -28,6 +30,8 @@ NODE_CLASS_MAPPINGS = {
     "DrawAreaMask": DrawAreaMask,
     "VisualAreaMask": VisualAreaMask,
     "MinimaxH3Prompter": MinimaxH3Prompter,
+    "ToyxyzImagePrompter": ImagePrompter,
+    "ToyxyzImageCameraPresets": ImageCameraPresets,
     "MinimaxH3Camera": MinimaxH3Camera,
     "MiniMaxH3AddGuideFrames": MiniMaxH3AddGuideFrames,
     "CutVideo": CutVideo,
@@ -65,6 +69,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "DrawAreaMask": "Draw area mask",
     "VisualAreaMask": "Visual Area Mask",
     "MinimaxH3Prompter": "Minimax-H3-prompter",
+    "ToyxyzImagePrompter": "image prompter",
+    "ToyxyzImageCameraPresets": "image prompter preset",
     "MinimaxH3Camera": "minimax h3 camera",
     "MiniMaxH3AddGuideFrames": "Add Guide for MiniMax H3 frames",
     "CutVideo": "Cut Video",

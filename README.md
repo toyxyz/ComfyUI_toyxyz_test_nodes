@@ -53,54 +53,6 @@ Update
 
 ## Usage
 
-### image prompter
-
-<img width="1995" height="1461" alt="image" src="https://github.com/user-attachments/assets/48f93f03-23c9-4371-9d16-aefce5c35c08" />
-
-
-Turns requests into English image prompts using local Qwen. Optionally connect an image reference and an `image prompter preset` node.
-
-1. Enter your request in `prompt`.
-2. Optionally connect `image` and/or `preset`.
-3. Run the workflow, then use the `prompt` output with a text encoder or text display.
-
-**Controls**
-
-- `llm_model`: shows the supported Qwen model and installation status.
-- `seed`: controls prompt variation, not the image generator's seed. Use `fixed` for repeatable tests.
-- `prompt_type`: `normal` writes natural-language prompts.
-- `enhance`: `none` for standard expansion, `normal` for more detail, `strong` for richer descriptions. Unspecified details may be developed; explicit user instructions take priority.
-
-With an image reference, Qwen analyzes it first, then applies your request. Specify which subjects or style to reuse, and use “only change…” or “keep… unchanged” to preserve other details. Only the first image in a batch is used.
-
-**Editing the output**
-
-The generated prompt appears at the bottom of the node.
-
-- **Edit Prompt**: enter an instruction and click **OK** to revise the current output with Qwen.
-- **Undo**: restore the prompt before the last edit.
-- **Regenerate from inputs**: clear the edited output, then run the workflow to generate from the inputs again.
-
-An edited output remains active even if you change the inputs. These buttons do not start image generation. Unchanged inputs may use cached results; change the seed for a new variation.
-
-**Setup:** uses the shared H3 Qwen/llama.cpp runtime. Existing weights are reused; missing model weights download on first use (about 16.8 GB for the language model, plus vision weights when needed).
-
-### image prompter preset
-
-Supplies optional shot, angle, and style guidance to `image prompter`. Connect its `preset` output to the prompter's `preset` input. Use `preset_prompt` to inspect the preset text.
-
-| Control | Purpose |
-| --- | --- |
-| `shot_size` | Extreme wide, wide, full body, cowboy, medium, medium close-up, close-up, or extreme close-up. |
-| `angle` | Front/side/rear, high/low, overhead, drone/aerial, Dutch, over-the-shoulder, POV, or isometric views. |
-| `style_category` | Filter styles by category; `All` shows all 55. This filter adds no prompt instructions. |
-| `style` | Choose a rendering style. Categories include Photorealistic, Cinematic, Illustration, Painting, 3D Rendering, Craft & Materials, Print & Experimental, Film & Color Grading, and Mixed Media. |
-
-`None` leaves that setting to the user prompt. To use style alone, set both `shot_size` and `angle` to `None`. Switching categories resets an incompatible style to `None`.
-
-Explicit user instructions override presets. Camera settings guide framing, not the subject's pose, clothing, or background. Selected styles guide the whole image unless the user specifies otherwise. Exact framing and style fidelity depend on the image model.
-
-
 Default workflow
 ![workflow (36)](https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/7a8644d2-59f9-4ed5-a32a-82c75cdb0997)
 (Workflow embedded)
@@ -275,6 +227,54 @@ joined in the same order; when only one input contains audio, silence is inserte
 video so synchronization is preserved. Set `smooth_transition` above `0` to overlap that many ending
 frames of `video_1` with the opening frames of `video_2`. During the overlap, video and audio from
 `video_1` fade from 100% to 0% while `video_2` fades in. A value of `0` performs a direct join.
+
+### image prompter
+
+<img width="1995" height="1461" alt="image" src="https://github.com/user-attachments/assets/48f93f03-23c9-4371-9d16-aefce5c35c08" />
+
+
+Turns requests into English image prompts using local Qwen. Optionally connect an image reference and an `image prompter preset` node.
+
+1. Enter your request in `prompt`.
+2. Optionally connect `image` and/or `preset`.
+3. Run the workflow, then use the `prompt` output with a text encoder or text display.
+
+**Controls**
+
+- `llm_model`: shows the supported Qwen model and installation status.
+- `seed`: controls prompt variation, not the image generator's seed. Use `fixed` for repeatable tests.
+- `prompt_type`: `normal` writes natural-language prompts.
+- `enhance`: `none` for standard expansion, `normal` for more detail, `strong` for richer descriptions. Unspecified details may be developed; explicit user instructions take priority.
+
+With an image reference, Qwen analyzes it first, then applies your request. Specify which subjects or style to reuse, and use “only change…” or “keep… unchanged” to preserve other details. Only the first image in a batch is used.
+
+**Editing the output**
+
+The generated prompt appears at the bottom of the node.
+
+- **Edit Prompt**: enter an instruction and click **OK** to revise the current output with Qwen.
+- **Undo**: restore the prompt before the last edit.
+- **Regenerate from inputs**: clear the edited output, then run the workflow to generate from the inputs again.
+
+An edited output remains active even if you change the inputs. These buttons do not start image generation. Unchanged inputs may use cached results; change the seed for a new variation.
+
+**Setup:** uses the shared H3 Qwen/llama.cpp runtime. Existing weights are reused; missing model weights download on first use (about 16.8 GB for the language model, plus vision weights when needed).
+
+### image prompter preset
+
+Supplies optional shot, angle, and style guidance to `image prompter`. Connect its `preset` output to the prompter's `preset` input. Use `preset_prompt` to inspect the preset text.
+
+| Control | Purpose |
+| --- | --- |
+| `shot_size` | Extreme wide, wide, full body, cowboy, medium, medium close-up, close-up, or extreme close-up. |
+| `angle` | Front/side/rear, high/low, overhead, drone/aerial, Dutch, over-the-shoulder, POV, or isometric views. |
+| `style_category` | Filter styles by category; `All` shows all 55. This filter adds no prompt instructions. |
+| `style` | Choose a rendering style. Categories include Photorealistic, Cinematic, Illustration, Painting, 3D Rendering, Craft & Materials, Print & Experimental, Film & Color Grading, and Mixed Media. |
+
+`None` leaves that setting to the user prompt. To use style alone, set both `shot_size` and `angle` to `None`. Switching categories resets an incompatible style to `None`.
+
+Explicit user instructions override presets. Camera settings guide framing, not the subject's pose, clothing, or background. Selected styles guide the whole image unless the user specifies otherwise. Exact framing and style fidelity depend on the image model.
+
 
 ## Visual area mask
 

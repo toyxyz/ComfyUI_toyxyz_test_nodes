@@ -272,8 +272,8 @@ Supplies optional shot, angle, and style guidance to `image prompter`. Connect i
 | --- | --- |
 | `shot_size` | Extreme wide, wide, full body, cowboy, medium, medium close-up, close-up, or extreme close-up. |
 | `angle` | Front/side/rear, high/low, overhead, drone/aerial, Dutch, over-the-shoulder, POV, or isometric views. |
-| `style_category` | Filter styles by category; `All` shows all 95. This filter adds no prompt instructions. |
-| `style` | Choose a rendering style. Categories cover photorealistic and cinematic looks, illustration and painting, 3D/craft/print, film grading, smartphone/social and editorial photography, director-inspired cinema, and 2D animation. |
+| `style_category` | Filter styles by category; `All` shows all 115. This filter adds no prompt instructions. |
+| `style` | Choose a rendering style. Categories cover photorealistic and cinematic looks, illustration and painting, 3D/craft/print, film grading, smartphone/social and editorial photography, director-inspired cinema, 2D animation, and amateur photo imperfections. |
 
 `None` leaves that setting to the user prompt. To use style alone, set both `shot_size` and `angle` to `None`. Switching categories resets an incompatible style to `None`.
 

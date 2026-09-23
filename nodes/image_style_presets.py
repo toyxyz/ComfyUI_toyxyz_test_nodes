@@ -1,5 +1,5 @@
-"""Style phrases supplied in image_style_presets_ko (1).md (2026-09-22).
-95 authored/adapted presets, not verified model-specific performance claims.
+"""Style phrases supplied in image_style_presets_ko (3).md (2026-09-23).
+115 authored/adapted presets, not verified model-specific performance claims.
 Only names and text blocks are data; document instructions/links are not executed.
 """
 
@@ -98,7 +98,27 @@ STYLE_PRESETS = {
     "Gritty Rotoscope-Inspired Animation": "Gritty hand-drawn 2D animation, rotoscope-inspired naturalistic forms, rough ink contours, uneven painted textures, earthy muted colors, heavy graphic shadows, adult urban-fantasy atmosphere.",
     "Mid-Century Animation Color Script": "Mid-century animation color-script illustration, matte gouache texture, simplified decorative forms, bold contrasting hues, playful pastel accents, expressive hand-painted color, storybook warmth.",
     "Graphic Angular 2D Animation": "Graphic 2D animation, sharply stylized angular forms, confident clean contours, broad flat color areas, strong graphic shadow shapes, restrained gradients, bold expressive visual economy.",
-    "Graphic-Novel Cel-Shaded 2D": "Two-dimensional graphic-novel rendering, decisive ink contours, crisp cel-shadow boundaries, selectively painted skin transitions, vivid slightly weathered colors, sparse ink texture, dramatic drawn highlights."
+    "Graphic-Novel Cel-Shaded 2D": "Two-dimensional graphic-novel rendering, decisive ink contours, crisp cel-shadow boundaries, selectively painted skin transitions, vivid slightly weathered colors, sparse ink texture, dramatic drawn highlights.",
+    "Slightly Missed Autofocus": "Ordinary phone photo with slightly missed autofocus, gently softened subject detail, recognizable features and believable everyday colors.",
+    "Accidental Focus on the Wrong Surface": "Casual photograph with focus accidentally locked onto an incidental surface, leaving the intended subject mildly defocused; otherwise natural processing.",
+    "Whole-Image Defocus": "Everyday phone photo with mild overall defocus, gently softened edges throughout, recognizable forms and natural colors, without directional streaking.",
+    "Small Hand-Shake Blur": "Quick phone photograph with tiny directional smearing from hand tremor, mostly readable detail, ordinary digital color and everyday light.",
+    "Localized Moving-Hand Blur": "Everyday smartphone photograph with slight movement smearing restricted to the moving hands, while stationary surfaces remain comparatively clear; ordinary light and lifelike skin.",
+    "Uneven Optical Softness": "Casual digital photograph with subtly uneven optical clarity, a small region softer than the rest, ordinary contrast and imperfect color balance, a plainly unpolished finish.",
+    "Low-Light Phone Noise": "Low-light phone photograph with fine luminance noise and faint colored shadow speckles, modest detail retention, natural skin variation, believable consumer-camera processing.",
+    "Fluorescent Color Cast": "Casual indoor phone photograph under utilitarian fluorescent lighting, a faint yellow-green cast, honest skin texture, mild digital noise, ordinary uncorrected color.",
+    "Patchy Overexposure": "Ordinary phone snapshot with uneven illumination and a few locally washed-out highlights, less detail in the brightest surfaces, natural remaining colors, a mildly imperfect exposure.",
+    "Clumsy Phone Flash": "Casual phone-flash photograph, abruptly bright skin and fabric highlights, much dimmer ambient surroundings, uneven tonal balance, a blunt everyday digital finish.",
+    "Mixed-Light White-Balance Error": "Everyday indoor photo with mixed warm and cool illumination, imperfect automatic white balance and slightly inconsistent neutral colors.",
+    "Limited Shadow Detail": "Ordinary digital snapshot with reduced tonal information in dark areas, slightly blocked-up shadow textures, readable brighter surfaces, natural color and restrained processing.",
+    "Shared-Photo JPEG Texture": "Everyday photo with the finish of a lightly recompressed social-media JPEG, subtle loss of fine texture, faint compression roughness around hard edges, otherwise convincing photographic detail.",
+    "Fingerprint-Smudged Lens": "Phone photograph through a lightly fingerprint-smudged lens, localized milky flare around bright lights, slightly reduced contrast in affected areas, otherwise ordinary photographic texture.",
+    "Raindrops on Phone Lens": "Rainy-day phone photograph with a few droplets on the lens causing small irregular soft patches and localized light scattering, recognizable scene detail elsewhere.",
+    "Imperfect Mirror Surface": "Everyday mirror photograph with faint wipe streaks and small smudges on the glass, ordinary household illumination, believable reflected detail, a casually unclean photographic finish.",
+    "Honest Skin Without Glamour Retouch": "Natural photographic skin with small irregular pores, fine lines, uneven pigmentation and a restrained oily sheen; believable light response and lightly processed everyday detail.",
+    "Clear Everyday Amateur Photo": "Everyday amateur photography, ordinary household light, plainly rendered fabric and skin, unremarkable colors, legible environmental textures, a personal family-album finish.",
+    "Accidental Phone Snapshot — Balanced": "Unremarkable everyday phone snapshot, faint motion softness, uneven available light, a few overly bright patches, believable skin and ordinary colors, casually processed and unpolished.",
+    "Dim Event Snapshot — Balanced": "Casual low-light event photograph, modest sensor noise, bright practical lights blooming slightly, mildly inconsistent focus, believable smartphone color processing and natural skin texture."
 }
 
 # Browsing groups only: categories never add or override prompt instructions.
@@ -155,5 +175,22 @@ STYLE_CATEGORIES = {
         "Retro Industrial Cyberpunk Anime", "Retro Television Cartoon", "Traditional Feature Animation",
         "Gritty Rotoscope-Inspired Animation", "Mid-Century Animation Color Script",
         "Graphic Angular 2D Animation", "Graphic-Novel Cel-Shaded 2D",
+    ],
+    "Focus & Motion Imperfections": [
+        "Slightly Missed Autofocus", "Accidental Focus on the Wrong Surface",
+        "Whole-Image Defocus", "Small Hand-Shake Blur", "Localized Moving-Hand Blur",
+        "Uneven Optical Softness",
+    ],
+    "Exposure & Color Imperfections": [
+        "Low-Light Phone Noise", "Fluorescent Color Cast", "Patchy Overexposure",
+        "Clumsy Phone Flash", "Mixed-Light White-Balance Error", "Limited Shadow Detail",
+    ],
+    "Lens, Compression & Mirror": [
+        "Shared-Photo JPEG Texture", "Fingerprint-Smudged Lens",
+        "Raindrops on Phone Lens", "Imperfect Mirror Surface",
+    ],
+    "Natural Amateur Photography": [
+        "Honest Skin Without Glamour Retouch", "Clear Everyday Amateur Photo",
+        "Accidental Phone Snapshot — Balanced", "Dim Event Snapshot — Balanced",
     ],
 }

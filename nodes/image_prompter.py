@@ -30,7 +30,9 @@ visibility, exclusions, margins, percentages, medium regions and exact lettering
 (including nationality), appearance evaluations, relative sizes and surface qualities.
 Keep each modifier attached to its subject: an occupation or genre label does not replace nationality,
 and realism does not replace an explicitly specified color or finish. Preserve comparisons as comparisons:
-'looks like X' describes appearance, not proof that X was applied or an action occurred.
+'looks like X' describes appearance, not proof that X was applied or an action occurred. Preserve both sides
+and the stated basis of relative-size comparisons; do not replace a whole-object comparison with an invented
+width, height, area or volume comparison.
 Do not turn 'unobstructed'
 into 'above', or a held object into a floating one. Keep each relation's two endpoints and coordinate frame.
 Do not replace specific requirements with 'as requested', 'all details', 'clear composition' or a recap.
@@ -61,17 +63,29 @@ For a specified pose/contact, develop only its visible surfaces, not new limb po
 Integrate restrained material/light/depth detail into the existing regions instead of merely rewording them.
 Explicit no-enhancement/only-translate requests win.""",
     "strong": """ACTIVE ENHANCEMENT: STRONG. Preserve the entire source as the factual backbone and build
-a substantially richer depiction around it, not a shorter paraphrase. Even a dense request can be developed
-through compatible visible surface response, contact, depth and light within its existing regions. Develop
-these relationships across the scene rather than adding one generic cinematic sentence at the end.
+a substantially richer depiction around it, not a shorter paraphrase. For an open scene, write three connected
+prose passages without headings: (1) resolved composition plus all source subject facts, (2) the existing setting
+developed as foreground, middle-distance and background relationships, and (3) coherent illumination, material
+response, palette, atmosphere and visual hierarchy. This strong-only structure overrides general one-paragraph
+and terse-simple-scene preferences, but explicit brevity and narrowly limited edits still win. Each passage must
+add different visible information; do not restate the previous passage. Perform a full expansion pass across
+every applicable open visual dimension: resolved composition and spatial balance; visible subject, garment and
+material qualities; foreground, middle-distance and background layers inherent to the stated setting; coherent
+illumination and its effects on existing surfaces; and compatible palette, atmosphere and depth separation.
+Develop several applicable dimensions across the scene instead of stopping after a translated subject paragraph
+or adding one generic cinematic sentence at the end. Even a dense request can be developed through compatible
+visible surface response, contact, depth and light within its existing regions.
 'No extra people/props/text' does NOT prohibit elaborating the existing materials and specified lighting.
 Keep all entity counts, colors, geometry, hands, actions and exclusions intact. Never add hidden motives,
-alternative poses, new sources of light or objects just to make it longer. Specific additions should explain
-how the requested scene looks, not repeat labels. Audit additions separately: never add a second grip/contact
+alternative poses, unrelated landmarks, new sources of light or objects just to make it longer. If illumination
+is open, choose one coherent treatment compatible with the stated setting rather than accumulating sources.
+Specific additions should explain how the requested scene looks, not repeat labels. Audit additions separately:
+never add a second grip/contact
 point or a new direction, separation or height to an already constrained action. Keep the original relation's
 objects unchanged; develop material response around it. In a dense scene, expand the existing subjects,
 foreground and background through their permitted surface/light/depth qualities, not just wordier labels.
-Do not stop at translation where such development is open.
+No fixed word or paragraph quota: continue while an applicable scene layer remains materially underdeveloped,
+then stop before repetition or unsupported invention. Do not stop at translation where development is open.
 Explicit no-enhancement/only-translate or limited-edit restrictions override this; do not force filler.""",
 }
 
@@ -242,7 +256,9 @@ def build_messages(prompt: str, prompt_type: str, analysis: str | None = None,
         messages[0]["content"] += ("\n\nSTYLE PRESET: Resolve the depiction medium before expanding the scene. Explicit user "
             "medium, colors, lighting, setting and preservation instructions override it; compatible style overrides "
             "reference treatment and enhancement defaults. When the user leaves style open or asks for random style, "
-            "use the selected style_preset, not an unrelated medium. Resolve conflicts component by component: "
+            "use the selected style_preset, not an unrelated medium. Explicit user quality and capture constraints "
+            "also override incompatible preset defects; do not relocate a forbidden effect to another region. "
+            "Resolve conflicts component by component: "
             "a user color or lighting choice does not discard a compatible preset medium. "
             "For natural prose, identify the resolved medium/treatment in the opening sentence together with the "
             "subject and resolved composition; do not postpone it to a closing style paragraph. For tag formats, "
@@ -285,12 +301,23 @@ def build_messages(prompt: str, prompt_type: str, analysis: str | None = None,
         "Presets supply only compatible missing guidance; omit conflicting preset cues, never my attributes. "
         "Keep similes as visual appearances, not invented causes. Interpret a simile only through qualities "
         "compatible with explicitly fixed material, color, opacity and finish; do not assert both opposites. "
+        "Keep relative-size comparisons semantically exact: if X is larger than Y, the finished prompt must say "
+        "that X is larger than Y. Never change it to wider/taller than Y or larger than Y's width, height, area "
+        "or volume, even when the original comparison is unusual. "
         "A specified color is a locked appearance, not a starting palette: do not replace it with a neighboring "
         "hue or a material's typical color. Describe texture and light without reclassifying that color. "
         "Optional expansion must stay inside the resolved crop; do not describe hidden body parts or surfaces. "
         "For example, a mid-thigh lower boundary excludes knees, feet and their ground contact from added detail. "
-        + ("Expand the existing subject, materials, lighting and background with concrete connected visual details "
-           "where open, beyond translation and a generic closing sentence. Preserve every source clause first. "
+        "Any optional shot label must agree with its visible extent: full-body requires the complete head-through-feet "
+        "figure, while a boundary above the feet must use a compatible cropped-shot description. "
+        + ("After preserving every source clause, use the strong three-passage structure when the scene remains "
+           "open: composition and source subject facts; existing setting and spatial layers; then coherent light, "
+           "material response, palette, atmosphere and visual hierarchy. Carry out the complete expansion pass across every "
+           "applicable open scene layer: composition, existing subject/material detail, inherent setting depth, "
+           "coherent light response, palette and atmosphere. Do not finish after only one layer or a generic "
+           "closing sentence. Expand the existing subject, materials, lighting and background with concrete "
+           "connected visual detail distributed through the prompt without repetition "
+           "or unrelated new entities. "
            if enhance == "strong" else "")
         + "Return only the final prompt."})
     if analysis:

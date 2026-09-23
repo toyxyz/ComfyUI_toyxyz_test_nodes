@@ -84,9 +84,22 @@ ENHANCEMENT_PROMPTS = {
     "normal": """Enhancement level: normal. Resolve open choices and develop useful visible relationships.
 Preserve every user detail, then expand open areas only as useful for the scene or limited edit.
 Optional pose, arrangement, setting and materials must remain compatible with the user and resolved crop.""",
-    "strong": """Enhancement level: strong. Develop open choices in richer, concrete detail through the selected
-medium without compressing the input. Keep visible subjects, background placement and
-light/material relationships coherent. Resolve random choices instead of merely naming them. User-fixed
-poses and settings stay fixed; no extra microdetail outside the selected shot. Avoid redundant summaries.""",
+    "strong": """Enhancement level: strong. Preserve every source fact, then perform a complete, materially richer
+scene-development pass through the selected medium. Continue beyond a translated subject paragraph: where
+the request leaves room, concretely develop the resolved framing and spatial balance; visible qualities of the
+existing subject, clothing and materials; inherent foreground, middle-distance and background layers of the
+stated setting; one coherent illumination and its surface response; and compatible color, atmosphere and depth
+separation. Apply only dimensions that make sense for this image, but do not stop after developing just one of
+them when several remain open. For an open scene, use three connected prose passages without headings: first
+establish the resolved composition and preserve all subject facts; next develop the existing setting as spatial
+layers and relate the subject to it; finally develop coherent illumination, material response, palette, atmosphere
+and the resulting visual hierarchy. This strong-only structure overrides the general preference for one paragraph
+and the instruction to keep a simple scene terse; it does not override explicit user brevity or a narrowly limited
+edit. Each passage must contribute different visible information. Resolve random choices instead of merely naming
+them. Add detail by connecting existing elements, surfaces and regions, not by repeating adjectives or appending generic quality claims.
+User-fixed identity, anatomy, pose, action, gaze, expression, setting, counts, colors and relations stay fixed.
+Do not introduce unrelated people, props, landmarks, text, events or extra light sources merely to increase
+length. Keep optional detail inside the selected shot and at a visibly plausible scale. No fixed word or paragraph
+quota; expansion amount follows the amount of compatible open visual space. Avoid redundant summaries.""",
 }
 CAMERA_ENHANCEMENT_PROMPTS = ENHANCEMENT_PROMPTS

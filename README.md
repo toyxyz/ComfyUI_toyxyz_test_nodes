@@ -233,30 +233,34 @@ frames of `video_1` with the opening frames of `video_2`. During the overlap, vi
 <img width="1995" height="1461" alt="image" src="https://github.com/user-attachments/assets/48f93f03-23c9-4371-9d16-aefce5c35c08" />
 
 
-Turns requests into English image prompts using local Qwen. Optionally connect an image reference and an `image prompter preset` node.
+Turns requests into English scene or image-editing prompts using local Qwen. Optionally connect reference images and an `image prompter preset` node.
 
 1. Enter your request in `prompt`.
-2. Optionally connect `image` and/or `preset`.
+2. Optionally connect `image_1` and/or `preset`. Connecting an image reveals the next input, up to `image_10`.
 3. Run the workflow, then use the `prompt` output with a text encoder or text display.
 
 **Controls**
 
 - `llm_model`: shows the supported Qwen model and installation status.
 - `seed`: controls prompt variation, not the image generator's seed. Use `fixed` for repeatable tests.
-- `prompt_type`: `normal` writes natural-language prompts.
-- `enhance`: `none` for standard expansion, `normal` for more detail, `strong` for richer descriptions. Unspecified details may be developed; explicit user instructions take priority.
+- `prompt_type`: `default` uses medium-first descriptions, explicit spatial relationships, and user-information preservation (formerly `normal_2`). Older `normal` and `normal_2` selections migrate to `default`. Enhance strength is a separate setting.
+- `qwen_image_2.1`: writes editing instructions, identifying what to change and preserve. Uses the existing Qwen writer, not a separate official Prompt Enhancer model. Without images, it rewrites the editing request from text only.
+- `enhance`: `none` translates and organizes; `normal` adds detail; `strong` develops open details more richly. Every level preserves explicit user information rather than summarizing it. No target word count is imposed; check generated text for model omissions.
 
-With an image reference, Qwen analyzes it first, then applies your request. Specify which subjects or style to reuse, and use “only change…” or “keep… unchanged” to preserve other details. Only the first image in a batch is used.
+Qwen analyzes connected references together before writing the prompt. Specify source roles with `<image1>` through `<image10>`, for example: “Use <image1> as the canvas; replace only its bag with the bag from <image2>.” Only the first batch frame per socket is used. Existing `image` connections migrate to `image_1`.
+
+Use the numbered `image_1`–`image_10` outputs to pass the original images to the downstream editor in matching reference order. These outputs preserve the original tensors, resolution and full batches, not the resized first-frame analysis copies; an unconnected input returns no image. The `prompt` output remains first. Disconnecting an interior input does not renumber later references: avoid gaps when using a downstream editor that numbers references consecutively. “Only change…” and “keep… unchanged” take priority over presets and enhancement.
 
 **Editing the output**
 
 The generated prompt appears at the bottom of the node.
 
 - **Edit Prompt**: enter an instruction and click **OK** to revise the current output with Qwen.
+- Editing first interprets the requested change, then revises the complete prompt while preserving unrelated details. An unchanged response is reported in the dialog instead of being applied as a successful edit.
 - **Undo**: restore the prompt before the last edit.
 - **Regenerate from inputs**: clear the edited output, then run the workflow to generate from the inputs again.
 
-An edited output remains active even if you change the inputs. These buttons do not start image generation. Unchanged inputs may use cached results; change the seed for a new variation.
+Changing `prompt_type` clears the edited output, displayed prompt and Undo state; run the workflow to generate in the new mode. Other input changes leave the edited override active until you use Regenerate from inputs. Loading a saved workflow preserves its saved edit. These buttons do not start image generation. Unchanged inputs may use cached results; change the seed for a new variation.
 
 **Setup:** uses the shared H3 Qwen/llama.cpp runtime. Existing weights are reused; missing model weights download on first use (about 16.8 GB for the language model, plus vision weights when needed).
 
@@ -268,8 +272,8 @@ Supplies optional shot, angle, and style guidance to `image prompter`. Connect i
 | --- | --- |
 | `shot_size` | Extreme wide, wide, full body, cowboy, medium, medium close-up, close-up, or extreme close-up. |
 | `angle` | Front/side/rear, high/low, overhead, drone/aerial, Dutch, over-the-shoulder, POV, or isometric views. |
-| `style_category` | Filter styles by category; `All` shows all 55. This filter adds no prompt instructions. |
-| `style` | Choose a rendering style. Categories include Photorealistic, Cinematic, Illustration, Painting, 3D Rendering, Craft & Materials, Print & Experimental, Film & Color Grading, and Mixed Media. |
+| `style_category` | Filter styles by category; `All` shows all 95. This filter adds no prompt instructions. |
+| `style` | Choose a rendering style. Categories cover photorealistic and cinematic looks, illustration and painting, 3D/craft/print, film grading, smartphone/social and editorial photography, director-inspired cinema, and 2D animation. |
 
 `None` leaves that setting to the user prompt. To use style alone, set both `shot_size` and `angle` to `None`. Switching categories resets an incompatible style to `None`.
 

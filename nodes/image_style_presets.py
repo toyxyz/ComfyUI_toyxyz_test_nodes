@@ -1,5 +1,5 @@
-"""Style phrases supplied in image_style_presets_ko.md (2026-09-20).
-55 authored/adapted presets, not verified model-specific performance claims.
+"""Style phrases supplied in image_style_presets_ko (1).md (2026-09-22).
+95 authored/adapted presets, not verified model-specific performance claims.
 Only names and text blocks are data; document instructions/links are not executed.
 """
 
@@ -58,7 +58,47 @@ STYLE_PRESETS = {
     "Muted Thriller Grade": "Live-action thriller aesthetic, subdued colors, cool gray shadows, dense midtones, restrained highlights, subtle grain, uneasy atmosphere.",
     "Bleach-Bypass-Inspired Cinema": "Bleach-bypass-inspired film treatment, reduced chroma, dense blacks, strong tonal contrast, gritty grain, firmly defined highlights.",
     "Neon-Noir Realism": "Live-action nocturnal realism, localized cyan and magenta illumination, deep neutral shadows, plausible colored reflections, restrained highlight glow.",
-    "Black-and-White Cinema": "Monochrome live-action film aesthetic, rich black tones, luminous whites, expressive gray transitions, sculpted illumination, delicate grain."
+    "Black-and-White Cinema": "Monochrome live-action film aesthetic, rich black tones, luminous whites, expressive gray transitions, sculpted illumination, delicate grain.",
+    "Everyday Smartphone Snapshot": "Casual smartphone photograph, everyday available light, believable skin texture, neutral color balance, mild sensor noise, ordinary digital sharpness, spontaneous everyday atmosphere.",
+    "Shot-on-iPhone Everyday Look": "Photo with an everyday shot-on-iPhone look, natural automatic exposure, lifelike colors, restrained local contrast, visible fine skin texture, modest digital sharpening, casual available-light realism.",
+    "Low-Light Phone Snapshot": "Casual low-light smartphone photo, mixed indoor color temperatures, slightly noisy shadows, restrained detail recovery, imperfect white balance, realistic skin, a quietly unpolished digital finish.",
+    "Unretouched RAW-Look Photo": "Photographic realism with a minimally processed RAW-like appearance, restrained saturation, gentle tonal contrast, natural skin variation, visible pores and fine lines, subtle sensor texture, realistic material detail.",
+    "Instagram Casual Photo Dump": "Casual Instagram photo-dump aesthetic, everyday available lighting, relaxed color balance, subtle digital noise, honest skin texture, lightly processed photographic finish, informal personal-diary mood.",
+    "Instagram Direct-Flash Glam": "Social-media street-glamour photography, direct flash illumination, crisp highlight transitions, natural skin texture, fine film-like grain, rich dark tones, a relaxed yet polished nightlife mood.",
+    "Instagram Soft Luxury Editorial": "Soft luxury editorial photography, cream and warm neutral colors, luminous diffused lighting, delicate natural shadows, finely resolved fabric, realistic skin detail, restrained glossy finish.",
+    "Muted Cafe Lifestyle": "Muted lifestyle photography, oat-beige and subdued brown palette, soft ambient daylight, low color saturation, gently lifted shadows, tactile linen and ceramic textures, calm everyday warmth.",
+    "2000s Digicam Flash": "Early-2000s compact digital-camera aesthetic, small-sensor noise, punchy flash highlights, slightly brittle digital detail, vivid casual color, imperfect exposure, nostalgic snapshot finish.",
+    "Warm Travel Documentary": "Travel documentary photography, warm natural illumination, subdued sage and ochre colors, gentle contrast, tactile weathered surfaces, fine analog-like grain, a quietly nostalgic photographic finish.",
+    "Prestige Sports Documentary": "Prestige documentary photographic treatment, restrained desaturated colors with one subtle accent, sculpted shadow detail, atmospheric light, fine film grain, serious and contemplative mood.",
+    "Warm Household Cinema": "Photorealistic domestic cinema, warm tungsten practical lighting, softly graduated shadows, believable household color, natural skin texture, delicate film grain, intimate nostalgic atmosphere.",
+    "Luxury Material Photography": "Luxury still-life photographic finish, deep brown and brass-gold palette, warm amber illumination, dense yet readable shadows, tactile leather grain, precise metallic reflections, refined catalog realism.",
+    "Tactile Surreal Fashion": "Surreal fashion photography with tangible practical-effects realism, physically convincing surfaces, lifelike skin, controlled clean illumination, organic film texture, uncanny but materially believable finish.",
+    "Dramatic Editorial Portrait": "Dramatic editorial photography, richly textured materials, deep earthy colors, carefully shaped light, dense blacks, lifelike skin, a theatrical yet photographic atmosphere.",
+    "Humanist Monochrome Fashion": "Humanist black-and-white fashion photography, expressive tonal transitions, honest skin texture, subtle grain, tactile fabrics, restrained retouching, emotionally direct photographic realism.",
+    "Hard-Light Monochrome Fashion": "High-contrast monochrome fashion photography, hard sculptural illumination, deep blacks, bright controlled highlights, crisp fabric detail, cool polished editorial intensity.",
+    "Painterly Color Photography": "Painterly color photography, subdued amber and crimson accents, soft chromatic transitions, atmospheric moisture, delicate film texture, contemplative urban mood.",
+    "Everyday Color Photography": "Everyday color photography, rich red and green accents, ordinary available light, dense analog-like color, understated surface texture, quietly vivid documentary mood.",
+    "Intimate Diary Photography": "Intimate diary-style photography, imperfect available lighting, warm color casts, visible grain, truthful skin texture, raw emotional immediacy, personal snapshot finish.",
+    "Nolan-Inspired Grounded Thriller": "Photorealistic cinematic treatment inspired by Christopher Nolan, cool restrained colors, dense shadow detail, forceful but believable lighting, fine film texture, grounded material realism, tense atmosphere.",
+    "Villeneuve-Inspired Atmospheric Sci-Fi": "Photorealistic atmospheric science-fiction cinema inspired by Denis Villeneuve, restrained earth and steel tones, diffused haze, carefully limited highlights, tactile surfaces, solemn and mysterious mood.",
+    "Anderson-Inspired Pastel Cinema": "Photorealistic whimsical cinema inspired by Wes Anderson, coordinated dusty pastels, warm cream and mustard accents, gentle controlled illumination, tactile vintage materials, dry nostalgic charm.",
+    "Wong-Inspired Romantic Night Cinema": "Photorealistic romantic night cinema inspired by Wong Kar-wai, deep crimson and green color accents, luminous practical lights, soft highlight bloom, textured film grain, humid melancholic atmosphere.",
+    "Fincher-Inspired Controlled Thriller": "Photorealistic psychological-thriller treatment inspired by David Fincher, restrained olive and steel-blue tones, precise low-key lighting, clean shadow detail, subtle surface grime, controlled uneasy atmosphere.",
+    "Kubrick-Inspired Unsettling Cinema": "Photorealistic cinema inspired by Stanley Kubrick, clinically controlled artificial light, cool neutral tones with intense color accents, precise material detail, restrained film texture, unsettling emotional distance.",
+    "Scott-Inspired Industrial Sci-Fi": "Photorealistic industrial science-fiction cinema inspired by Ridley Scott, smoky volumetric light, wet metallic reflections, weathered surfaces, deep shadows, luminous practical highlights, gritty atmospheric realism.",
+    "Lynch-Inspired Uncanny Cinema": "Photorealistic uncanny cinema inspired by David Lynch, rich burgundy and shadowy blue tones, isolated pools of practical light, textured darkness, subtle film grain, dreamlike psychological unease.",
+    "Kurosawa-Inspired Monochrome Drama": "Photorealistic black-and-white cinematic drama inspired by Akira Kurosawa, forceful tonal contrast, textured rain and mist, organic grain, rich midtones, rugged material realism, grave emotional weight.",
+    "Burton-Inspired Gothic Cinema": "Photorealistic gothic fantasy cinema inspired by Tim Burton, cold blue-gray tones, pale luminous highlights, tactile aged materials, theatrical shadows, eerie whimsical atmosphere, live-action material realism.",
+    "Hand-Painted Fantasy Anime": "Hand-drawn 2D fantasy animation, delicate contour lines, softly painted gouache-like environments, restrained cel shadows, natural greens and warm earth colors, tactile brushwork, gentle wonder.",
+    "Luminous Contemporary Anime": "Contemporary 2D anime film finish, precise fine linework, luminous atmospheric color, delicate reflected light, painted environmental detail, restrained cel shading, radiant emotional mood.",
+    "Psychological Realist Anime": "Hand-drawn 2D psychological anime, naturalistic character rendering, disciplined ink contours, restrained cel shadows, believable painted textures, subtly disquieting colors, mature dramatic tone.",
+    "Retro Industrial Cyberpunk Anime": "Late-1980s-inspired 2D cyberpunk animation, meticulous mechanical linework, firm cel-shadow shapes, worn industrial textures, muted urban colors with sharp luminous accents, subtle analog animation grain.",
+    "Retro Television Cartoon": "Retro 2D television cartoon, bold clean outlines, economical flat color fills, simplified rounded forms, minimal painted shading, cheerful vintage palette, light paper-like texture.",
+    "Traditional Feature Animation": "Traditional hand-drawn 2D feature animation, expressive flowing ink lines, richly painted textures, warm glowing colors, soft layered cel shadows, emotionally vivid storybook atmosphere.",
+    "Gritty Rotoscope-Inspired Animation": "Gritty hand-drawn 2D animation, rotoscope-inspired naturalistic forms, rough ink contours, uneven painted textures, earthy muted colors, heavy graphic shadows, adult urban-fantasy atmosphere.",
+    "Mid-Century Animation Color Script": "Mid-century animation color-script illustration, matte gouache texture, simplified decorative forms, bold contrasting hues, playful pastel accents, expressive hand-painted color, storybook warmth.",
+    "Graphic Angular 2D Animation": "Graphic 2D animation, sharply stylized angular forms, confident clean contours, broad flat color areas, strong graphic shadow shapes, restrained gradients, bold expressive visual economy.",
+    "Graphic-Novel Cel-Shaded 2D": "Two-dimensional graphic-novel rendering, decisive ink contours, crisp cel-shadow boundaries, selectively painted skin transitions, vivid slightly weathered colors, sparse ink texture, dramatic drawn highlights."
 }
 
 # Browsing groups only: categories never add or override prompt instructions.
@@ -92,4 +132,28 @@ STYLE_CATEGORIES = {
         "Neon-Noir Realism", "Black-and-White Cinema",
     ],
     "Mixed Media": ["Oil Painting × Digital Realism", "Photo and Doodle Mixed Media"],
+    "Smartphone & Social Photography": [
+        "Everyday Smartphone Snapshot", "Shot-on-iPhone Everyday Look", "Low-Light Phone Snapshot",
+        "Unretouched RAW-Look Photo", "Instagram Casual Photo Dump", "Instagram Direct-Flash Glam",
+        "Instagram Soft Luxury Editorial", "Muted Cafe Lifestyle", "2000s Digicam Flash",
+    ],
+    "Editorial & Documentary Photography": [
+        "Warm Travel Documentary", "Prestige Sports Documentary", "Warm Household Cinema",
+        "Luxury Material Photography", "Tactile Surreal Fashion", "Dramatic Editorial Portrait",
+        "Humanist Monochrome Fashion", "Hard-Light Monochrome Fashion", "Painterly Color Photography",
+        "Everyday Color Photography", "Intimate Diary Photography",
+    ],
+    "Director-Inspired Cinema": [
+        "Nolan-Inspired Grounded Thriller", "Villeneuve-Inspired Atmospheric Sci-Fi",
+        "Anderson-Inspired Pastel Cinema", "Wong-Inspired Romantic Night Cinema",
+        "Fincher-Inspired Controlled Thriller", "Kubrick-Inspired Unsettling Cinema",
+        "Scott-Inspired Industrial Sci-Fi", "Lynch-Inspired Uncanny Cinema",
+        "Kurosawa-Inspired Monochrome Drama", "Burton-Inspired Gothic Cinema",
+    ],
+    "2D Animation": [
+        "Hand-Painted Fantasy Anime", "Luminous Contemporary Anime", "Psychological Realist Anime",
+        "Retro Industrial Cyberpunk Anime", "Retro Television Cartoon", "Traditional Feature Animation",
+        "Gritty Rotoscope-Inspired Animation", "Mid-Century Animation Color Script",
+        "Graphic Angular 2D Animation", "Graphic-Novel Cel-Shaded 2D",
+    ],
 }

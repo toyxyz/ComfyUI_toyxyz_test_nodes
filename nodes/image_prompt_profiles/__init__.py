@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from typing import Mapping
 from types import MappingProxyType
 
-from . import normal
+from . import default, qwen_image_2_1
 
 
 @dataclass(frozen=True)
@@ -20,23 +20,30 @@ class ImagePromptProfile:
     camera_distance_prompt: str = ""  # Optional complete system policy for resolved wide/extreme wide.
     camera_intent_prompt: str = ""
     camera_enhancement_prompts: Mapping[str, str] = field(default_factory=dict)
+    output_mode: str = "scene"
 
 
-# Each future type supplies its own module. Normal is general image prompting,
-# not a promise of special support for any particular image model.
+# Scene and edit writers are independent. Legacy names resolve at the node boundary.
 PROMPT_PROFILES = MappingProxyType({
-    "normal": ImagePromptProfile(
-        system_prompt=normal.SYSTEM_PROMPT,
-        image_analysis_prompt=normal.IMAGE_ANALYSIS_PROMPT,
-        reference_policy=normal.REFERENCE_POLICY,
-        enhancement_prompts=MappingProxyType(normal.ENHANCEMENT_PROMPTS),
-        enhancement_style_guidance=normal.ENHANCEMENT_STYLE_GUIDANCE,
-        enhanced_system_prompt=normal.ENHANCED_SYSTEM_PROMPT,
-        viewpoint_policy=normal.VIEWPOINT_POLICY,
-        camera_resolution_prompt=normal.CAMERA_RESOLUTION_PROMPT,
-        camera_system_prompt=normal.CAMERA_SYSTEM_PROMPT,
-        camera_distance_prompt=normal.CAMERA_DISTANCE_PROMPT,
-        camera_intent_prompt=normal.CAMERA_INTENT_PROMPT,
-        camera_enhancement_prompts=MappingProxyType(normal.CAMERA_ENHANCEMENT_PROMPTS),
+    "default": ImagePromptProfile(
+        system_prompt=default.SYSTEM_PROMPT,
+        image_analysis_prompt=default.IMAGE_ANALYSIS_PROMPT,
+        reference_policy=default.REFERENCE_POLICY,
+        enhancement_prompts=MappingProxyType(default.ENHANCEMENT_PROMPTS),
+        enhancement_style_guidance=default.ENHANCEMENT_STYLE_GUIDANCE,
+        enhanced_system_prompt=default.ENHANCED_SYSTEM_PROMPT,
+        viewpoint_policy=default.VIEWPOINT_POLICY,
+        camera_resolution_prompt=default.CAMERA_RESOLUTION_PROMPT,
+        camera_system_prompt=default.CAMERA_SYSTEM_PROMPT,
+        camera_distance_prompt=default.CAMERA_DISTANCE_PROMPT,
+        camera_intent_prompt=default.CAMERA_INTENT_PROMPT,
+        camera_enhancement_prompts=MappingProxyType(default.CAMERA_ENHANCEMENT_PROMPTS),
+    ),
+    "qwen_image_2.1": ImagePromptProfile(
+        system_prompt=qwen_image_2_1.SYSTEM_PROMPT,
+        image_analysis_prompt=qwen_image_2_1.IMAGE_ANALYSIS_PROMPT,
+        reference_policy="",
+        enhancement_prompts=MappingProxyType(qwen_image_2_1.ENHANCEMENT_PROMPTS),
+        output_mode="edit",
     ),
 })

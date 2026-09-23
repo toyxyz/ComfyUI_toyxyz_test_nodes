@@ -1,6 +1,8 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { readEditResponse } from "./util/image_prompt_response.js";
+import { scheduleImageInputs } from "./util/image_prompt_inputs.js";
+import { watchPromptMode } from "./util/image_prompt_mode.js";
 
 // Status labels are refreshed without replacing a user's unsupported legacy
 // local-model selection silently. The backend accepts either old status label.
@@ -33,9 +35,13 @@ function installEditor(node) {
         output.value = text ?? "";
         node.properties ??= {};
         node.properties.generated_prompt = output.value;
-        status.textContent = override.value ? "Edited output active. Input changes do not replace it; use Regenerate from inputs." : "Generated output";
+        status.textContent = override.value ? "Edited output active. Changing prompt type clears it; for other input changes use Regenerate from inputs." : "Generated output";
         node.setDirtyCanvas?.(true,true);
     };
+    const modeState = watchPromptMode(node, () => {
+        show("");
+        status.textContent = "Prompt type changed. Edit and Undo cleared. Queue the workflow to generate from inputs.";
+    });
     const button = (label, tooltip, action) => {
         const b = document.createElement("button"); b.textContent = label;
         b.title = tooltip;
@@ -43,6 +49,7 @@ function installEditor(node) {
     };
     button("Edit Prompt", "Edit the current output with Qwen while preserving details unrelated to your request. Generate a prompt first. The edited text becomes the output on the next workflow run; image generation is not started automatically.", () => {
         if (busy || !output.value) return;
+        const editRevision = modeState.revision();
         const dialog = document.createElement("dialog");
         const input = document.createElement("textarea");
         input.placeholder = "Describe what to change. Other details will be preserved.";
@@ -57,6 +64,7 @@ function installEditor(node) {
         cancel.onclick = () => dialog.close();
         ok.onclick = async () => {
             if (!input.value.trim() || busy) return;
+            if (modeState.revision() !== editRevision) { dialog.close(); return; }
             busy = true; ok.disabled = true; input.disabled = true;
             const original = output.value;
             const originalOverride = override.value;
@@ -65,11 +73,11 @@ function installEditor(node) {
                 const value = name => node.widgets?.find(w=>w.name===name)?.value;
                 const response = await api.fetchApi("/toyxyz/image-prompter/edit", {
                     method:"POST",headers:{"Content-Type":"application/json"},
-                    body:JSON.stringify({current_prompt:original,instruction:input.value,llm_model:value("llm_model"),seed:value("seed")})
+                    body:JSON.stringify({current_prompt:original,instruction:input.value,llm_model:value("llm_model"),seed:value("seed"),prompt_type:value("prompt_type")})
                 });
-                const result = await readEditResponse(response);
+                const result = await readEditResponse(response, original);
                 // Closing the dialog discards the response; a concurrent execution wins.
-                if (!dialog.open || output.value !== original || override.value !== originalOverride) return;
+                if (!dialog.open || modeState.revision() !== editRevision || output.value !== original || override.value !== originalOverride) return;
                 node.properties.prompt_undo = original;
                 override.value = result.prompt;
                 show(result.prompt);
@@ -96,7 +104,7 @@ function installEditor(node) {
         if (message?.text) show(message.text.join("\n"));
     };
     const configure = node.onConfigure;
-    node.onConfigure = function() { configure?.apply(this,arguments); show(override.value || node.properties?.generated_prompt || ""); };
+    node.onConfigure = function() { configure?.apply(this,arguments); modeState.configured(); show(override.value || node.properties?.generated_prompt || ""); };
     show(override.value || node.properties?.generated_prompt || "");
     node.setSize([Math.max(node.size[0],440),Math.max(node.size[1],620)]);
 }
@@ -104,7 +112,7 @@ function migratePromptType(node) {
     const widget = node.widgets?.find(w => w.name === "prompt_type" || w.name === "target_model");
     if (widget) {
         widget.name = "prompt_type";
-        if (widget.value === "krea") widget.value = "normal";
+        if (["krea", "normal", "normal_2"].includes(widget.value)) widget.value = "default";
     }
     // Converted widgets can have named input slots as well as widget values.
     for (const input of node.inputs ?? []) {
@@ -139,6 +147,7 @@ app.registerExtension({
     nodeCreated(node) {
         if (node.comfyClass === type || node.type === type) {
             migratePromptType(node);
+            scheduleImageInputs(node);
             installEditor(node);
             void refresh([node]);
         }
@@ -149,6 +158,13 @@ app.registerExtension({
         nodeType.prototype.onConfigure = function (...args) {
             const result = onConfigure?.apply(this, args);
             migratePromptType(this);
+            scheduleImageInputs(this);
+            return result;
+        };
+        const onConnectionsChange = nodeType.prototype.onConnectionsChange;
+        nodeType.prototype.onConnectionsChange = function (...args) {
+            const result=onConnectionsChange?.apply(this,args);
+            scheduleImageInputs(this);
             return result;
         };
     },

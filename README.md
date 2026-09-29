@@ -8,6 +8,8 @@ https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8536e96a-514a
 
 Update 
 
+2026/09/29 Add booru tag prompter node
+
 2026/09/16 Add image prompter node
 
 2026/09/14 Add minimax h3 camera node
@@ -277,6 +279,9 @@ Changing `prompt_type` clears the edited output, displayed prompt and Undo state
 **Setup:** uses the shared H3 Qwen/llama.cpp runtime. Existing weights are reused; missing model weights download on first use (about 16.8 GB for the language model, plus vision weights when needed).
 
 ### Booru tag prompter
+
+<img width="2440" height="1667" alt="image" src="https://github.com/user-attachments/assets/632856ae-1dbb-45c0-811d-c908da153d0b" />
+
 
 Enter tags in `tags` and connect the `tags` output to a text encoder. Autocomplete uses the bundled Danbooru tag list: type a fragment, then use ↑/↓ and Enter or Tab, or click a result. Selecting `shiroko_(blue_archive)`, for example, inserts `shiroko \(blue archive\)`. Manually typed text is not rewritten.
 

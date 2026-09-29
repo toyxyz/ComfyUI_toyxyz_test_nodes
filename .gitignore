@@ -14,6 +14,9 @@ tests/
 
 # Local test outputs, logs, extracted frames and temporary videos
 /test/
+/.wildcard_settings.json
+/favorites/
+/.favorite_settings.json
 
 # Local agent instructions
 /AGENTS.md

@@ -8,6 +8,8 @@ from .nodes.toyxyz_test_nodes import CaptureWebcam, LoadWebcamImage, LoadImageFr
 from .nodes.visual_area_mask import VisualAreaMask
 from .nodes.minimax_h3_prompter import MinimaxH3Prompter
 from .nodes.image_prompter import ImagePrompter
+from .nodes.booru_tag_prompter import BooruTagPrompter
+from .nodes.booru_tag_presets import BooruTagPresets
 from .nodes.image_camera_presets import ImageCameraPresets
 from .nodes.minimax_h3_frames import MiniMaxH3AddGuideFrames
 from .nodes.minimax_h3_camera import MinimaxH3Camera
@@ -31,6 +33,8 @@ NODE_CLASS_MAPPINGS = {
     "VisualAreaMask": VisualAreaMask,
     "MinimaxH3Prompter": MinimaxH3Prompter,
     "ToyxyzImagePrompter": ImagePrompter,
+    "ToyxyzBooruTagPrompter": BooruTagPrompter,
+    "ToyxyzBooruTagPresets": BooruTagPresets,
     "ToyxyzImageCameraPresets": ImageCameraPresets,
     "MinimaxH3Camera": MinimaxH3Camera,
     "MiniMaxH3AddGuideFrames": MiniMaxH3AddGuideFrames,
@@ -70,6 +74,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "VisualAreaMask": "Visual Area Mask",
     "MinimaxH3Prompter": "Minimax-H3-prompter",
     "ToyxyzImagePrompter": "image prompter",
+    "ToyxyzBooruTagPrompter": "booru tag prompter",
+    "ToyxyzBooruTagPresets": "booru tag camera",
     "ToyxyzImageCameraPresets": "image prompter preset",
     "MinimaxH3Camera": "minimax h3 camera",
     "MiniMaxH3AddGuideFrames": "Add Guide for MiniMax H3 frames",

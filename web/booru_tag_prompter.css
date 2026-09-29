@@ -1,0 +1,161 @@
+.toyxyz-booru-suggestions {
+    position: fixed;
+    z-index: 10000;
+    overflow-y: auto;
+    max-height: min(300px, 45vh);
+    border: 1px solid var(--border-color, #666);
+    border-radius: 0.45em;
+    background: var(--comfy-menu-bg, #252525);
+    color: var(--input-text, #eee);
+    box-shadow: 0 8px 24px #0009;
+    font: 13px sans-serif;
+}
+
+.toyxyz-booru-suggestion {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6em;
+    width: 100%;
+    padding: 0.45em 0.7em;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.toyxyz-booru-suggestion[aria-selected="true"] {
+    background: #205b91;
+    color: #fff;
+    box-shadow: inset 3px 0 #79c4ff, inset 0 0 0 1px #438bca;
+}
+
+.toyxyz-booru-suggestion[aria-selected="true"] .toyxyz-booru-suggestion-detail {
+    color: #d9edff;
+}
+
+.toyxyz-booru-suggestion[aria-selected="true"] .toyxyz-booru-match {
+    text-decoration-color: #bce3ff;
+}
+
+.toyxyz-booru-suggestion-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.toyxyz-booru-suggestion-detail {
+    color: var(--descrip-text, #aaa);
+    font-size: 0.82em;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.toyxyz-booru-match {
+    text-decoration: underline;
+    text-decoration-color: #67adff;
+    text-underline-offset: 0.15em;
+}
+.toyxyz-wildcard-editor { display:flex; gap:8px; width:100%; height:100%; min-width:0; box-sizing:border-box; font:13px sans-serif; }
+.toyxyz-wildcard-text { position:relative; flex:1; min-width:0; height:100%; background:#202020; }
+.toyxyz-wildcard-backdrop { position:absolute; inset:0; overflow:hidden; pointer-events:none; border:1px solid transparent; box-sizing:border-box; }
+.toyxyz-wildcard-backdrop pre { margin:0; box-sizing:border-box; white-space:pre-wrap; overflow-wrap:break-word; color:#ddd; }
+.toyxyz-wildcard-backdrop mark { color:#fff; background:#505050; border-radius:3px; }
+.toyxyz-wildcard-input { background:transparent !important; color:transparent !important; -webkit-text-fill-color:transparent; caret-color:#fff; overflow-y:scroll; }
+.toyxyz-wildcard-input::selection { background:rgba(85,155,235,.45); }
+.toyxyz-wildcard-sidebar { display:flex; flex-direction:column; flex:0 0 180px; min-width:0; overflow:hidden; background:var(--toyxyz-node-bg,#353535); border-radius:5px; color:#ddd; }
+.toyxyz-wildcard-tabs { display:flex; gap:4px; padding:5px 5px 0; flex-shrink:0; }
+.toyxyz-wildcard-tabs button { flex:1; font-weight:700; }
+.toyxyz-wildcard-tabs button.toyxyz-tab-active { background:#315b84; border-color:#71b8ff; color:#fff; box-shadow:inset 0 0 0 1px #71b8ff; }
+.toyxyz-wiki-panel { position:fixed; z-index:10001; display:flex; flex-direction:column; box-sizing:border-box; height:min(760px,calc(100vh - 16px)); overflow:hidden; border:1px solid #647991; border-radius:9px; background:#222a34; color:#e9f0f7; box-shadow:0 16px 38px #000b; font:13px/1.5 sans-serif; }
+.toyxyz-wiki-panel[hidden] { display:none; }
+.toyxyz-wiki-panel button { border:1px solid #536a80; border-radius:5px; padding:5px 8px; background:#304155; color:#edf4fa; font:inherit; cursor:pointer; }
+.toyxyz-wiki-panel button:hover { background:#415c77; }
+.toyxyz-wiki-panel button:disabled { opacity:.45; cursor:default; }
+.toyxyz-wiki-header { display:flex; align-items:center; gap:12px; flex-shrink:0; padding:10px 13px; border-bottom:1px solid #405267; cursor:grab; user-select:none; touch-action:none; }
+.toyxyz-wiki-header:active { cursor:grabbing; }
+.toyxyz-wiki-header strong { font-size:15px; }
+.toyxyz-wiki-header-note { flex:1; color:#a8bbca; font-size:11px; }
+.toyxyz-wiki-header button { font-size:18px; line-height:1; cursor:pointer; }
+.toyxyz-wiki-resize-grip { position:absolute; right:0; bottom:0; z-index:1; width:22px; height:22px; cursor:nwse-resize; touch-action:none; background:linear-gradient(135deg,transparent 48%,#8eabc6 49%,#8eabc6 54%,transparent 55%) right 5px bottom 5px/10px 10px no-repeat; }
+.toyxyz-wiki-resize-grip:focus-visible { outline:2px solid #80b7ef; outline-offset:-2px; }
+.toyxyz-wiki-layout { display:grid; grid-template-columns:minmax(145px,175px) minmax(225px,285px) minmax(260px,1fr); flex:1; min-height:0; overflow-x:auto; }
+.toyxyz-wiki-sidebar,.toyxyz-wiki-browse,.toyxyz-wiki-detail { min-height:0; overflow-y:auto; padding:15px 13px; }
+.toyxyz-wiki-sidebar,.toyxyz-wiki-browse { border-right:1px solid #3d4d5e; }
+.toyxyz-wiki-sidebar { background:#26303b; }
+.toyxyz-wiki-eyebrow { color:#80b7ef; font-size:10px; font-weight:700; letter-spacing:.13em; }
+.toyxyz-wiki-panel h2 { margin:3px 0 5px; font-size:18px; line-height:1.3; }
+.toyxyz-wiki-total,.toyxyz-wiki-help { margin:0 0 14px; color:#aec0cf; font-size:11px; }
+.toyxyz-wiki-section-title { margin:18px 0 7px; color:#9eb4c7; font-size:11px; font-weight:600; }
+.toyxyz-wiki-categories,.toyxyz-wiki-quicklinks { display:flex; flex-direction:column; gap:3px; }
+.toyxyz-wiki-category { display:flex; align-items:center; gap:6px; width:100%; text-align:left; background:transparent!important; border:0!important; }
+.toyxyz-wiki-category.toyxyz-wiki-active { background:#345b84!important; color:#fff; }
+.toyxyz-wiki-category-icon { display:grid; place-items:center; flex:0 0 17px; height:17px; border-radius:4px; background:#435c77; font-size:10px; font-weight:700; }
+.toyxyz-wiki-category-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.toyxyz-wiki-category-count { color:#a8b9c9; font-size:10px; }
+.toyxyz-wiki-quicklinks button { border:0; background:transparent; text-align:left; color:#b8d5f4; }
+.toyxyz-wiki-sidebar-help { margin-top:18px; color:#a8b9c9; font-size:10px; }
+.toyxyz-wiki-search { box-sizing:border-box; width:100%; margin:2px 0 9px; padding:8px 10px; border:1px solid #657c93; border-radius:6px; background:#151e28; color:#fff; font:inherit; }
+.toyxyz-wiki-status { padding:4px 0 9px; color:#b9c9d8; font-size:11px; font-weight:600; }
+.toyxyz-wiki-results { display:flex; flex-direction:column; min-height:0; }
+.toyxyz-wiki-result { display:flex; flex-direction:column; gap:4px; width:100%; padding:9px 3px!important; border:0!important; border-top:1px solid #3c4c5e!important; border-radius:0!important; background:transparent!important; text-align:left; }
+.toyxyz-wiki-result:hover { background:#30465c!important; }
+.toyxyz-wiki-result.toyxyz-wiki-selected { background:#345b84!important; }
+.toyxyz-wiki-result-top { display:flex; align-items:center; gap:5px; }
+.toyxyz-wiki-result-top strong { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; }
+.toyxyz-wiki-result-top small { padding:2px 4px; border-radius:3px; background:#3c5066; color:#bbcee0; font-size:9px; }
+.toyxyz-wiki-result-snippet,.toyxyz-wiki-result-meta { color:#aebfce; font-size:10px; line-height:1.4; }
+.toyxyz-wiki-result-snippet { display:-webkit-box; overflow:hidden; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+.toyxyz-wiki-result-meta { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.toyxyz-wiki-pager { display:flex; align-items:center; justify-content:space-between; gap:5px; margin-top:10px; font-size:11px; }
+.toyxyz-wiki-placeholder { color:#b2c4d2; white-space:pre-wrap; }
+.toyxyz-wiki-detail { background:#202833; }
+.toyxyz-wiki-detail-top { display:flex; align-items:center; justify-content:space-between; gap:8px; color:#9cb0c5; font-size:10px; letter-spacing:.08em; }
+.toyxyz-wiki-detail-title { margin:14px 0 5px!important; overflow-wrap:anywhere; font-size:23px!important; }
+.toyxyz-wiki-aliases { color:#a9bdd0; font-size:11px; overflow-wrap:anywhere; }
+.toyxyz-wiki-facts,.toyxyz-wiki-actions { display:flex; align-items:center; flex-wrap:wrap; gap:6px; margin:12px 0; }
+.toyxyz-wiki-facts span { padding:4px 6px; border:1px solid #4e6072; border-radius:4px; color:#c9d6e2; font-size:10px; }
+.toyxyz-wiki-actions { padding-bottom:10px; border-bottom:1px solid #435265; }
+.toyxyz-wiki-actions .toyxyz-wiki-insert { background:#32618f; border-color:#77b6f0; }
+.toyxyz-wiki-actions a { margin-left:auto; color:#9bcbff; font-size:11px; }
+.toyxyz-wiki-article { overflow-wrap:anywhere; color:#e5edf5; font-size:12px; line-height:1.6; }
+.toyxyz-wiki-article p { margin:8px 0; }
+.toyxyz-wiki-article h2,.toyxyz-wiki-article h3,.toyxyz-wiki-article h4 { margin:20px 0 8px; font-size:15px; }
+.toyxyz-wiki-gap { height:8px; }
+.toyxyz-wiki-list-line { margin:4px 0; }
+.toyxyz-wiki-bullet { margin-right:7px; color:#91bdec; }
+.toyxyz-wiki-article blockquote { margin:10px 0; padding:5px 11px; border-left:3px solid #6585a5; color:#bfd1df; }
+.toyxyz-wiki-panel .toyxyz-wiki-inline-link { padding:0; border:0; background:transparent; color:#9bcbff; text-decoration:underline; }
+@media(max-width:760px) { .toyxyz-wiki-layout { grid-template-columns:125px 190px minmax(250px,1fr); } }
+.toyxyz-wildcard-header { display:flex; align-items:center; gap:4px; padding:5px; flex-shrink:0; }
+.toyxyz-wildcard-sidebar button { border:1px solid #666; background:var(--toyxyz-node-bg,#353535); color:#eee; border-radius:4px; padding:5px; cursor:pointer; }
+.toyxyz-wildcard-header span { flex:1; min-width:0; }
+.toyxyz-wildcard-status { padding:5px; font-size:11px; overflow-wrap:anywhere; color:#f0c6aa; }
+.toyxyz-wildcard-files,.toyxyz-favorite-files { overflow-y:auto; min-height:0; padding:5px; font:11px/1.4 sans-serif; }
+.toyxyz-wildcard-files button,.toyxyz-favorite-files button { display:block; width:100%; text-align:left; margin-bottom:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:inherit; padding:4px 6px; }
+.toyxyz-wildcard-files[hidden],.toyxyz-favorite-files[hidden] { display:none; }
+.toyxyz-wildcard-directory { margin-bottom:3px; }
+.toyxyz-wildcard-directory summary { cursor:pointer; padding:4px 2px; overflow-wrap:anywhere; }
+.toyxyz-wildcard-directory summary:hover { background:#505050; border-radius:4px; }
+.toyxyz-wildcard-directory-contents { margin-left:10px; padding-left:5px; border-left:1px solid #555; }
+.toyxyz-wildcard-folder-icon { display:inline-block; position:relative; width:12px; height:8px; margin:0 5px 0 2px; border:1px solid #aaa; border-radius:1px; background:#666; vertical-align:middle; }
+.toyxyz-wildcard-folder-icon::before { content:''; position:absolute; top:-4px; left:-1px; width:6px; height:3px; border:1px solid #aaa; border-bottom:0; background:#666; border-radius:2px 2px 0 0; }
+.toyxyz-wildcard-sidebar button:hover { background:#505050; }
+.toyxyz-wildcard-tabs button.toyxyz-tab-active:hover { background:#386a9b; }
+.toyxyz-wildcard-preview { position:fixed; z-index:100000; box-sizing:border-box; width:min(480px,calc(100vw - 16px)); max-height:min(420px,calc(100vh - 16px)); overflow:auto; padding:10px 12px; border:1px solid #6b8196; border-radius:6px; background:#20262d; color:#eee; box-shadow:0 8px 24px #0009; white-space:pre-wrap; overflow-wrap:anywhere; font:12px/1.45 monospace; pointer-events:auto; }
+.toyxyz-wildcard-preview[hidden] { display:none; }
+.toyxyz-favorite-menu { position:fixed; z-index:100001; min-width:140px; padding:4px; border:1px solid #637b91; border-radius:6px; background:#242c35; box-shadow:0 8px 24px #0009; }
+.toyxyz-favorite-menu[hidden],.toyxyz-favorite-overlay[hidden] { display:none; }
+.toyxyz-favorite-menu button { display:block; width:100%; padding:7px 10px; border:0; border-radius:4px; background:transparent; color:#eee; text-align:left; cursor:pointer; }
+.toyxyz-favorite-menu button:hover { background:#3a5268; }
+.toyxyz-favorite-overlay { position:fixed; inset:0; z-index:100002; display:flex; align-items:center; justify-content:center; background:#0009; }
+.toyxyz-favorite-dialog { box-sizing:border-box; display:flex; flex-direction:column; gap:10px; width:min(720px,calc(100vw - 32px)); max-height:calc(100vh - 32px); padding:16px; border:1px solid #637b91; border-radius:8px; background:#242c35; color:#eee; box-shadow:0 12px 32px #000a; }
+.toyxyz-favorite-dialog h3 { margin:0; font:600 16px sans-serif; }
+.toyxyz-favorite-dialog textarea { box-sizing:border-box; width:100%; min-height:240px; max-height:65vh; resize:vertical; padding:10px; border:1px solid #637b91; border-radius:5px; background:#171d24; color:#eee; font:13px/1.5 monospace; }
+.toyxyz-favorite-dialog-actions { display:flex; justify-content:flex-end; gap:8px; }
+.toyxyz-favorite-dialog-actions button { padding:7px 12px; border:1px solid #637b91; border-radius:5px; background:#35485a; color:#eee; cursor:pointer; }
+.toyxyz-favorite-dialog-actions button:hover { background:#496783; }

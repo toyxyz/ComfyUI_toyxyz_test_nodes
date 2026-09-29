@@ -10,6 +10,16 @@ import threading
 
 from . import minimax_h3_prompter as runtime
 from .image_prompt_profiles import PROMPT_PROFILES
+from .image_prompt_profiles import anima as anima_profile
+from .anima_text import split_anima_input
+from .image_prompt_weights import preserve_weighted_tags
+from .anima_tags import (filter_enrichment_tags,
+                         filter_unlocated_lighting_tags,
+                         has_explicit_setting,
+                         format_response as format_anima_response,
+                         read_response as read_anima_response,
+                         read_response_data as read_anima_data,
+                         scene_needs_repair)
 from .image_prompt_profiles.multi_reference import ANALYSIS as MULTI_ANALYSIS, WRITER as MULTI_WRITER
 from .image_camera import camera_guidance, camera_components, SHOT_FRAMING, shot_framing
 from .image_camera_presets import style_guidance
@@ -38,6 +48,7 @@ into 'above', or a held object into a floating one. Keep each relation's two end
 Do not replace specific requirements with 'as requested', 'all details', 'clear composition' or a recap.
 Explicit negative constraints must remain explicit; omission of invisible detail concerns only invented or
 reference-derived detail, never a user's stated constraint. Do not force an off-frame object into view.
+Preserve every explicit numeric prompt weight such as (from front:4.92) exactly, including its number.
 User text overrides presets and reference assumptions; explicit user corrections replace superseded facts.
 The output must contain at least the user's information, not necessarily the same character or word count
 across languages. Rephrasing must be lossless. No target word count, paragraph count or token-saving summary.
@@ -137,6 +148,22 @@ def build_messages(prompt: str, prompt_type: str, analysis: str | None = None,
     if not isinstance(prompt, str) or (not prompt.strip() and analysis is None):
         raise ValueError("Image prompter: enter a prompt before running the queue.")
     profile = PROMPT_PROFILES[prompt_type]
+    if profile.output_mode == "anima":
+        if enhance not in ENHANCE_LEVELS:
+            raise ValueError(f"Unsupported image enhancement level: {enhance}")
+        input_tags, natural_language = split_anima_input(prompt)
+        budget = anima_profile.candidate_budget(
+            input_tags, natural_language, enhance, has_explicit_setting(prompt))
+        payload = {"input_tags": input_tags, "natural_language": natural_language,
+                   "reference_evidence": analysis,
+                   "camera_guidance": camera_plan or camera_guidance(camera),
+                   "style_preset": style_guidance(camera)}
+        return [{"role": "system", "content": profile.system_prompt + "\n\n" + anima_profile.ENHANCEMENT[enhance]
+                 + "\n" + anima_profile.budget_instruction(budget)
+                 + "\nExplicit camera instructions in the input override camera_guidance. "
+                   "For multiple people, keep each person's tags and spatial role consistent."},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                {"role": "user", "content": "Return JSON with a rich, grounded tag list and a complete but concise scene. Cover every explicit placement, pose, limb position, gaze, expression, and object relationship from the user input. Do not write style, beauty, or quality prose."}]
     if profile.output_mode == "edit":
         if not prompt.strip():
             raise ValueError("Image prompter: enter an editing instruction for qwen_image_2.1.")
@@ -477,13 +504,26 @@ def clean_response(text: str) -> str:
     return text
 
 
+def fallback_anima_from_input(prompt: str, input_tags: str, natural_language: str) -> str:
+    """Keep the user's request available when the Anima JSON cannot be used."""
+    if not input_tags.strip():
+        return natural_language or prompt
+    try:
+        tags = format_anima_response(
+            input_tags, '{"tags": [], "scene": ""}',
+            source_text=prompt, enhance="none")
+    except RuntimeError:
+        return prompt
+    return tags + ("\n" + natural_language if natural_language else "")
+
+
 class ImagePrompter:
     @classmethod
     def INPUT_TYPES(cls):
         choices = list(model_choices())
         return {"required": {
             "prompt": ("STRING", {"default": "", "multiline": True,
-                                  "tooltip": "Without an image, describe what you want to create; your text is expanded into a detailed image-generation prompt. With a reference image, describe what to change and what to keep, for example: 'Change the background to a beach; keep the person unchanged.' Your instructions always take priority."}),
+                                  "tooltip": "Without an image, describe what you want to create. For anima, enter tags, natural language, or both; recognized tags lead the output and English scene sentences retain your placement, pose, gaze, and expression. With a reference image, describe what to change and keep."}),
             "llm_model": (choices, {"default": choices[0],
                           "tooltip": "Qwen3.8 Uncensored, shared with H3 prompter. Missing weights download automatically on queue execution (about 16.8 GB)."}),
             "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFE, "control_after_generate": "fixed",
@@ -491,7 +531,7 @@ class ImagePrompter:
         }, "optional": {
             # Optional with a default also keeps old API graphs (target_model)
             # executable; positional UI widget order remains unchanged.
-            "prompt_type": (list(PROMPT_PROFILES), {"default": "default", "tooltip": "default: image-generation scene descriptions. qwen_image_2.1: editing instructions based on references and your request, with explicit change/preservation boundaries. Both use the selected Qwen writer."}),
+            "prompt_type": (list(PROMPT_PROFILES), {"default": "default", "tooltip": "anima: dictionary-validated Danbooru tags followed by concise pose and spatial scene sentences; no default quality tags. default: image-generation prose. qwen_image_2.1: reference editing instructions."}),
             "preset": ("TOYXYZ_IMAGE_CAMERA", {"tooltip": "Optional guidance from image prompter preset. Explicit user instructions override the preset; compatible settings override reference framing."}),
             **{f"image_{i}": ("IMAGE", {"tooltip": f"Reference <image{i}>. One image per socket (first batch frame). Connect to reveal the next input, up to 10. Keep source numbering consistent with the downstream editor."}) for i in range(1,11)},
             "image": ("IMAGE", {"tooltip": "Legacy image input; migrated to image_1 in the UI."}),
@@ -513,7 +553,7 @@ class ImagePrompter:
     RETURN_NAMES = ("prompt",) + tuple(f"image_{i}" for i in range(1, 11))
     FUNCTION = "generate"
     CATEGORY = "ToyxyzTestNodes/Prompt"
-    DESCRIPTION = "Write English scene prompts (default) or editing instructions (qwen_image_2.1) from user text and up to 10 reference images. Explicit user choices and preservation boundaries take priority. Numbered image outputs pass through the unchanged original inputs for the downstream editor."
+    DESCRIPTION = "Write tag-forward Anima prompts with source-faithful pose and spatial scene sentences, English scene prompts, or reference-edit instructions. Explicit user choices take priority. Numbered image outputs pass through unchanged."
 
     def generate(self, prompt, llm_model, seed, prompt_type=None, image=None, enhance="none", target_model=None, camera=None, edited_prompt="", _edit_instruction=None, preset=None, **images):
         # `camera` is a legacy Python-call alias, not an exposed input socket.
@@ -549,9 +589,10 @@ class ImagePrompter:
         try:
             # Resolve framing once; a preliminary rewrite could invent crops and leak off-frame attributes.
             profile = PROMPT_PROFILES[prompt_type]
-            use_camera_plan = _edit_instruction is None and bool(profile.camera_resolution_prompt and
+            use_camera_plan = (_edit_instruction is None
+                               and bool(profile.camera_resolution_prompt and
                                    (profile.camera_intent_prompt and (prompt.strip() or camera_guidance(camera))
-                                    or camera_guidance(camera) and not profile.camera_system_prompt))
+                                    or camera_guidance(camera) and not profile.camera_system_prompt)))
             progress = comfy.utils.ProgressBar((4 if reference else 3) + int(use_camera_plan))
             mm.throw_exception_if_processing_interrupted()
             last_download_step = None
@@ -621,7 +662,7 @@ class ImagePrompter:
                 mm.throw_exception_if_processing_interrupted()
                 messages = build_messages(prompt, prompt_type, analysis_text, enhance, camera, plan)
                 progress.update(1)
-            if _edit_instruction is not None:
+            if _edit_instruction is not None and prompt_type != "anima":
                 # Resolve edits separately from full-text reproduction, including
                 # source-dependent contradictions. No scene-specific rules/retries.
                 delta = session.chat(build_edit_intent_messages(_edit_instruction, prompt),
@@ -640,9 +681,116 @@ class ImagePrompter:
             progress.update(1)
             metrics = getattr(session, "last_metrics", {})
             LOG.info("Image prompter: %s", metrics)
-            if metrics.get("finish_reason") == "length":
+            if prompt_type == "anima" and metrics.get("finish_reason") == "length":
+                # An occasional runaway JSON generation should get one bounded
+                # chance to restate the same source facts compactly.
+                output = session.chat(messages + [{"role": "user", "content":
+                    "Return exactly one complete JSON object with keys "
+                    "\"tags\" (array of strings), \"scene\" (English string), and "
+                    "\"source_tag_evidence\" (array). Use concise tag "
+                    "candidates and as many brief scene sentences as needed to "
+                    "retain every explicit pose, placement, and object relation. "
+                    "No explanations, analysis, or repeated text."}],
+                    max_tokens=MAX_OUTPUT_TOKENS, temperature=.1, top_p=.8, top_k=30,
+                    repeat_penalty=1.1, seed=seed)
+                mm.throw_exception_if_processing_interrupted()
+                metrics = getattr(session, "last_metrics", {})
+                LOG.info("Image prompter Anima bounded retry: %s", metrics)
+            if metrics.get("finish_reason") == "length" and prompt_type != "anima":
                 raise RuntimeError("Image prompter: output hit the model/context token limit; incomplete text was not sent downstream.")
-            result = clean_response(output)
+            anima_clean_error = None
+            try:
+                result = clean_response(output)
+            except RuntimeError as exc:
+                if prompt_type != "anima":
+                    raise
+                anima_clean_error = exc
+                result = ""
+            if prompt_type == "anima":
+                input_tags, natural_language = split_anima_input(prompt)
+                invalid_writer = bool(anima_clean_error or metrics.get("finish_reason") == "length")
+                if not invalid_writer:
+                    try:
+                        read_anima_data(result)
+                    except RuntimeError as exc:
+                        invalid_writer = True
+                        LOG.warning("Image prompter Anima: writer format invalid; using source-based fallback: %s", exc)
+                elif metrics.get("finish_reason") == "length":
+                    LOG.warning("Image prompter Anima: writer reached token limit twice; using source-based fallback.")
+                else:
+                    LOG.warning("Image prompter Anima: unusable writer response; using source-based fallback: %s", anima_clean_error)
+                if enhance == "strong" and _edit_instruction is None and not invalid_writer:
+                    try:
+                        draft_data = read_anima_data(result)
+                        draft_tags, draft_scene = draft_data["tags"], draft_data["scene"]
+                        has_setting = has_explicit_setting(prompt)
+                        extra_budget = anima_profile.candidate_budget(
+                            input_tags, natural_language, "strong", has_setting) // 2
+                        enrichment = session.chat([
+                            {"role": "system", "content": (
+                                anima_profile.TAG_ENRICHMENT_PROMPT if has_setting
+                                else anima_profile.LIGHT_ENRICHMENT_PROMPT)
+                                + "\n" + anima_profile.budget_instruction(extra_budget)},
+                            {"role": "user", "content": json.dumps({
+                                "user_input": prompt, "draft_tags": draft_tags,
+                                "draft_scene": draft_scene,
+                            }, ensure_ascii=False)},
+                        ], max_tokens=MAX_OUTPUT_TOKENS, temperature=.2, seed=seed)
+                        mm.throw_exception_if_processing_interrupted()
+                        if getattr(session, "last_metrics", {}).get("finish_reason") == "length":
+                            raise RuntimeError("tag expansion reached its token limit")
+                        enriched_data = read_anima_data(clean_response(enrichment))
+                        extra_tags, enhanced_scene = enriched_data["tags"], enriched_data["scene"]
+                        extra_tags = filter_enrichment_tags(extra_tags)
+                        if not has_setting:
+                            extra_tags = filter_unlocated_lighting_tags(extra_tags)
+                        result = json.dumps({**draft_data, "tags": draft_tags + extra_tags,
+                                             "source_tag_evidence": (
+                                                 draft_data.get("source_tag_evidence", [])
+                                                 + enriched_data.get("source_tag_evidence", [])),
+                                             "scene": (enhanced_scene or draft_scene)
+                                             if has_setting else draft_scene}, ensure_ascii=False)
+                    except RuntimeError as exc:
+                        LOG.warning("Image prompter Anima: extra tag pass skipped: %s", exc)
+                if not invalid_writer:
+                    try:
+                        before_repair = read_anima_data(result)
+                        tags_before_repair, scene = before_repair["tags"], before_repair["scene"]
+                        if not (enhance == "none" and not natural_language and _edit_instruction is None) and scene_needs_repair(scene):
+                            repaired = session.chat([
+                                {"role": "system", "content": anima_profile.SCENE_REPAIR_PROMPT},
+                                {"role": "user", "content": json.dumps({"original_input": prompt,
+                                                                          "draft": before_repair}, ensure_ascii=False)},
+                            ], max_tokens=MAX_OUTPUT_TOKENS, temperature=.1, seed=seed)
+                            mm.throw_exception_if_processing_interrupted()
+                            _, repaired_scene = read_anima_response(clean_response(repaired))
+                            result = json.dumps({**before_repair, "tags": tags_before_repair,
+                                                 "scene": repaired_scene}, ensure_ascii=False)
+                    except RuntimeError as exc:
+                        LOG.warning("Image prompter Anima: scene repair skipped: %s", exc)
+                if invalid_writer:
+                    result = (prompt if _edit_instruction is not None else
+                              fallback_anima_from_input(prompt, input_tags, natural_language))
+                else:
+                    try:
+                        tag_trace = []
+                        result = format_anima_response(input_tags, result,
+                                                       edited=_edit_instruction is not None,
+                                                       source_text=prompt if _edit_instruction is None else prompt + " " + _edit_instruction,
+                                                       enhance=enhance,
+                                                       natural_language=natural_language,
+                                                       trace=tag_trace)
+                        if tag_trace:
+                            counts = {status: sum(item["status"] == status for item in tag_trace)
+                                      for status in ("accepted", "duplicate", "recovered", "rejected")}
+                            LOG.info("Image prompter Anima tag decisions: %s", counts)
+                            LOG.debug("Image prompter Anima tag trace: %s", tag_trace)
+                    except RuntimeError as exc:
+                        LOG.warning("Image prompter Anima: unusable writer output; using source-based fallback: %s", exc)
+                        result = (prompt if _edit_instruction is not None else
+                                  fallback_anima_from_input(prompt, input_tags, natural_language))
+            if _edit_instruction is None:
+                result = preserve_weighted_tags(prompt, result)
             if _edit_instruction is not None and ' '.join(result.split()) == ' '.join(prompt.split()):
                 LOG.warning('Image prompter: edit returned unchanged text; no requested change was detected.')
             progress.update(1)
@@ -681,6 +829,10 @@ def build_edit_messages(current, instruction, prompt_type='default'):
         raise ValueError("Current prompt and edit request are required.")
     if len(current) > 18000 or len(instruction) > 6000:
         LOG.warning("Image prompter: long edit input; continuing unchanged (actual model context limit may apply).")
+    if resolve_prompt_type(prompt_type) == "anima":
+        return [{"role": "system", "content": anima_profile.EDIT_PROMPT},
+                {"role": "user", "content": json.dumps({"current_prompt": current,
+                                                        "edit_request": instruction}, ensure_ascii=False)}]
     return [{"role": "system", "content":
         "Revise the supplied English image-generation prompt. Perform the requested change in the returned text; do not merely copy the source. "
         "The edit request has highest priority over the existing prompt. Preserve all unrelated details, "

@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from typing import Mapping
 from types import MappingProxyType
 
-from . import default, qwen_image_2_1
+from . import anima, default, qwen_image_2_1
 
 
 @dataclass(frozen=True)
@@ -25,6 +25,14 @@ class ImagePromptProfile:
 
 # Scene and edit writers are independent. Legacy names resolve at the node boundary.
 PROMPT_PROFILES = MappingProxyType({
+    "anima": ImagePromptProfile(
+        system_prompt=anima.SYSTEM_PROMPT,
+        image_analysis_prompt=anima.IMAGE_ANALYSIS_PROMPT,
+        reference_policy="",
+        camera_resolution_prompt=anima.CAMERA_RESOLUTION_PROMPT,
+        camera_intent_prompt=anima.CAMERA_INTENT_PROMPT,
+        output_mode="anima",
+    ),
     "default": ImagePromptProfile(
         system_prompt=default.SYSTEM_PROMPT,
         image_analysis_prompt=default.IMAGE_ANALYSIS_PROMPT,

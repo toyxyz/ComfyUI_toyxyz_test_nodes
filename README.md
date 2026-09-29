@@ -2,7 +2,6 @@
 
 This is a custom node that collects the tools I use frequently.
 
-
 https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8536e96a-514a-48b2-b1aa-8eccbd3fa853
 
 (This video is at 4x speed)
@@ -233,7 +232,8 @@ frames of `video_1` with the opening frames of `video_2`. During the overlap, vi
 <img width="1995" height="1461" alt="image" src="https://github.com/user-attachments/assets/48f93f03-23c9-4371-9d16-aefce5c35c08" />
 
 
-Turns requests into English scene or image-editing prompts using local Qwen. Optionally connect reference images and an `image prompter preset` node.
+Turns requests into Anima tag-and-caption prompts, English scene prompts, or image-editing instructions using local Qwen. Optionally connect reference images and an `image prompter preset` node.
+
 
 1. Enter your request in `prompt`.
 2. Optionally connect `image_1` and/or `preset`. Connecting an image reveals the next input, up to `image_10`.
@@ -243,9 +243,21 @@ Turns requests into English scene or image-editing prompts using local Qwen. Opt
 
 - `llm_model`: shows the supported Qwen model and installation status.
 - `seed`: controls prompt variation, not the image generator's seed. Use `fixed` for repeatable tests.
-- `prompt_type`: `default` uses medium-first descriptions, explicit spatial relationships, and user-information preservation (formerly `normal_2`). Older `normal` and `normal_2` selections migrate to `default`. Enhance strength is a separate setting.
+- `prompt_type`: `anima` writes a tag-forward hybrid prompt: validated Danbooru tags followed by concise English sentences covering every user-specified placement, pose, limb position, gaze, expression, action, and object location. Complex inputs use as many brief sentences as their explicit spatial facts require. It accepts tags alone, natural language alone, or both. `default` uses medium-first prose descriptions, explicit spatial relationships, and user-information preservation (formerly `normal_2`). Older `normal` and `normal_2` selections migrate to `default`. Enhance strength is a separate setting.
 - `qwen_image_2.1`: writes editing instructions, identifying what to change and preserve. Uses the existing Qwen writer, not a separate official Prompt Enhancer model. Without images, it rewrites the editing request from text only.
 - `enhance`: `none` translates and organizes; `normal` adds detail; `strong` develops open details more richly. Every level preserves explicit user information rather than summarizing it. No target word count is imposed; check generated text for model omissions.
+
+In `anima`, recognized input tags are mapped to the bundled 2026-09-24 Danbooru vocabulary. Generated candidates are looked up by exact name, bundled alias, a few explicit semantic equivalents, then conservative spelling similarity and component lookup. Ambiguous or unsupported candidates are dropped rather than mapped to unrelated tags. `rapidfuzz`, when available, enables the spelling step; exact, alias, and component lookup work without it. Unknown user-authored tag tokens are retained. General tags use lowercase and spaces, score tags keep underscores, and recognized user-authored artist tags receive one leading `@`. No quality, safety, score, artist, or style tag is added by default. The short scene line describes only spatial relations and actions; appearance, clothing, light effects, style, and quality belong in tags. The dictionary snapshot and attribution are in `nodes/data/README.md`.
+
+For Anima gaze and perspective, `looking at camera` maps to `looking at viewer`, while `facing camera` maps to `facing viewer` without asserting eye contact. Viewing position uses tags such as `from behind` and `from below`; scene prose uses `viewer` or `viewpoint` for these relations. A physical camera explicitly held or placed in the scene remains a camera object and can produce a camera tag.
+
+In initial image prompter generation, explicit numeric ComfyUI weights such as `(from front:4.92)` retain their exact text and number. This applies to Anima and the prose prompt types even when Qwen omits or changes a weighted term. Prompt edits can intentionally change or remove weights, so the original weights are not restored after an Edit Prompt action.
+
+For `anima`, `enhance` primarily controls tag expansion. `none` maps supplied facts; with tags alone, it returns only those recognized/custom tags and does not invent a scene line. `normal` asks for about 6–10 compatible optional tag candidates, and `strong` asks for about 16–24 plus a second pass for about 8–12 more when the user establishes a setting. Without an authored setting, the strong second pass adds only compatible lighting effects; clothing or sunlight does not establish a beach, sky, or other location. These are candidate targets, not forced output counts: dictionary validation and source fidelity can reduce the final count. For person appearance, clothing, and gaze extracted from natural-language input, Qwen must quote the exact source phrase; unsupported details are removed. The second `strong` pass cannot add subject appearance or clothing details and also checks the scene sentences against the user's pose and spatial instructions. Explicit user facts and limits remain the priority. Appearance leakage in the scene is repaired or removed locally while valid pose sentences are retained.
+
+If the Anima writer returns empty or unusable output, or reaches its output token limit twice, generation logs a warning and emits the user's recognized/custom tags plus any authored natural-language text. This fallback preserves the source but may leave its language untranslated and cannot provide the requested enhancement. The other prompt types retain their existing error handling.
+
+Anima's main writer, bounded retry, tag enrichment, and scene repair each allow up to 8,192 output tokens. The local Qwen server still has a 16,384-token context shared by input and output; a response can end sooner when that context is exhausted.
 
 Qwen analyzes connected references together before writing the prompt. Specify source roles with `<image1>` through `<image10>`, for example: “Use <image1> as the canvas; replace only its bag with the bag from <image2>.” Only the first batch frame per socket is used. Existing `image` connections migrate to `image_1`.
 
@@ -256,13 +268,42 @@ Use the numbered `image_1`–`image_10` outputs to pass the original images to t
 The generated prompt appears at the bottom of the node.
 
 - **Edit Prompt**: enter an instruction and click **OK** to revise the current output with Qwen.
-- Editing first interprets the requested change, then revises the complete prompt while preserving unrelated details. An unchanged response is reported in the dialog instead of being applied as a successful edit.
+- For `default` and `qwen_image_2.1`, editing first interprets the requested change, then revises the complete prompt. For `anima`, editing revises the complete tag list and short scene line while preserving unrelated custom tags. An unchanged response is reported in the dialog instead of being applied as a successful edit.
 - **Undo**: restore the prompt before the last edit.
 - **Regenerate from inputs**: clear the edited output, then run the workflow to generate from the inputs again.
 
 Changing `prompt_type` clears the edited output, displayed prompt and Undo state; run the workflow to generate in the new mode. Other input changes leave the edited override active until you use Regenerate from inputs. Loading a saved workflow preserves its saved edit. These buttons do not start image generation. Unchanged inputs may use cached results; change the seed for a new variation.
 
 **Setup:** uses the shared H3 Qwen/llama.cpp runtime. Existing weights are reused; missing model weights download on first use (about 16.8 GB for the language model, plus vision weights when needed).
+
+### Booru tag prompter
+
+Enter tags in `tags` and connect the `tags` output to a text encoder. Autocomplete uses the bundled Danbooru tag list: type a fragment, then use ↑/↓ and Enter or Tab, or click a result. Selecting `shiroko_(blue_archive)`, for example, inserts `shiroko \(blue archive\)`. Manually typed text is not rewritten.
+
+| Menu / input | Function |
+| --- | --- |
+| **W** (Wildcards) | Lists files in `wildcards/`. Click a file to insert `__name__`; each execution replaces it with one random non-empty line from that file. **Folder** opens the folder and **↻** refreshes the list. |
+| **F** (Favorites) | **Save** stores the entire current prompt. Click an entry to insert it at the cursor; right-click to edit or delete it. **↻** refreshes the list. |
+| **Wiki** | Opens a movable offline browser. Browse categories, search, follow wiki links, and use **Insert** on a tag entry to add it at the cursor. Drag the title bar to move the window or its bottom-right corner to resize it. |
+| `camera` | Optionally connect `booru tag camera`; its selected camera guidance is appended after your text. |
+
+The node does not use Qwen or invent additional tags. Wildcard file contents and manually entered prompt text are preserved as written.
+
+### Booru tag camera
+
+Connect its `camera` output to `booru tag prompter.camera`.
+
+| Menu | Function |
+| --- | --- |
+| **3D preview** | Shows an illustrative camera position. Drag a colored ring to change the horizontal or vertical view; release to snap to a preset. Scroll to change framing. |
+| **Vertical view** | Selects a view from above or below. |
+| **Horizontal view** | Selects front, back, side, left/right side, or a front/rear 45° view. |
+| **Framing** | Sets subject coverage, from close-up to very wide shot. |
+| **Angle** | Rotates the image view (Dutch, sideways, or upside-down). |
+| **Perspective / Depth** | Adds one perspective or projection tag, such as fisheye or isometric. |
+| **Focus / Blur** | Combines toggleable effects such as depth of field, bokeh, lens flare, and motion blur. **Random** samples a combination; **Strength** applies to the whole group. |
+
+Each main list also has **Random**, which selects a non-None option on each run. Weights range from 0–10 (default 2.0): drag the number to adjust it or click to type; the reset icon restores 2.0. The preview is a guide, not a guarantee of the generated angle. Camera options do not choose a pose, outfit, background, or number of people.
 
 ### image prompter preset
 
@@ -341,6 +382,25 @@ Create a mask for regional prompting. Use Ctrl + click to select an area, and Al
 <img width="2505" height="1667" alt="image" src="https://github.com/user-attachments/assets/5b8871f0-24db-46e8-b69a-4c0e8aa844cf" />
 
 
+
+## Booru tag prompter wildcards
+
+Add UTF-8 text files to this custom node's `wildcards/` folder. Each non-empty
+line is one random option; it can contain multiple words, sentences, tags or weights.
+Use `__cloth__` for `cloth.txt` or `__outfits/cloth__` for a subfolder file.
+`(__cloth__:1.5)` preserves the weight around the chosen line. Nested calls are
+supported with cycle/depth protection. Missing or unreadable calls remain literal.
+Wildcards are expanded before camera composition without reformatting their text;
+authored tag order is retained. Every occurrence samples independently on each execution
+(consecutive runs may coincidentally select the same line).
+
+Type `__` in the prompt field to search the wildcard files inline. Use Up/Down,
+Enter, Tab, Escape, or click just like tag suggestions. The right-side Wildcards
+tab also lists files in a scrollable panel. Click a file to insert its call at
+the cursor or replace selected text. Refresh updates the list
+after filesystem changes. Calls are highlighted in the editor; expanded output
+does not overwrite the original editable input. The screenshot's brace/multi-select
+syntax is not part of this file-based wildcard implementation.
 
 ## Load Random Text From File
 

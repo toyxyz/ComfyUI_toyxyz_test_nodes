@@ -73,6 +73,20 @@
 .toyxyz-wildcard-tabs button.toyxyz-tab-active { background:#315b84; border-color:#71b8ff; color:#fff; box-shadow:inset 0 0 0 1px #71b8ff; }
 .toyxyz-wiki-panel { position:fixed; z-index:10001; display:flex; flex-direction:column; box-sizing:border-box; height:min(760px,calc(100vh - 16px)); overflow:hidden; border:1px solid #647991; border-radius:9px; background:#222a34; color:#e9f0f7; box-shadow:0 16px 38px #000b; font:13px/1.5 sans-serif; }
 .toyxyz-wiki-panel[hidden] { display:none; }
+.toyxyz-wiki-download-backdrop { position:fixed; z-index:10002; inset:0; display:flex; align-items:center; justify-content:center; padding:16px; background:#0009; }
+.toyxyz-wiki-download-backdrop[hidden] { display:none; }
+.toyxyz-wiki-download-box { box-sizing:border-box; width:min(440px,100%); padding:20px; border:1px solid #647991; border-radius:9px; background:#222a34; color:#e9f0f7; box-shadow:0 16px 38px #000b; font:13px/1.5 sans-serif; }
+.toyxyz-wiki-download-box h2 { margin:0 0 10px; font-size:18px; }
+.toyxyz-wiki-download-box p { margin:0 0 12px; }
+.toyxyz-wiki-download-progress { display:flex; align-items:center; gap:10px; margin:0 0 12px; }
+.toyxyz-wiki-download-progress[hidden] { display:none; }
+.toyxyz-wiki-download-progress progress { flex:1; height:14px; accent-color:#75b8f5; }
+.toyxyz-wiki-download-progress output { min-width:36px; text-align:right; font-variant-numeric:tabular-nums; }
+.toyxyz-wiki-download-error { color:#ffbd9d; overflow-wrap:anywhere; }
+.toyxyz-wiki-download-error:empty { display:none; }
+.toyxyz-wiki-download-actions { display:flex; justify-content:flex-end; gap:8px; }
+.toyxyz-wiki-download-actions button { padding:7px 12px; border:1px solid #637b91; border-radius:5px; background:#35485a; color:#eee; cursor:pointer; }
+.toyxyz-wiki-download-actions button:disabled { opacity:.5; cursor:default; }
 .toyxyz-wiki-panel button { border:1px solid #536a80; border-radius:5px; padding:5px 8px; background:#304155; color:#edf4fa; font:inherit; cursor:pointer; }
 .toyxyz-wiki-panel button:hover { background:#415c77; }
 .toyxyz-wiki-panel button:disabled { opacity:.45; cursor:default; }

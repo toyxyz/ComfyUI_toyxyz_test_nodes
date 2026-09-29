@@ -10,9 +10,10 @@ This pinned snapshot contains 125,312 rows. It validates generated tag names
 offline; it does not establish that every tag is understood by a given Anima
 checkpoint. Refresh the snapshot and revision together when updating it.
 
-`danbooru_wiki.sqlite3` is the bundled offline Danbooru wiki snapshot used by
-the `booru tag prompter` Wiki panel. It is opened read-only and is not modified
-by node execution. SHA-256:
+`danbooru_wiki.sqlite3` is downloaded on first Wiki use from
+`https://huggingface.co/toyxyz/backup_models/resolve/main/danbooru_wiki.sqlite3`
+into this directory. It is not tracked in Git. Subsequent Wiki use is offline;
+the file is opened read-only and is not modified by node execution. SHA-256:
 `c17b31e0f6468d2a0d5094452085925643d8442a2433f798f74f26923758bac6`.
 The snapshot is separate from the tag autocomplete CSV and does not update
 automatically.

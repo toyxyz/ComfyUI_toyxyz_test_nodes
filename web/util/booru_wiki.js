@@ -116,13 +116,33 @@ export function installWiki(nodeRef,widget,input,api) {
     resizeGrip.tabIndex=0;
     layout.append(sidebar,browse,detail);panel.append(header,layout,resizeGrip);document.body.append(panel);
 
+    const downloadDialog=node('div','toyxyz-wiki-download-backdrop');downloadDialog.hidden=true;
+    const downloadBox=node('section','toyxyz-wiki-download-box');
+    downloadBox.setAttribute('role','dialog');downloadBox.setAttribute('aria-modal','true');
+    downloadBox.setAttribute('aria-label','Download Tag Wiki');
+    downloadBox.append(node('h2','','Download Tag Wiki'));
+    const downloadMessage=node('p','','The offline Tag Wiki database is not installed. Download approximately 272 MiB from Hugging Face? The file will be saved in this custom node folder.');
+    const progressRow=node('div','toyxyz-wiki-download-progress');progressRow.hidden=true;
+    const progressBar=node('progress');progressBar.max=100;progressBar.value=0;
+    progressBar.setAttribute('aria-label','Wiki download progress');
+    const progressLabel=node('output','','0%');
+    progressRow.append(progressBar,progressLabel);
+    const downloadError=node('p','toyxyz-wiki-download-error');downloadError.setAttribute('role','alert');
+    const downloadActions=node('div','toyxyz-wiki-download-actions');
+    const dismissDownload=node('button','','Cancel'),startDownload=node('button','','Download');
+    dismissDownload.type=startDownload.type='button';
+    downloadActions.append(dismissDownload,startDownload);
+    downloadBox.append(downloadMessage,progressRow,downloadError,downloadActions);
+    downloadDialog.append(downloadBox);document.body.append(downloadDialog);
+
     const state={open:false,disposed:false,category:'',query:'',page:1,
         searchToken:0,detailToken:0,history:[],frame:0,lastRect:'',timer:0,
-        manualPosition:false,dragging:null,resizing:null};
-    const readJSON=async url=>{
-        const response=await api.fetchApi(url);
+        manualPosition:false,dragging:null,resizing:null,opening:false,downloading:false,
+        progressTimer:0,progressPending:false};
+    const readJSON=async(url,options)=>{
+        const response=await api.fetchApi(url,options);
         const data=await response.json().catch(()=>({}));
-        if(!response.ok)throw new Error(response.status===404&&url.includes('/categories')
+        if(!response.ok)throw new Error(response.status===404&&url.includes('/wiki/')
             ?'Restart ComfyUI to activate the Tag Wiki Browser.'
             :data.error||`Wiki request failed (HTTP ${response.status}).`);
         return data;
@@ -353,6 +373,63 @@ export function installWiki(nodeRef,widget,input,api) {
             ++state.searchToken;++state.detailToken;
         }
     };
+    const showDownload=()=>{
+        downloadDialog.hidden=false;
+        downloadMessage.textContent='The offline Tag Wiki database is not installed. Download approximately 272 MiB from Hugging Face? The file will be saved in this custom node folder.';
+        downloadError.textContent='';
+        dismissDownload.disabled=false;startDownload.disabled=false;
+        startDownload.textContent='Download';
+        progressBar.value=0;progressLabel.textContent='0%';progressRow.hidden=true;
+    };
+    dismissDownload.addEventListener('click',()=>{if(!state.downloading)downloadDialog.hidden=true;});
+    startDownload.addEventListener('click',async()=>{
+        if(state.downloading||state.disposed)return;
+        state.downloading=true;dismissDownload.disabled=true;startDownload.disabled=true;
+        downloadError.textContent='';
+        downloadMessage.textContent='Downloading and verifying the Tag Wiki database. Please wait; the wiki will open when ready.';
+        progressBar.value=0;progressLabel.textContent='0%';progressRow.hidden=false;
+        const refreshProgress=async()=>{
+            if(state.progressPending||!state.downloading||state.disposed)return;
+            state.progressPending=true;
+            try{
+                const result=await readJSON('/toyxyz/booru-tags/wiki/status');
+                if(!state.downloading||state.disposed)return;
+                const percent=Math.max(0,Math.min(99,Number(result.percent)||0));
+                progressBar.value=percent;progressLabel.textContent=`${percent}%`;
+            }catch{ /* The download request reports a final error if status is unavailable. */ }
+            finally{state.progressPending=false;}
+        };
+        state.progressTimer=setInterval(refreshProgress,250);
+        try{
+            await readJSON('/toyxyz/booru-tags/wiki/download', {method:'POST'});
+            if(state.disposed)return;
+            progressBar.value=100;progressLabel.textContent='100%';
+            downloadDialog.hidden=true;setOpen(true);
+        }catch(error){
+            if(!state.disposed){
+                downloadMessage.textContent='The download did not complete. Your prompt remains available.';
+                downloadError.textContent=error.message;
+                dismissDownload.disabled=false;startDownload.disabled=false;
+                startDownload.textContent='Retry';
+            }
+        }finally{
+            state.downloading=false;
+            clearInterval(state.progressTimer);state.progressTimer=0;
+        }
+    });
+    const openWiki=async()=>{
+        if(state.open){setOpen(false);return;}
+        if(state.opening||state.downloading)return;
+        state.opening=true;toggle.disabled=true;
+        try{
+            const result=await readJSON('/toyxyz/booru-tags/wiki/status');
+            if(state.disposed)return;
+            if(result.ready)setOpen(true);
+            else showDownload();
+        }catch(error){
+            if(!state.disposed){showDownload();downloadError.textContent=error.message;}
+        }finally{state.opening=false;toggle.disabled=false;}
+    };
     search.addEventListener('input',()=>{
         clearTimeout(state.timer);state.timer=setTimeout(()=>{
             state.query=search.value.trim();state.page=1;loadResults();
@@ -367,7 +444,7 @@ export function installWiki(nodeRef,widget,input,api) {
     });
     previous.addEventListener('click',()=>{if(state.page>1){--state.page;loadResults();}});
     next.addEventListener('click',()=>{++state.page;loadResults();});
-    toggle.addEventListener('click',()=>setOpen(!state.open));close.addEventListener('click',()=>setOpen(false));
+    toggle.addEventListener('click',openWiki);close.addEventListener('click',()=>setOpen(false));
     const removed=nodeRef.onRemoved;
-    nodeRef.onRemoved=function(){state.disposed=true;setOpen(false);panel.remove();return removed?.apply(this,arguments);};
+    nodeRef.onRemoved=function(){state.disposed=true;clearInterval(state.progressTimer);setOpen(false);panel.remove();downloadDialog.remove();return removed?.apply(this,arguments);};
 }

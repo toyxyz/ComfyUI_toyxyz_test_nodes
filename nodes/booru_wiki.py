@@ -5,19 +5,96 @@ from __future__ import annotations
 import sqlite3
 import json
 import re
+import hashlib
+import os
+import tempfile
+import threading
 from contextlib import closing
 from pathlib import Path
 from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 
 DEFAULT_DB = Path(__file__).resolve().parent / "data" / "danbooru_wiki.sqlite3"
+WIKI_DOWNLOAD_URL = "https://huggingface.co/toyxyz/backup_models/resolve/main/danbooru_wiki.sqlite3"
+WIKI_SHA256 = "c17b31e0f6468d2a0d5094452085925643d8442a2433f798f74f26923758bac6"
+WIKI_SIZE = 284_766_208
+MAX_DOWNLOAD_SIZE = 400 * 1024 * 1024
+_download_lock = threading.Lock()
+_progress_lock = threading.Lock()
+_download_progress = {"downloading": False, "bytes": 0}
 PAGE_SIZE = 30
 WIKI_LINK = re.compile(r"\[\[([^\]]+)\]\]")
 
 
+def wiki_db_ready() -> bool:
+    """Reject missing files and Git LFS pointers without reading the entire DB."""
+    try:
+        if DEFAULT_DB.stat().st_size < 100:
+            return False
+        with DEFAULT_DB.open("rb") as source:
+            return source.read(16) == b"SQLite format 3\x00"
+    except OSError:
+        return False
+
+
+def wiki_download_status() -> dict:
+    ready = wiki_db_ready()
+    with _progress_lock:
+        downloading = _download_progress["downloading"]
+        received = _download_progress["bytes"]
+    return {"ready": ready, "downloading": downloading,
+            "percent": 100 if ready else min(99, received * 100 // WIKI_SIZE) if downloading else 0}
+
+
+def download_wiki_db() -> Path:
+    """Install the pinned snapshot atomically after verifying its SHA-256."""
+    with _download_lock:
+        if wiki_db_ready():
+            return DEFAULT_DB
+        DEFAULT_DB.parent.mkdir(parents=True, exist_ok=True)
+        temporary = None
+        with _progress_lock:
+            _download_progress.update(downloading=True, bytes=0)
+        try:
+            with tempfile.NamedTemporaryFile(dir=DEFAULT_DB.parent, prefix=".danbooru_wiki_",
+                                             suffix=".download", delete=False) as target:
+                temporary = Path(target.name)
+                digest = hashlib.sha256()
+                size = 0
+                request = Request(WIKI_DOWNLOAD_URL, headers={"User-Agent": "toyxyz-booru-wiki/1.0"})
+                with urlopen(request, timeout=60) as source:
+                    if source.status != 200:
+                        raise OSError(f"Wiki download failed (HTTP {source.status}).")
+                    while chunk := source.read(1024 * 1024):
+                        size += len(chunk)
+                        if size > MAX_DOWNLOAD_SIZE:
+                            raise OSError("Wiki download exceeded the expected size.")
+                        digest.update(chunk)
+                        target.write(chunk)
+                        with _progress_lock:
+                            _download_progress["bytes"] = size
+                target.flush()
+                os.fsync(target.fileno())
+            if size != WIKI_SIZE or digest.hexdigest() != WIKI_SHA256:
+                raise OSError("Downloaded wiki database does not match the expected snapshot.")
+            with closing(sqlite3.connect(f"file:{quote(temporary.resolve().as_posix(), safe='/:')}?mode=ro",
+                                         uri=True)) as con:
+                con.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
+            os.replace(temporary, DEFAULT_DB)
+            return DEFAULT_DB
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            raise OSError(str(exc) or "Wiki download failed. Please retry.") from exc
+        finally:
+            with _progress_lock:
+                _download_progress.update(downloading=False, bytes=0)
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+
 def active_wiki_db() -> Path:
-    if not DEFAULT_DB.is_file():
-        raise OSError("Bundled wiki database is missing from nodes/data.")
+    if not wiki_db_ready():
+        raise OSError("Wiki database is unavailable. Open Wiki to download it.")
     return DEFAULT_DB
 
 

@@ -11,7 +11,7 @@ from .booru_wildcards import TOKEN, expand_wildcards, wildcard_files, wildcard_p
 from .booru_favorites import (FavoriteConflictError, active_favorite_root,
                               browse_favorite_folder, change_favorite,
                               list_favorites, save_favorite, set_favorite_path)
-from .booru_wiki import search_wiki, wiki_categories, wiki_page
+from .booru_wiki import download_wiki_db, search_wiki, wiki_categories, wiki_download_status, wiki_page
 
 
 LOG = logging.getLogger(__name__)
@@ -114,6 +114,23 @@ def register_routes():
         from urllib.parse import urlsplit
         origin = request.headers.get("Origin")
         return request.remote in ("127.0.0.1", "::1") and (not origin or urlsplit(origin).netloc == request.host)
+
+    @PromptServer.instance.routes.get("/toyxyz/booru-tags/wiki/status")
+    async def wiki_status_route(request):
+        if not local_request(request):
+            return web.json_response({"error": "Wiki status requires local access."}, status=403)
+        return web.json_response(await asyncio.to_thread(wiki_download_status))
+
+    @PromptServer.instance.routes.post("/toyxyz/booru-tags/wiki/download")
+    async def wiki_download_route(request):
+        if not local_request(request):
+            return web.json_response({"error": "Wiki download requires local access."}, status=403)
+        try:
+            await asyncio.to_thread(download_wiki_db)
+        except OSError as exc:
+            LOG.warning("Wiki download failed: %s", exc)
+            return web.json_response({"error": str(exc)}, status=503)
+        return web.json_response({"ready": True})
 
     @PromptServer.instance.routes.get("/toyxyz/booru-tags/wiki/categories")
     async def wiki_categories_route(request):

@@ -284,7 +284,7 @@ Enter tags in `tags` and connect the `tags` output to a text encoder. Autocomple
 | --- | --- |
 | **W** (Wildcards) | Lists files in `wildcards/`. Click a file to insert `__name__`; each execution replaces it with one random non-empty line from that file. **Folder** opens the folder and **↻** refreshes the list. |
 | **F** (Favorites) | **Save** stores the entire current prompt. Click an entry to insert it at the cursor; right-click to edit or delete it. **↻** refreshes the list. |
-| **Wiki** | Opens a movable offline browser. Browse categories, search, follow wiki links, and use **Insert** on a tag entry to add it at the cursor. Drag the title bar to move the window or its bottom-right corner to resize it. |
+| **Wiki** | On first use, asks to download the offline database from Hugging Face (about 272 MiB). Later uses work offline. Browse categories, search, follow wiki links, and use **Insert** on a tag entry to add it at the cursor. Drag the title bar to move the window or its bottom-right corner to resize it. |
 | `camera` | Optionally connect `booru tag camera`; its selected camera guidance is appended after your text. |
 
 The node does not use Qwen or invent additional tags. Wildcard file contents and manually entered prompt text are preserved as written.

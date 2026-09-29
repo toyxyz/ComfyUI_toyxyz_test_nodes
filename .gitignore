@@ -17,6 +17,8 @@ tests/
 /.wildcard_settings.json
 /favorites/
 /.favorite_settings.json
+/nodes/data/danbooru_wiki.sqlite3
+/nodes/data/.danbooru_wiki_*.download
 
 # Local agent instructions
 /AGENTS.md

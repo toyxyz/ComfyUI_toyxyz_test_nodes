@@ -1,0 +1,13 @@
+MHR / Momentum Human Rig
+Copyright (c) Meta Platforms, Inc. and affiliates.
+Upstream: https://github.com/facebookresearch/MHR
+License: Apache-2.0, included in LICENSE-MHR.txt.
+
+Modified assets: baked, compressed LOD1 adult presets for this editor.
+Native bind transforms and skinning retained; pose correctives omitted.
+
+SAM 3D Body facial keypoint mapping
+Copyright (c) Meta Platforms, Inc. and affiliates.
+Upstream: https://github.com/facebookresearch/sam-3d-body
+License: SAM License, included in LICENSE-SAM.txt.
+Only the sparse five-face-landmark mapping is embedded, not inference weights.

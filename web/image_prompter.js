@@ -31,6 +31,17 @@ function installEditor(node) {
     box.append(output, controls, status);
     node.addDOMWidget("prompt_editor", "div", box, {serialize:false, hideOnZoom:false});
     let busy = false;
+    let builderRevision = 0;
+    const builderConnected = () => node.inputs?.some(i => i.name === "builder" && i.link != null);
+    node._jsonBuilderChanged = () => {
+        builderRevision++;
+        override.value = "";
+        node.properties ??= {};
+        delete node.properties.json_builder_context;
+        delete node.properties.prompt_undo;
+        show("");
+        status.textContent = "JSON layout changed. Queue the workflow to generate from inputs.";
+    };
     const show = text => {
         output.value = text ?? "";
         node.properties ??= {};
@@ -49,7 +60,12 @@ function installEditor(node) {
     };
     button("Edit Prompt", "Edit the current output with Qwen while preserving details unrelated to your request. Generate a prompt first. The edited text becomes the output on the next workflow run; image generation is not started automatically.", () => {
         if (busy || !output.value) return;
+        if (builderConnected() && !node.properties?.json_builder_context) {
+            status.textContent = "Run the connected JSON builder before editing its output.";
+            return;
+        }
         const editRevision = modeState.revision();
+        const layoutRevision = builderRevision;
         const dialog = document.createElement("dialog");
         const input = document.createElement("textarea");
         input.placeholder = "Describe what to change. Other details will be preserved.";
@@ -64,7 +80,7 @@ function installEditor(node) {
         cancel.onclick = () => dialog.close();
         ok.onclick = async () => {
             if (!input.value.trim() || busy) return;
-            if (modeState.revision() !== editRevision) { dialog.close(); return; }
+            if (modeState.revision() !== editRevision || layoutRevision !== builderRevision) { dialog.close(); return; }
             busy = true; ok.disabled = true; input.disabled = true;
             const original = output.value;
             const originalOverride = override.value;
@@ -73,11 +89,11 @@ function installEditor(node) {
                 const value = name => node.widgets?.find(w=>w.name===name)?.value;
                 const response = await api.fetchApi("/toyxyz/image-prompter/edit", {
                     method:"POST",headers:{"Content-Type":"application/json"},
-                    body:JSON.stringify({current_prompt:original,instruction:input.value,llm_model:value("llm_model"),seed:value("seed"),prompt_type:value("prompt_type")})
+                    body:JSON.stringify({current_prompt:original,instruction:input.value,llm_model:value("llm_model"),seed:value("seed"),prompt_type:value("prompt_type"),builder:builderConnected() ? node.properties?.json_builder_context : undefined})
                 });
                 const result = await readEditResponse(response, original);
                 // Closing the dialog discards the response; a concurrent execution wins.
-                if (!dialog.open || modeState.revision() !== editRevision || output.value !== original || override.value !== originalOverride) return;
+                if (!dialog.open || modeState.revision() !== editRevision || layoutRevision !== builderRevision || output.value !== original || override.value !== originalOverride) return;
                 node.properties.prompt_undo = original;
                 override.value = result.prompt;
                 show(result.prompt);
@@ -101,7 +117,11 @@ function installEditor(node) {
     const executed = node.onExecuted;
     node.onExecuted = function(message) {
         executed?.apply(this,arguments);
+        node.properties ??= {};
+        if (message?.json_builder?.[0]) node.properties.json_builder_context = message.json_builder[0];
+        else delete node.properties.json_builder_context;
         if (message?.text) show(message.text.join("\n"));
+        if (message?.json_builder?.[0]) status.textContent = `JSON · ${message.json_builder[0].target_model} · structure locked`;
     };
     const configure = node.onConfigure;
     node.onConfigure = function() { configure?.apply(this,arguments); modeState.configured(); show(override.value || node.properties?.generated_prompt || ""); };
@@ -147,7 +167,7 @@ app.registerExtension({
     nodeCreated(node) {
         if (node.comfyClass === type || node.type === type) {
             migratePromptType(node);
-            scheduleImageInputs(node);
+            scheduleImageInputs(node, () => app.configuringGraph);
             installEditor(node);
             void refresh([node]);
         }
@@ -158,13 +178,21 @@ app.registerExtension({
         nodeType.prototype.onConfigure = function (...args) {
             const result = onConfigure?.apply(this, args);
             migratePromptType(this);
-            scheduleImageInputs(this);
+            scheduleImageInputs(this, () => app.configuringGraph);
+            return result;
+        };
+        const onGraphConfigured = nodeType.prototype.onGraphConfigured;
+        nodeType.prototype.onGraphConfigured = function (...args) {
+            const result = onGraphConfigured?.apply(this, args);
+            migratePromptType(this);
+            scheduleImageInputs(this, () => app.configuringGraph);
             return result;
         };
         const onConnectionsChange = nodeType.prototype.onConnectionsChange;
         nodeType.prototype.onConnectionsChange = function (...args) {
             const result=onConnectionsChange?.apply(this,args);
-            scheduleImageInputs(this);
+            if (args[0] === 1 && this.inputs?.[args[1]]?.name === "builder") this._jsonBuilderChanged?.();
+            scheduleImageInputs(this, () => app.configuringGraph);
             return result;
         };
     },

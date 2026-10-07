@@ -23,6 +23,8 @@ from .anima_tags import (filter_enrichment_tags,
 from .image_prompt_profiles.multi_reference import ANALYSIS as MULTI_ANALYSIS, WRITER as MULTI_WRITER
 from .image_camera import camera_guidance, camera_components, SHOT_FRAMING, shot_framing
 from .image_camera_presets import style_guidance
+from .json_prompt_builder import (SOCKET_TYPE, checked_payload, build_json_messages,
+                                  apply_text_patch, validate_override, dumps as json_caption_dumps)
 
 LOG = logging.getLogger(__name__)
 DEFAULT_LLM = "Qwen3.8-27B Uncensored Q4_K_M"
@@ -529,6 +531,7 @@ class ImagePrompter:
             "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFE, "control_after_generate": "fixed",
                      "tooltip": "LLM sampling seed, not the image sampler seed. Change it to regenerate; fixed inputs use ComfyUI caching."}),
         }, "optional": {
+            "builder": (SOCKET_TYPE, {"tooltip": "JSON caption from json prompter builder. The builder selects the target format; only descriptions are enhanced. Geometry, structure, colors and visible text remain locked."}),
             # Optional with a default also keeps old API graphs (target_model)
             # executable; positional UI widget order remains unchanged.
             "prompt_type": (list(PROMPT_PROFILES), {"default": "default", "tooltip": "anima: dictionary-validated Danbooru tags followed by concise pose and spatial scene sentences; no default quality tags. default: image-generation prose. qwen_image_2.1: reference editing instructions."}),
@@ -555,7 +558,7 @@ class ImagePrompter:
     CATEGORY = "ToyxyzTestNodes/Prompt"
     DESCRIPTION = "Write tag-forward Anima prompts with source-faithful pose and spatial scene sentences, English scene prompts, or reference-edit instructions. Explicit user choices take priority. Numbered image outputs pass through unchanged."
 
-    def generate(self, prompt, llm_model, seed, prompt_type=None, image=None, enhance="none", target_model=None, camera=None, edited_prompt="", _edit_instruction=None, preset=None, **images):
+    def generate(self, prompt, llm_model, seed, prompt_type=None, image=None, enhance="none", target_model=None, camera=None, edited_prompt="", _edit_instruction=None, preset=None, builder=None, **images):
         # `camera` is a legacy Python-call alias, not an exposed input socket.
         if preset is not None:
             camera = preset
@@ -563,6 +566,9 @@ class ImagePrompter:
         # Keep each source separate: batches, resolution and reference IDs survive.
         passthrough = tuple(images.get(f"image_{i}", image if i == 1 else None)
                             for i in range(1, 11))
+        if builder is not None:
+            return self.generate_json(prompt, llm_model, seed, builder, enhance, edited_prompt,
+                                      _edit_instruction, passthrough, prepare_references(image, **images), camera)
         if edited_prompt.strip():
             return {"ui": {"text": [edited_prompt]}, "result": (edited_prompt,) + passthrough}
         import comfy.model_management as mm
@@ -810,6 +816,92 @@ class ImagePrompter:
             finally:
                 runtime._ENHANCE_LOCK.release()
 
+    def generate_json(self, instruction, llm_model, seed, builder, enhance, edited_prompt,
+                      edit_instruction, passthrough, references, camera=None):
+        """The LLM never owns the native caption document or its geometry."""
+        import comfy.model_management as mm
+        payload = checked_payload(builder)
+        if type(seed) is not int or not 0 <= seed <= 0xFFFFFFFE:
+            raise ValueError("Image prompter: invalid LLM seed.")
+        if edited_prompt.strip():
+            document = validate_override(payload, json.loads(edited_prompt))
+            return {"ui": {"text": [json_caption_dumps(document)], "json_builder": [payload]},
+                    "result": (json_caption_dumps(document),) + passthrough}
+        if edit_instruction is not None:
+            current = validate_override(payload, json.loads(instruction))
+            payload["document"] = current
+            instruction = edit_instruction
+        model_id = resolve_model_selection(llm_model)
+        while not runtime._ENHANCE_LOCK.acquire(timeout=.2):
+            mm.throw_exception_if_processing_interrupted()
+        session = None
+        watcher = None
+        finished = threading.Event()
+        cancelled = threading.Event()
+        try:
+            mm.throw_exception_if_processing_interrupted()
+            if references:
+                model_path, mmproj_path = runtime._resolve_image_model(runtime.QWEN_IMAGE_MODEL_ID)
+            else:
+                model_path = runtime._resolve_enhance_model(model_id)
+                mmproj_path = ""
+            executable = runtime._find_llama_server()
+            mm.unload_all_models(); mm.soft_empty_cache(force=True)
+            session = runtime._LlamaServerSession(executable, model_path, mmproj_path,
+                                                  runtime.QWEN_IMAGE_MODEL_ID, context_size=CONTEXT_SIZE)
+            def watch_cancel():
+                while not finished.wait(.2):
+                    if mm.processing_interrupted():
+                        cancelled.set(); session.close()
+            watcher = threading.Thread(target=watch_cancel, daemon=True)
+            watcher.start(); session.start()
+            evidence = None
+            if references:
+                import folder_paths
+                os.makedirs(folder_paths.get_temp_directory(), exist_ok=True)
+                with tempfile.TemporaryDirectory(prefix="toyxyz-json-reference-", dir=folder_paths.get_temp_directory()) as folder:
+                    paths = []
+                    labels = []
+                    for index, (label, source) in enumerate(references):
+                        path = os.path.join(folder, f"reference{index}.png")
+                        source.save(path); paths.append(path); labels.append(label)
+                    evidence = session.analyze_images(paths, labels, "Describe visible materials and appearance for each reference label. Do not change the supplied layout or invent text.", max_tokens=MAX_ANALYSIS_TOKENS, seed=seed)
+                    if getattr(session, "last_metrics", {}).get("finish_reason") == "length":
+                        raise RuntimeError("JSON reference analysis was incomplete.")
+                    evidence = clean_response(evidence)
+            defaults = {"camera": camera_guidance(camera), "style": style_guidance(camera)} if camera is not None and edit_instruction is None else None
+            messages = build_json_messages(payload, instruction, enhance, evidence, edit_instruction is not None, defaults)
+            last_error = None
+            for attempt in range(2):
+                mm.throw_exception_if_processing_interrupted()
+                response = session.chat(messages, max_tokens=MAX_OUTPUT_TOKENS,
+                                        temperature=.2 if enhance == "strong" else .1, seed=seed)
+                mm.throw_exception_if_processing_interrupted()
+                try:
+                    if getattr(session, "last_metrics", {}).get("finish_reason") == "length":
+                        raise ValueError("Text patch exceeded the token limit.")
+                    document = apply_text_patch(payload, clean_response(response))
+                    text = json_caption_dumps(document)
+                    LOG.info("Image prompter JSON: %s, enhance %s; structure and visible text preserved.", payload["target_model"], enhance)
+                    return {"ui": {"text": [text], "json_builder": [payload]}, "result": (text,) + passthrough}
+                except (ValueError, RuntimeError, KeyError, TypeError) as exc:
+                    last_error = exc
+                    messages.append({"role": "user", "content": f"The text patch was invalid: {exc}. Return every field id exactly once. Preserve placeholders. Return only the fields patch."})
+            raise RuntimeError(f"JSON description processing failed; no invalid caption was emitted: {last_error}")
+        except Exception:
+            if cancelled.is_set():
+                raise mm.InterruptProcessingException() from None
+            raise
+        finally:
+            finished.set()
+            try:
+                if watcher is not None:
+                    watcher.join()
+                if session is not None:
+                    session.close()
+            finally:
+                runtime._ENHANCE_LOCK.release()
+
 
 def build_edit_intent_messages(instruction, current=''):
     return [{'role':'system','content':
@@ -865,10 +957,14 @@ def register_edit_route():
             data = await request.json()
             current, instruction = data.get('current_prompt'), data.get('instruction')
             prompt_type=resolve_prompt_type(data.get('prompt_type','default'))
-            build_edit_messages(current, instruction, prompt_type)
+            builder = data.get('builder')
+            if builder is None:
+                build_edit_messages(current, instruction, prompt_type)
+            elif not isinstance(current, str) or not isinstance(instruction, str) or not instruction.strip():
+                raise ValueError("Current JSON caption and edit request are required.")
             result = await asyncio.to_thread(ImagePrompter().generate,
                 current, data.get('llm_model', DEFAULT_LLM), int(data.get('seed', 0)),
-                _edit_instruction=instruction, prompt_type=prompt_type)
+                _edit_instruction=instruction, prompt_type=prompt_type, builder=builder)
             return web.json_response({'prompt': result['result'][0]})
         except (ValueError, TypeError) as exc:
             return web.json_response({'error': str(exc)}, status=400)

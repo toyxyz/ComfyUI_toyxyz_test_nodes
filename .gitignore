@@ -14,6 +14,7 @@ tests/
 
 # Local test outputs, logs, extracted frames and temporary videos
 /test/
+/models/pose3d/*.npz
 /.wildcard_settings.json
 /favorites/
 /.favorite_settings.json

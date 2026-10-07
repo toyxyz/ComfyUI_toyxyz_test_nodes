@@ -310,6 +310,58 @@ Connect its `camera` output to `booru tag prompter.camera`.
 
 Each main list also has **Random**, which selects a non-None option on each run. Weights range from 0–10 (default 2.0): drag the number to adjust it or click to type; the reset icon restores 2.0. The preview is a guide, not a guarantee of the generated angle. Camera options do not choose a pose, outfit, background, or number of people.
 
+### json prompter builder
+
+Builds layout-guided JSON captions for **Ideogram 4** and **Ming Image**. Connect its `builder` output to the `builder` input of **image prompter**. This connection selects the JSON format instead of `prompt_type`; Qwen translates or enhances descriptions without rebuilding the JSON.
+
+- **Target model / width / height**: choose the native caption format and canvas dimensions. The `width` and `height` outputs can drive the image generator's resolution.
+- **Scene / background / style / lighting**: describe the overall image. Ideogram supports photographic or art-style fields; Ming uses canvas lighting and image style.
+- **Region canvas**: stays attached to the left side of the node as the graph moves or zooms. Drag to draw, click to select, drag to move, and drag the lower-right corner to resize. Ctrl+drag draws over an existing region.
+- **Region editor**: choose `obj` or `text`, enter its description, exact visible text, relations and optional hex colors. Coordinates use normalized top-left `x/y` and `w/h`. Lock, duplicate, delete or reorder regions with **Back / Front** (background to foreground).
+- **Reference**: loads a local visual layout guide only; it is not sent to Qwen. **Import / Export layout** saves editable settings; **Copy JSON** copies the last compiled caption.
+- **Outputs**: `json` is the caption without Qwen processing; image prompter's `prompt` is the processed native JSON. Use **Edit Prompt** for description changes; change the builder for layout or visible-text changes.
+
+Coordinates, layer count/order, palettes and visible text stay locked, including during prompt editing. Invalid Qwen patches get one retry; no malformed caption is emitted. Ming uses ordered layers and center-coordinate strings; Ideogram uses `[ymin, xmin, ymax, xmax]` boxes on a 0–1000 scale. Regions guide generation, not masks or guaranteed pixel placement. Aim for five or fewer Ideogram elements. Connected image references and compatible camera/style presets can inform descriptions but cannot replace the locked layout or explicit user instructions.
+
+### 3D Pose Editor
+
+Edit multiple MHR human bodies in 3D and output rendered images, OpenPose, depth and normals. Poses, shapes, colors, camera and lighting are saved with the workflow. The default background is black.
+
+**Toolbar**
+
+- **Reset pose / Reset view**: reset the selected body's pose without changing its shape or color / restore the front camera view.
+- **Undo / Redo**: undo or redo edits, including body additions and deletions.
+- **Get pose**: import one person's shape and pose from an image into the selected body using SAM 3D Body. Other bodies, color, scene placement and camera stay unchanged.
+- **Floor: On / Off**: show or hide the floor in the preview and `images` output; also toggles the preview grid.
+- **Rotate / Move**: switch gizmo mode (**E** / **W**). Hand/foot IK targets support both movement and end-joint rotation.
+
+**Models and shape**
+
+- **Add body / Delete body**: add a body with a random color / remove the selected body. Select bodies in the model tree or viewport; only the selected body's controllers are shown. **Scene** hides all controllers.
+- **+ / −** beside **Human mesh**: expand or collapse its color picker and shape controls. **Body color** affects the preview and `images`, not the other outputs.
+- **Body (20) / Head (20) / Hands (5)**: edit MHR shape coefficients with sliders or numeric inputs. These affect combined features, not separate height/weight settings.
+- **↺ / slider double-click**: reset one coefficient. Group reset buttons reset a section; **Reset all** restores the default shape; **Neutral** sets all coefficients to zero.
+
+**Viewport controls**
+
+- Click joints, including fingers, to edit them. **White** joints rotate only; **green** hand/foot targets control IK; **green pelvis** moves while IK holds the hands/feet; **purple poles** set elbow/knee bend direction. Poles follow target movement, not rotation. FK and IK controls automatically match the current limb pose.
+- The body-colored **Root** circle under the feet moves or rotates the entire body, including IK targets and poles.
+- **Left drag**: orbit. **Middle-button drag**: pan. **Scroll**: zoom.
+- Drag the upper-right **Light** sphere to change lighting direction; double-click to reset.
+
+**Outputs**
+
+**Width / height** set the output resolution. Execution captures all bodies automatically without editor controllers. All four outputs use the same camera and resolution:
+
+- `images`: shaded body render, with the floor if enabled.
+- `openpose`: bone-derived COCO-18 skeleton with standard ControlNet colors, not pose detection. Face points hide according to head orientation.
+- `depth`: body-only, normalized camera depth (near = white, far = black); not metric depth.
+- `normal`: body-only camera-space RGB normals, `(normal + 1) / 2` (+X right, +Y up, +Z toward camera).
+
+**Get pose setup**: requires ComfyUI's SAM 3D Body support. Connect **SAM 3D Body Model Loader** (or the native SAM loader) to `sam3d_body_model`, or leave it disconnected to load `ComfyUI/models/detection/sam_3d_body_dinov3_bf16.safetensors`. Use a single-person image or crop. Hand refinement is enabled; facial expression import and neural pose correctives are not supported. Get pose uses a separate queued job; normal rendering does not load SAM.
+
+Bundled bodies use **MHR LOD1**, with 127 bones and articulated fingers; see [asset provenance](web/vendor/pose3d/README.md). MakeHuman assets and workflow compatibility have been removed. Optional SMPL/SMPL-H templates are described in [the model format](models/pose3d/README.md); they are not bundled. Rendering uses linear skinning. Headless API use requires a render captured in the browser editor first.
+
 ### image prompter preset
 
 Supplies optional shot, angle, and style guidance to `image prompter`. Connect its `preset` output to the prompter's `preset` input. Use `preset_prompt` to inspect the preset text.

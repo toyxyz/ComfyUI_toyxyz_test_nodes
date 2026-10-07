@@ -8,6 +8,9 @@ from .nodes.toyxyz_test_nodes import CaptureWebcam, LoadWebcamImage, LoadImageFr
 from .nodes.visual_area_mask import VisualAreaMask
 from .nodes.minimax_h3_prompter import MinimaxH3Prompter
 from .nodes.image_prompter import ImagePrompter
+from .nodes.json_prompt_builder import JsonPrompterBuilder
+from .nodes.pose3d import Pose3DEditor
+from .nodes.pose3d_sam import Pose3DSAMLoader, Pose3DSAMImport
 from .nodes.booru_tag_prompter import BooruTagPrompter
 from .nodes.booru_tag_presets import BooruTagPresets
 from .nodes.image_camera_presets import ImageCameraPresets
@@ -33,6 +36,10 @@ NODE_CLASS_MAPPINGS = {
     "VisualAreaMask": VisualAreaMask,
     "MinimaxH3Prompter": MinimaxH3Prompter,
     "ToyxyzImagePrompter": ImagePrompter,
+    "ToyxyzJsonPrompterBuilder": JsonPrompterBuilder,
+    "ToyxyzPose3DEditor": Pose3DEditor,
+    "ToyxyzPose3DSAMLoader": Pose3DSAMLoader,
+    "ToyxyzPose3DSAMImport": Pose3DSAMImport,
     "ToyxyzBooruTagPrompter": BooruTagPrompter,
     "ToyxyzBooruTagPresets": BooruTagPresets,
     "ToyxyzImageCameraPresets": ImageCameraPresets,
@@ -74,6 +81,10 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "VisualAreaMask": "Visual Area Mask",
     "MinimaxH3Prompter": "Minimax-H3-prompter",
     "ToyxyzImagePrompter": "image prompter",
+    "ToyxyzJsonPrompterBuilder": "json prompter builder",
+    "ToyxyzPose3DEditor": "3D Pose Editor",
+    "ToyxyzPose3DSAMLoader": "SAM 3D Body Model Loader",
+    "ToyxyzPose3DSAMImport": "3D Pose Editor Get Pose (internal)",
     "ToyxyzBooruTagPrompter": "booru tag prompter",
     "ToyxyzBooruTagPresets": "booru tag camera",
     "ToyxyzImageCameraPresets": "image prompter preset",

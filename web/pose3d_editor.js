@@ -7,7 +7,8 @@ import {PoseLightControl} from "./util/pose_light_control.js";
 import {PoseOpenPose} from "./util/pose_openpose.js";
 import {PoseRenderPasses} from "./util/pose_render_passes.js";
 import {PoseModelTree,PoseShapeControl,loadMHRShapeBasis,validMHRShape} from "./util/pose_shape_control.js";
-import {buildSAMPosePrompt,samBodyFingerprint} from "./util/pose_sam_import.js";
+import {buildSAMPosePrompt,samBodyFingerprint,ensureSAMPoseModel} from "./util/pose_sam_import.js";
+import {notifyPoseRegions} from './util/pose_region_bridge.js';
 
 const names=["pelvis","left_hip","right_hip","spine1","left_knee","right_knee","spine2","left_ankle","right_ankle","spine3","left_foot","right_foot","neck","left_collar","right_collar","head","left_shoulder","right_shoulder","left_elbow","right_elbow","left_wrist","right_wrist"];
 const parents=[-1,0,0,0,1,2,3,4,5,6,7,8,9,9,9,12,13,14,16,17,18,19];
@@ -15,9 +16,23 @@ const v=(x,y,z)=>new T.Vector3(x,y,z);
 const fingerNames=["index","middle","pinky","ring","thumb"];
 const embeddedBodies=new Map();
 const DEFAULT_BODY_COLOR='#d6a85f';
+const DEFAULT_FOV=36,MIN_FOV=10,MAX_FOV=120;
 const validBodyColor=color=>typeof color==='string'&&/^#[0-9a-f]{6}$/i.test(color);
 const BODY_FIELDS=['gender','source','bodyMesh','rootControl','bodyRoot','bones','pelvisBone','proceduralRotations','proceduralInputs','material','proxyParts','rootMarker','markers','handles','poleLinks','chains','openPose','shapeControl'];
 const finiteVector=(value,size)=>Array.isArray(value)&&value.length===size&&value.every(Number.isFinite);
+const validScale=value=>finiteVector(value,3)&&value.every(s=>s>1e-6&&s<=1000);
+const validFov=value=>Number.isFinite(value)&&value>=MIN_FOV&&value<=MAX_FOV;
+const validCameraView=view=>finiteVector(view?.position,3)&&finiteVector(view?.target,3)&&validFov(view?.fov)&&view.position.some((value,index)=>value!==view.target[index]);
+const copyCameraView=view=>({position:view.position.slice(),target:view.target.slice(),fov:view.fov});
+const TOOL_ICONS={
+    rotate:['M21 10a9 9 0 1 0-2.7 6.4','M21 3v7h-7'],
+    translate:['M12 3v18M3 12h18','M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3'],
+    scale:['M15 3h6v6M21 3l-7 7','M9 21H3v-6M3 21l7-7'],
+    undo:['M3 7v6h6','M21 17a9 9 0 0 0-15.5-6.5L3 13'],
+    redo:['M21 7v6h-6','M3 17a9 9 0 0 1 15.5-6.5L21 13'],
+    cameraSave:['M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h12l4 4v12a2 2 0 0 1-2 2Z','M7 3v5h8V3','M7 21v-8h10v8'],
+    cameraLoad:['M3 3v6h6','M3 9a9 9 0 1 1 0 6','M8 11h2l1-2h3l1 2h2v6H8Z','M11 14a1.5 1.5 0 1 0 3 0 1.5 1.5 0 0 0-3 0'],
+};
 // Remove the former first widget before LiteGraph assigns positional values.
 // Work directly on workflow data before links/slots are restored by the graph.
 export function migratePose3DWorkflow(data){
@@ -48,7 +63,8 @@ export function ensureOpenPoseOutput(node){
         imageOutput.name='images';
         if(imageOutput.label==='render')imageOutput.label='images';
     }
-    for(const name of ['openpose','depth','normal'])if(!node.outputs?.some(output=>output.name===name))node.addOutput(name,'IMAGE');
+    for(const name of ['openpose','depth','normal','color_id'])if(!node.outputs?.some(output=>output.name===name))node.addOutput(name,'IMAGE');
+    if(!node.outputs?.some(output=>output.name==='region painter'))node.addOutput('region painter','TOYXYZ_REGION_PAINTER');
 }
 function ensureSAMInput(node){if(!node.inputs?.some(input=>input.name==='sam3d_body_model'))node.addInput('sam3d_body_model','SAM3D_BODY_MODEL');}
 async function loadDefaultBody(gender){
@@ -88,36 +104,49 @@ function defaultRig(body){
 export class Pose3DEditorUI {
     constructor(node,root){
         this.node=node;this.root=root;this.widget=n=>node.widgets.find(w=>w.name===n);this.gender='female';this.disposed=false;this.loading=true;this.bodies=[];this.nextBodyId=0;this.bodyAssets=new Map();
-        root.style.cssText="width:100%;height:620px;display:flex;flex-direction:column;gap:6px;background:#292929;color:#ddd;padding:8px;box-sizing:border-box;font:12px sans-serif";
+        root.style.cssText="width:100%;height:100%;min-height:360px;display:flex;flex-direction:column;gap:6px;background:#292929;color:#ddd;padding:8px;box-sizing:border-box;font:12px sans-serif";
         this.bar=document.createElement("div");this.bar.style.cssText="display:flex;gap:5px;flex-wrap:wrap;align-items:center";root.append(this.bar);
         this.button("Reset pose",()=>this.reset());
-        this.button("Reset view",()=>{this.camera.position.set(0,1.2,5.2);this.orbit.target.set(0,.95,0);this.orbit.update();this.commit();});
-        this.button("Undo",()=>this.undo());this.button("Redo",()=>this.redo());
+        this.button("Reset view",()=>{this.record();this.camera.position.set(0,1.2,5.2);this.orbit.target.set(0,.95,0);this.setFov(DEFAULT_FOV,false);this.orbit.update();this.commit();this.record();});
+        this.undoButton=this.iconButton('undo','Undo',()=>this.undo());this.redoButton=this.iconButton('redo','Redo',()=>this.redo());
         this.getPoseButton=this.button('Get pose',()=>this.choosePoseImage());this.getPoseButton.title='Import body shape and pose from one image using SAM 3D Body';
         this.poseFile=document.createElement('input');this.poseFile.type='file';this.poseFile.accept='image/png,image/jpeg,image/webp';this.poseFile.hidden=true;root.append(this.poseFile);
         this.poseFile.onchange=()=>{const file=this.poseFile.files?.[0],body=this.poseFileBody;this.poseFile.value='';if(file&&body)this.getPoseFromImage(file,body).catch(error=>{if(!this.disposed)this.note.textContent=`Get pose failed: ${error.message}`;});};
         this.poseExecuting=event=>{const job=this.poseJob,data=event.detail;if(!job?.promptId||data?.prompt_id!==job.promptId)return;if(data.node==='pose_import')this.note.textContent='Get pose: Estimating body and hands…';else if(data.node)this.note.textContent='Get pose: Loading image / model…';};
         api.addEventListener?.('executing',this.poseExecuting);
-        this.floorButton=this.button("Floor",()=>{this.setFloorVisible(!this.floor.visible);this.commit();this.record();});
-        this.floorButton.title="Show or hide the floor in the preview and images output";
-        this.button("Rotate",()=>this.setMode("rotate"));this.button("Move",()=>this.setMode("translate"));
+        this.floorButton=this.button("Floor",()=>{this.setFloorVisible(!this.grid.visible);this.commit();this.record();});
+        this.floorButton.title="Show or hide the white floor grid in the preview only";
+        this.saveCameraButton=this.iconButton('cameraSave','Save camera view',()=>this.saveCameraView());this.saveCameraButton.title='Save current camera position, look-at target and FOV (overwrite saved view)';this.saveCameraButton.disabled=true;
+        this.loadCameraButton=this.iconButton('cameraLoad','Load camera view',()=>this.loadCameraView());this.loadCameraButton.title='Return to saved camera position, look-at target and FOV';this.loadCameraButton.disabled=true;
+        const fovLabel=document.createElement('label');fovLabel.style.cssText='display:flex;align-items:center;gap:4px;margin-left:4px';fovLabel.textContent='FOV';fovLabel.title='Vertical camera field of view in degrees (preview and all outputs)';this.bar.append(fovLabel);
+        this.fovSlider=document.createElement('input');this.fovSlider.type='range';this.fovSlider.min=MIN_FOV;this.fovSlider.max=MAX_FOV;this.fovSlider.step='1';this.fovSlider.value=DEFAULT_FOV;this.fovSlider.style.width='90px';this.fovSlider.setAttribute('aria-label','Camera FOV slider');fovLabel.append(this.fovSlider);
+        this.fovInput=document.createElement('input');this.fovInput.type='number';this.fovInput.min=MIN_FOV;this.fovInput.max=MAX_FOV;this.fovInput.step='1';this.fovInput.value=DEFAULT_FOV;this.fovInput.style.width='48px';this.fovInput.setAttribute('aria-label','Camera FOV in degrees');fovLabel.append(this.fovInput,document.createTextNode('°'));
+        for(const input of [this.fovSlider,this.fovInput]){input.onpointerdown=()=>this.record();input.onfocus=()=>this.record();input.oninput=()=>{if(input.value!==''&&validFov(Number(input.value)))this.setFov(Number(input.value),false);};input.onchange=()=>{if(input.value==='')input.value=this.camera.fov;else this.setFov(Number(input.value),false);this.record();};}
         this.note=document.createElement("div");this.note.style.color="#b9c5d0";root.append(this.note);
         this.workspace=document.createElement('div');this.workspace.style.cssText='display:flex;gap:8px;flex:1;min-height:0;overflow:hidden';root.append(this.workspace);
         this.modelTree=new PoseModelTree(this.workspace,()=>{this.ready=this.addBody().catch(error=>{this.note.textContent=`Add body failed: ${error.message}`;throw error;});this.ready.catch(()=>{});},()=>this.deleteBody(),()=>this.selectScene());
-        this.view=document.createElement("div");this.view.style.cssText="flex:1;min-width:0;min-height:240px;position:relative;overflow:hidden";this.workspace.append(this.view);
-        this.info=document.createElement("div");this.info.textContent="Click joint / IK target / pole · W: move · E: rotate · Left drag: orbit · Middle drag: pan · Scroll: zoom";root.append(this.info);
-        this.renderer=new T.WebGLRenderer({antialias:true,preserveDrawingBuffer:true,alpha:true});this.renderer.setPixelRatio(Math.min(devicePixelRatio,2));this.renderer.shadowMap.enabled=true;this.renderer.shadowMap.type=T.PCFSoftShadowMap;this.renderer.outputColorSpace=T.SRGBColorSpace;this.renderer.toneMapping=T.ACESFilmicToneMapping;this.view.append(this.renderer.domElement);
-        this.scene=new T.Scene();this.scene.background=new T.Color("#000000");this.sceneBodies=new T.Group();this.scene.add(this.sceneBodies);this.camera=new T.PerspectiveCamera(36,1,.01,100);this.camera.position.set(0,1.2,5.2);
+        this.view=document.createElement("div");this.view.style.cssText="flex:1;min-width:0;min-height:0;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center";this.workspace.append(this.view);
+        this.transformBar=document.createElement('div');this.transformBar.style.cssText='position:absolute;left:8px;top:8px;z-index:5;display:flex;flex-direction:column;gap:5px;padding:4px;border-radius:6px;background:#20262ecc';this.transformBar.setAttribute('role','toolbar');this.transformBar.setAttribute('aria-label','Transform tools');this.transformBar.setAttribute('aria-orientation','vertical');this.view.append(this.transformBar);
+        this.transformTools=new Map();
+        for(const [mode,label,shortcut] of [['rotate','Rotate','E'],['translate','Move','W'],['scale','Scale','R']]){
+            const button=this.iconButton(mode,label,()=>{this.setMode(mode);this.renderer.domElement.focus({preventScroll:true});},this.transformBar);button.title=`${label} (${shortcut})`;button.style.width=button.style.height='34px';button.setAttribute('aria-pressed','false');button.disabled=true;this.transformTools.set(mode,button);
+        }
+        this.transformTools.get('scale').title='Scale (R): root / selected bone. Hand/foot targets scale the end bone; poles only move.';
+        // DOM tools stay outside the WebGL canvas, so no icon enters captures.
+        for(const event of ['pointerdown','pointerup','pointermove','wheel','keydown'])this.transformBar.addEventListener(event,event=>event.stopPropagation());
+        this.info=document.createElement("div");this.info.textContent="Click joint / IK target / pole · W: move · E: rotate · R: scale · Left drag: orbit · Middle drag: pan · Scroll: zoom";root.append(this.info);
+        this.renderer=new T.WebGLRenderer({antialias:true,preserveDrawingBuffer:true,alpha:true});this.renderer.setPixelRatio(Math.min(devicePixelRatio,2));this.renderer.shadowMap.enabled=true;this.renderer.shadowMap.type=T.PCFSoftShadowMap;this.renderer.outputColorSpace=T.SRGBColorSpace;this.renderer.toneMapping=T.ACESFilmicToneMapping;this.renderer.domElement.style.cssText='display:block;flex:0 0 auto;margin:auto';this.view.append(this.renderer.domElement);
+        this.scene=new T.Scene();this.scene.background=new T.Color("#000000");this.sceneBodies=new T.Group();this.scene.add(this.sceneBodies);this.camera=new T.PerspectiveCamera(DEFAULT_FOV,1,.01,100);this.camera.position.set(0,1.2,5.2);
         this.orbit=new OrbitControls(this.camera,this.renderer.domElement);this.orbit.mouseButtons.LEFT=T.MOUSE.ROTATE;this.orbit.mouseButtons.MIDDLE=-1;this.orbit.target.set(0,.95,0);this.orbit.update();this.orbit.addEventListener("change",()=>{if(!this.loading)this.commit();});
         this.gizmo=new TransformControls(this.camera,this.renderer.domElement);this.gizmo.setSize(.7);this.gizmo.setSpace("local");this.scene.add(this.gizmo.getHelper());
+        this.gizmo.addEventListener('change',()=>this.updateTransformTools());
         this.gizmo.addEventListener("dragging-changed",e=>{this.orbit.enabled=!e.value;if(!e.value){this.commit();this.record();}});
         this.gizmo.addEventListener("objectChange",()=>this.onTransformChange());
         this.scene.add(new T.HemisphereLight(0xc9dcff,0x253044,1.7));const key=this.keyLight=new T.DirectionalLight(0xffffff,3.2);key.position.set(-2,4,3);key.target.position.set(0,.95,0);key.castShadow=true;key.shadow.mapSize.set(2048,2048);key.shadow.camera.left=-2;key.shadow.camera.right=2;key.shadow.camera.top=3;key.shadow.camera.bottom=-2;key.shadow.bias=-.0001;this.scene.add(key,key.target);
         this.lightControl=new PoseLightControl(this.view,this.camera,()=>key.position.clone().sub(key.target.position).normalize(),direction=>{this.setLightDirection(direction);this.commit();},()=>this.record());
         this.renderPasses=new PoseRenderPasses();
         const rim=new T.DirectionalLight(0x87aaff,2);rim.position.set(2,2,-3);this.scene.add(rim);
-        this.floor=new T.Mesh(new T.PlaneGeometry(200,200),new T.MeshStandardMaterial({color:0x303844,roughness:.85}));this.floor.rotation.x=-Math.PI/2;this.floor.position.y=-.01;this.floor.receiveShadow=true;this.scene.add(this.floor);
-        this.grid=new T.GridHelper(4,20,0x657587,0x394451);this.grid.position.y=.001;this.scene.add(this.grid);
+        this.grid=new T.GridHelper(4,20,0xffffff,0xffffff);this.grid.position.y=.001;this.scene.add(this.grid);
         this.setFloorVisible(true);
         this.ray=new T.Raycaster();
         const canvas=this.renderer.domElement;canvas.tabIndex=0;let start=null,suppressedGizmo=null;
@@ -139,13 +168,33 @@ export class Pose3DEditorUI {
             const object=this.pickObjectAt(e.clientX,e.clientY);if(object){this.selectObject(object);this.commit();}
         });
         canvas.addEventListener('pointercancel',()=>{restoreGizmo();start=null;middlePan=null;});
-        canvas.addEventListener("keydown",e=>{if(e.key.toLowerCase()==="w")this.setMode("translate");if(e.key.toLowerCase()==="e")this.setMode("rotate");e.stopPropagation();});
+        canvas.addEventListener("keydown",e=>{if(!e.ctrlKey&&!e.metaKey&&!e.altKey){if(e.key.toLowerCase()==="w")this.setMode("translate");if(e.key.toLowerCase()==="e")this.setMode("rotate");if(e.key.toLowerCase()==="r")this.setMode("scale");}e.stopPropagation();});
         for(const name of ["pointerdown","wheel","keydown"])root.addEventListener(name,e=>e.stopPropagation());
         this.resizeObserver=new ResizeObserver(()=>this.resize());this.resizeObserver.observe(this.view);
         this.ready=this.load();this.loop=()=>{if(this.disposed)return;this.updateAllMarkers();this.renderer.render(this.scene,this.camera);this.lightControl.draw();this.frame=requestAnimationFrame(this.loop);};this.loop();
     }
     button(text,action){const b=document.createElement("button");b.textContent=text;b.onclick=action;this.bar.append(b);return b;}
-    updateGetPoseButton(){if(this.getPoseButton)this.getPoseButton.disabled=this.loading||!!this.poseJob||this.selectedBody?.source!=='MHR'||!this.selectedBody?.shapeControl.enabled;}
+    iconButton(icon,label,action,parent=this.bar){
+        const button=document.createElement('button');button.type='button';button.title=label;button.setAttribute('aria-label',label);button.onclick=action;button.style.cssText='display:flex;align-items:center;justify-content:center;width:28px;height:28px;flex:0 0 auto;padding:4px;background:#333;color:#ddd;border:1px solid #606060;border-radius:4px;cursor:pointer';
+        const ns='http://www.w3.org/2000/svg',svg=document.createElementNS(ns,'svg');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('width','20');svg.setAttribute('height','20');svg.setAttribute('fill','none');svg.setAttribute('stroke','currentColor');svg.setAttribute('stroke-width','1.8');svg.setAttribute('stroke-linecap','round');svg.setAttribute('stroke-linejoin','round');svg.setAttribute('aria-hidden','true');svg.style.pointerEvents='none';
+        for(const d of TOOL_ICONS[icon]){const path=document.createElementNS(ns,'path');path.setAttribute('d',d);svg.append(path);}button.append(svg);parent.append(button);return button;
+    }
+    updateTransformTools(){
+        const object=this.selected,chain=object?.userData.chain,pole=chain&&object.userData.kind==='pole',root=object?.userData.rootController,pelvis=object===this.pelvisBone;
+        for(const [mode,button] of this.transformTools){const allowed=mode==='translate'?root||chain||pelvis:mode==='rotate'?!pole&&!pelvis:!pole;button.disabled=this.loading||!object||!allowed;const active=!button.disabled&&this.gizmo.mode===mode;button.setAttribute('aria-pressed',String(active));button.style.backgroundColor=active?'#36536b':'#333';button.style.borderColor=active?'#83a9c9':'#606060';button.style.opacity=button.disabled?'.45':'1';button.style.cursor=button.disabled?'default':'pointer';}
+    }
+    setFov(value,finish=true){if(!Number.isFinite(value))return false;if(finish)this.record();this.camera.fov=T.MathUtils.clamp(value,MIN_FOV,MAX_FOV);this.camera.updateProjectionMatrix();this.fovSlider.value=this.fovInput.value=this.camera.fov;this.commit();if(finish)this.record();return true;}
+    updateCameraViewButtons(){if(this.saveCameraButton)this.saveCameraButton.disabled=this.loading||this.disposed;if(this.loadCameraButton)this.loadCameraButton.disabled=this.loading||this.disposed||!validCameraView(this.savedCamera);}
+    saveCameraView(){
+        if(this.loading||this.disposed)return false;const view={position:this.camera.position.toArray(),target:this.orbit.target.toArray(),fov:this.camera.fov};if(!validCameraView(view))return false;
+        this.record();this.savedCamera=copyCameraView(view);this.commit();this.record();this.updateCameraViewButtons();this.note.textContent='Camera view saved.';return true;
+    }
+    loadCameraView(){
+        if(this.loading||this.disposed||!validCameraView(this.savedCamera))return false;this.record();const view=this.savedCamera;
+        this.camera.position.fromArray(view.position);this.orbit.target.fromArray(view.target);this.camera.fov=view.fov;this.camera.updateProjectionMatrix();this.fovSlider.value=this.fovInput.value=view.fov;this.orbit.update();
+        this.commit();this.record();this.updateCameraViewButtons();this.note.textContent='Saved camera view loaded.';return true;
+    }
+    updateGetPoseButton(){if(this.getPoseButton)this.getPoseButton.disabled=this.loading||!!this.poseJob||this.selectedBody?.source!=='MHR'||!this.selectedBody?.shapeControl.enabled;this.updateTransformTools();this.updateCameraViewButtons();}
     choosePoseImage(){this.updateGetPoseButton();if(this.getPoseButton.disabled)return;this.poseFileBody=this.selectedBody;this.poseFile.click();}
     async getPoseFromImage(file,body=this.selectedBody){
         if(this.loading||this.poseJob||this.disposed)return;
@@ -157,6 +206,8 @@ export class Pose3DEditorUI {
             const upload=await api.fetchApi('/upload/image',{method:'POST',body:form});const uploaded=await upload.json();if(!upload.ok)throw Error(uploaded.error??`Image upload: HTTP ${upload.status}`);
             const image=uploaded.subfolder?`${uploaded.subfolder}/${uploaded.name}`:uploaded.name;
             const prompt=await buildSAMPosePrompt(this.node,image,job.id);
+            await ensureSAMPoseModel(prompt,api,message=>{if(!this.disposed)this.note.textContent=message;},()=>!this.disposed&&this.poseJob===job&&this.loadId===job.loadId);
+            if(this.loadId!==job.loadId||!this.bodies.includes(body)||samBodyFingerprint(this.bodySnapshot(body))!==job.signature)throw Error('The target body changed while preparing the model. Try again.');
             this.note.textContent='Get pose: Queued — loading model / estimating body…';
             const response=await api.fetchApi('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt,client_id:api.clientId,extra_data:{toyxyz_get_pose:true}})});
             const queued=await response.json();if(!response.ok)throw Error(JSON.stringify(queued.error??queued.node_errors??queued));
@@ -177,7 +228,7 @@ export class Pose3DEditorUI {
             }
         }finally{if(this.poseJob===job)this.poseJob=null;this.updateGetPoseButton();}
     }
-    refreshChainLengths(){this.rootControl.updateMatrixWorld(true);for(const chain of this.chains){const [a,b,c]=chain.ids.map(i=>this.bones[i].getWorldPosition(v(0,0,0)));chain.lengths=[a.distanceTo(b),b.distanceTo(c)];}}
+    refreshChainLengths(){this.rootControl.updateMatrixWorld(true);for(const chain of this.chains){const [a,b,c]=this.chainFrame(chain).points;chain.lengths=[a.distanceTo(b),b.distanceTo(c)];}}
     applySAMPose(body,data){
         const positiveScale=s=>finiteVector(s,3)&&s.every(x=>x>1e-6&&x<=1000);
         if(!this.bodies.includes(body)||body.source!=='MHR'||!body.shapeControl.enabled||data?.version!==1||data.source!=='MHR'||!validMHRShape(data.shape)||data.joints?.length!==body.bones.length||data.parents?.length!==body.bones.length||!data.joints.every(j=>finiteVector(j.position,3)&&finiteVector(j.quaternion,4)&&j.quaternion.some(x=>x!==0)&&positiveScale(j.scale))||!data.parents.every((parent,i)=>parent===body.bones.indexOf(body.bones[i].parent)))throw Error('Incompatible SAM MHR pose.');
@@ -215,7 +266,7 @@ export class Pose3DEditorUI {
         return mesh?.userData.poseBody?.rootControl??null;
     }
     setFloorVisible(visible){
-        this.floor.visible=visible;this.grid.visible=visible;
+        this.grid.visible=visible;
         this.floorButton.textContent=visible?'Floor: On':'Floor: Off';
         this.floorButton.setAttribute('aria-pressed',String(visible));
         this.floorButton.style.backgroundColor=visible?'#36536b':'';
@@ -228,6 +279,14 @@ export class Pose3DEditorUI {
         return true;
     }
     useBody(body){for(const key of BODY_FIELDS)this[key]=body?.[key];this.bodyContext=body;}
+    setBodyRootSize(body,value,finish=true){
+        if(this.loading||this.disposed||!this.bodies.includes(body)||!Number.isFinite(value)||value<=0)return false;
+        if(finish)this.record();const scale=body.rootControl.scale,current=Math.cbrt(scale.x*scale.y*scale.z);
+        // A uniform multiplier must not erase nonuniform proportions authored
+        // with the gizmo. Clamp the multiplier, not each component separately.
+        const factor=T.MathUtils.clamp(T.MathUtils.clamp(value,.001,1000)/current,1.000001e-6/Math.min(scale.x,scale.y,scale.z),1000/Math.max(scale.x,scale.y,scale.z));
+        scale.multiplyScalar(factor);this.withBody(body,()=>this.updateMarkers());body.shapeControl.syncRootSize();this.commit();if(finish)this.record();return true;
+    }
     withBody(body,action){
         const previous=Object.fromEntries(BODY_FIELDS.map(key=>[key,this[key]])),context=this.bodyContext;
         this.useBody(body);try{return action();}finally{Object.assign(this,previous);this.bodyContext=context;}
@@ -271,7 +330,7 @@ export class Pose3DEditorUI {
         const body={id,prepared,...Object.fromEntries(BODY_FIELDS.map(key=>[key,this[key]]))};
         const controls=new PoseShapeControl(this.modelTree,()=>this.commit(),()=>this.record(),()=>{this.activateBody(body);this.selectObject(body.rootControl);this.commit();},(color,finish)=>{this.withBody(body,()=>this.setBodyColor(color));this.commit();if(finish)this.record();});
         body.shapeControl=controls;this.shapeControl=controls;this.bodyContext=body;
-        controls.bind(body.bodyMesh,prepared.data,prepared.basis,prepared.error);
+        controls.bind(body.bodyMesh,prepared.data,prepared.basis,prepared.error,{scale:body.rootControl.scale,onChange:(value,finish)=>this.setBodyRootSize(body,value,finish),onBegin:()=>this.record()});
         controls.modelButton.textContent=`◈ Human mesh ${id.replace(/^body-/,'')} (${body.source})`;
         this.bodies.push(body);
         for(const object of [body.rootControl,...body.bones,...body.handles.children,...(body.bodyMesh?[body.bodyMesh]:[])])object.userData.poseBody=body;
@@ -281,8 +340,9 @@ export class Pose3DEditorUI {
         if(this.validBodyState(saved,body))this.restoreBody(body,saved);
         else if(finiteVector(saved.root_transform?.position,3)&&finiteVector(saved.root_transform?.quaternion,4)&&saved.root_transform.quaternion.some(value=>value!==0)){
             body.rootControl.position.fromArray(saved.root_transform.position);body.rootControl.quaternion.fromArray(saved.root_transform.quaternion).normalize();
+            if(validScale(saved.root_transform.scale))body.rootControl.scale.fromArray(saved.root_transform.scale);
         }
-        this.updateMarkers();this.updateControllerVisibility();return body;
+        this.updateMarkers();controls.syncRootSize(true);this.updateControllerVisibility();return body;
     }
     destroyBody(body){
         const geometries=new Set(),materials=new Set();
@@ -298,7 +358,7 @@ export class Pose3DEditorUI {
     }
     clearBodies(){this.gizmo.detach();for(const body of [...this.bodies])this.destroyBody(body);this.activeBody=null;this.selectedBody=null;this.selected=null;this.useBody(null);}
     async load(saved){
-        this.loading=true;const loadId=this.loadId=(this.loadId||0)+1;this.modelTree.setActions(true,false);
+        this.loading=true;this.updateCameraViewButtons();const loadId=this.loadId=(this.loadId||0)+1;this.modelTree.setActions(true,false);
         try{
             if(!saved){try{saved=JSON.parse(this.widget('pose_data').value);}catch{}}
             saved??={};const records=Array.isArray(saved.bodies)?saved.bodies:[saved];
@@ -314,7 +374,7 @@ export class Pose3DEditorUI {
             this.resize();
         }catch(error){if(loadId===this.loadId)this.note.textContent=`Body load failed: ${error.message}`;throw error;}
         finally{if(loadId===this.loadId&&!this.disposed){this.loading=false;this.modelTree.setActions(false,!!this.selectedBody);}}
-        this.commit();this.history=[this.snapshot()];this.future=[];this.updateGetPoseButton();
+        this.commit();this.invalidateRegionPainter();this.history=[this.snapshot()];this.future=[];this.updateGetPoseButton();
     }
     async addBody(){
         if(this.loading||this.disposed)return false;
@@ -377,17 +437,18 @@ export class Pose3DEditorUI {
         this.openPose=new PoseOpenPose(this.bones,this.bodyMesh,this.source,data.openpose);
         this.updateMarkers();
     }
-    selectObject(object){if(object.userData.poseBody&&object.userData.poseBody!==this.selectedBody)this.activateBody(object.userData.poseBody);const chain=object.userData.chain;if(chain&&!chain.enabled){this.updateProceduralRotations();this.rootControl.updateMatrixWorld(true);this.syncFKChain(chain,true);}if(object===this.pelvisBone)this.preparePelvisIK();this.selected=object;this.gizmo.attach(object);if(object.userData.rootController||object.userData.chain||object===this.pelvisBone){this.gizmo.setMode('translate');this.gizmo.setSpace('world');}else{this.gizmo.setMode('rotate');this.gizmo.setSpace('local');}this.info.textContent=`${object.name} · White: rotate only · Green/Purple: move · IK end / Root: W move / E rotate`;}
+    selectObject(object){if(object.userData.poseBody&&object.userData.poseBody!==this.selectedBody)this.activateBody(object.userData.poseBody);const chain=object.userData.chain;if(chain&&!chain.enabled){this.updateProceduralRotations();this.rootControl.updateMatrixWorld(true);this.syncFKChain(chain,true);}if(object===this.pelvisBone)this.preparePelvisIK();this.selected=object;this.gizmo.attach(object);if(object.userData.rootController||object.userData.chain||object===this.pelvisBone){this.gizmo.setMode('translate');this.gizmo.setSpace('world');}else{this.gizmo.setMode('rotate');this.gizmo.setSpace('local');}this.info.textContent=`${object.name} · White: rotate / scale · Green/Purple: move · W move / E rotate / R scale (no pole scale)`;}
     preparePelvisIK(){
         // Re-arm FK-edited (or old saved inactive) limbs BEFORE pelvis motion,
         // matching the current pose rather than moving the targets with it.
         this.updateProceduralRotations();this.rootControl.updateMatrixWorld(true);
         for(const chain of this.chains)if(!chain.enabled){this.syncFKChain(chain,true);chain.enabled=true;}
     }
-    setMode(mode){const selected=this.selected;if(!selected)return;const chain=selected.userData.chain;if(chain){if(selected.userData.kind==='pole')mode='translate';if(mode==='rotate'){this.gizmo.attach(this.bones[chain.ids[2]]);this.gizmo.setSpace('local');}else{this.gizmo.attach(selected);this.gizmo.setSpace('world');}}else if(selected.userData.rootController){this.gizmo.attach(selected);this.gizmo.setSpace(mode==='rotate'?'local':'world');}else if(selected===this.pelvisBone){mode='translate';this.gizmo.attach(selected);this.gizmo.setSpace('world');}else{mode='rotate';this.gizmo.attach(selected);this.gizmo.setSpace('local');}this.gizmo.setMode(mode);}
+    setMode(mode){const selected=this.selected;if(!selected||!['translate','rotate','scale'].includes(mode))return;const chain=selected.userData.chain;if(chain){if(selected.userData.kind==='pole')mode='translate';if(mode==='rotate'||mode==='scale'){this.gizmo.attach(this.bones[chain.ids[2]]);this.gizmo.setSpace('local');}else{this.gizmo.attach(selected);this.gizmo.setSpace('world');}}else if(selected.userData.rootController){this.gizmo.attach(selected);this.gizmo.setSpace(mode==='translate'?'world':'local');}else if(selected===this.pelvisBone){if(mode!=='scale')mode='translate';this.gizmo.attach(selected);this.gizmo.setSpace(mode==='scale'?'local':'world');}else{if(mode!=='scale')mode='rotate';this.gizmo.attach(selected);this.gizmo.setSpace('local');}this.gizmo.setMode(mode);}
     followPole(chain){chain.pole.position.add(chain.target.position.clone().sub(chain.lastTarget));chain.lastTarget.copy(chain.target.position);}
     onTransformChange(){
         const object=this.gizmo.object;if(!object||!this.chains)return;
+        if(this.gizmo.mode==='scale')for(const axis of ['x','y','z'])object.scale[axis]=T.MathUtils.clamp(Number.isFinite(object.scale[axis])?object.scale[axis]:1,.001,1000);
         if(object.userData.chain)object.userData.chain.enabled=true;
         else if(object.isBone&&!object.userData.rootController){
             this.updateProceduralRotations();this.rootControl.updateMatrixWorld(true);
@@ -399,14 +460,15 @@ export class Pose3DEditorUI {
                     if(ancestor===object)affects=true;
                 // Pelvis translation retains the existing planted-IK behavior.
                 if(!affects||(object===this.pelvisBone&&this.gizmo.mode==='translate'))continue;
-                if(chain.enabled)chain.poleDistance=Math.max(.01,chain.pole.getWorldPosition(v(0,0,0)).distanceTo(this.bones[chain.ids[1]].getWorldPosition(v(0,0,0))));
+                if(chain.enabled)chain.poleDistance=Math.max(.01,chain.pole.position.distanceTo(this.chainFrame(chain).points[1]));
                 chain.enabled=false;this.syncFKChain(chain,true);
             }
         }
-        this.solveIK();this.commit();
+        this.refreshChainLengths();this.solveIK();this.shapeControl?.syncRootSize();this.commit();
     }
+    rigRotation(object){const rotation=new T.Quaternion();for(let current=object;current&&current!==this.rootControl;current=current.parent)rotation.premultiply(current.quaternion);return rotation;}
     chainFrame(chain){
-        return {points:chain.ids.map(i=>this.handles.worldToLocal(this.bones[i].getWorldPosition(v(0,0,0)))),rotation:this.handles.getWorldQuaternion(new T.Quaternion()).invert().multiply(this.bones[chain.ids[0]].getWorldQuaternion(new T.Quaternion()))};
+        return {points:chain.ids.map(i=>this.handles.worldToLocal(this.bones[i].getWorldPosition(v(0,0,0)))),rotation:this.rigRotation(this.bones[chain.ids[0]])};
     }
     rememberChainPose(chain){
         chain.fkFrame=this.chainFrame(chain);
@@ -450,37 +512,45 @@ export class Pose3DEditorUI {
         if(!this.rootControl)return;this.rootControl.updateMatrixWorld(true);
         for(const chain of this.chains){
             if(!chain.enabled)continue;this.followPole(chain);
-            const [a,b,c]=chain.ids.map(i=>this.bones[i]),root=a.getWorldPosition(v(0,0,0)),endRotation=c.getWorldQuaternion(new T.Quaternion()),upperRotation=a.getWorldQuaternion(new T.Quaternion());
-            const result=solveTwoBone(root,chain.target.getWorldPosition(v(0,0,0)),chain.pole.getWorldPosition(v(0,0,0)),...chain.lengths,chain.bendLocal?.clone().applyQuaternion(upperRotation),chain.axisLocal?.clone().applyQuaternion(upperRotation));
-            // An already-solved chain (especially a saved neutral pose) needs
-            // no extra quaternion round-trip. Avoid numerical drift on reload.
-            if(b.getWorldPosition(v(0,0,0)).distanceToSquared(result.joint)<1e-16&&c.getWorldPosition(v(0,0,0)).distanceToSquared(result.end)<1e-16){this.rememberChainPose(chain);continue;}
-            const aim=(bone,child,target)=>{const origin=bone.getWorldPosition(v(0,0,0)),current=child.getWorldPosition(v(0,0,0)).sub(origin).normalize(),direction=target.clone().sub(origin).normalize();const delta=new T.Quaternion().setFromUnitVectors(current,direction);const world=delta.multiply(bone.getWorldQuaternion(new T.Quaternion()));const parent=bone.parent.getWorldQuaternion(new T.Quaternion()).invert();bone.quaternion.copy(parent.multiply(world));bone.updateWorldMatrix(false,true);};
-            aim(a,b,result.joint);aim(b,c,result.end);
-            // Translation of an IK target must not inherit the solver's change
-            // of parent rotation at the wrist/ankle.
-            c.quaternion.copy(c.parent.getWorldQuaternion(new T.Quaternion()).invert().multiply(endRotation));
+            const [a,b,c]=chain.ids.map(i=>this.bones[i]),endRotation=this.rigRotation(c);
+            // Solve in root-controller space. Root nonuniform scale/rotation
+            // must transform the rig and targets together, not distort IK math.
+            const aim=(bone,child,target)=>{const origin=bone.position,current=bone.parent.worldToLocal(child.getWorldPosition(v(0,0,0))).sub(origin).normalize(),direction=bone.parent.worldToLocal(this.handles.localToWorld(target.clone())).sub(origin).normalize();bone.quaternion.premultiply(new T.Quaternion().setFromUnitVectors(current,direction));bone.updateWorldMatrix(false,true);};
+            // Nonuniform part scales can change a segment's effective length
+            // when its parent rotates. Re-measure while converging, rather than
+            // retaining the original rest lengths after a scale edit.
+            for(let iteration=0;iteration<12;iteration++){
+                const [root,joint,end]=this.chainFrame(chain).points,upperRotation=this.rigRotation(a);
+                chain.lengths=[root.distanceTo(joint),joint.distanceTo(end)];
+                const result=solveTwoBone(root,chain.target.position,chain.pole.position,...chain.lengths,chain.bendLocal?.clone().applyQuaternion(upperRotation),chain.axisLocal?.clone().applyQuaternion(upperRotation));
+                if(joint.distanceToSquared(result.joint)<1e-16&&end.distanceToSquared(result.end)<1e-16)break;
+                aim(a,b,result.joint);aim(b,c,result.end);
+            }
+            c.quaternion.copy(this.rigRotation(c.parent).invert().multiply(endRotation));
             this.bodyRoot.updateMatrixWorld(true);this.rememberChainPose(chain);
         }
     }
     updateMarkers(){if(!this.bones)return;this.updateProceduralRotations();this.rootControl.updateMatrixWorld(true);this.markers.children.forEach(m=>m.position.copy(m.userData.object.getWorldPosition(v(0,0,0))));for(const {mesh,child,radius} of this.proxyParts){const length=child.position.length();mesh.position.copy(child.position).multiplyScalar(.5);mesh.quaternion.setFromUnitVectors(v(0,1,0),child.position.clone().normalize());mesh.scale.set(1,Math.max(.001,length)/(1+2*radius),1);}for(const chain of this.chains){if(!chain.enabled)this.syncFKChain(chain);const joint=this.bones[chain.ids[1]].getWorldPosition(v(0,0,0)),pole=chain.pole.getWorldPosition(v(0,0,0)),points=chain.poleLink.geometry.attributes.position;points.setXYZ(0,joint.x,joint.y,joint.z);points.setXYZ(1,pole.x,pole.y,pole.z);points.needsUpdate=true;}}
-    updateAllMarkers(){for(const body of this.bodies)this.withBody(body,()=>this.updateMarkers());}
+    updateAllMarkers(){for(const body of this.bodies)this.withBody(body,()=>{this.updateMarkers();body.shapeControl.syncRootSize();});}
     bodySnapshot(body){return this.withBody(body,()=>{
         this.updateProceduralRotations();
-        return {version:1,id:body.id,body:this.gender,source:this.source,body_color:`#${this.material.color.getHexString()}`,shape:this.shapeControl.snapshot(),root_transform:{position:this.rootControl.position.toArray(),quaternion:this.rootControl.quaternion.toArray()},joints:this.bones.map(b=>({name:b.name,position:b.position.toArray(),quaternion:b.quaternion.toArray(),scale:b.scale.toArray()})),procedural_offsets:this.proceduralRotations.map(rule=>(rule.offset??new T.Quaternion()).toArray()),ik:this.chains.map(c=>({name:c.name,enabled:c.enabled,target:c.target.position.toArray(),pole:c.pole.position.toArray()})),openpose:this.openPose.project(this.camera,this.widget('width').value,this.widget('height').value)};
+        return {version:1,id:body.id,body:this.gender,source:this.source,body_color:`#${this.material.color.getHexString()}`,shape:this.shapeControl.snapshot(),root_transform:{position:this.rootControl.position.toArray(),quaternion:this.rootControl.quaternion.toArray(),scale:this.rootControl.scale.toArray()},joints:this.bones.map(b=>({name:b.name,position:b.position.toArray(),quaternion:b.quaternion.toArray(),scale:b.scale.toArray()})),procedural_offsets:this.proceduralRotations.map(rule=>(rule.offset??new T.Quaternion()).toArray()),ik:this.chains.map(c=>({name:c.name,enabled:c.enabled,target:c.target.position.toArray(),pole:c.pole.position.toArray()})),openpose:this.openPose.project(this.camera,this.widget('width').value,this.widget('height').value)};
     });}
     snapshot(){
         const bodies=this.bodies.map(body=>this.bodySnapshot(body));
-        const common={version:1,selected_body_id:this.selectedBody?.id??null,floor_visible:this.floor.visible,camera:{position:this.camera.position.toArray(),target:this.orbit.target.toArray()},lighting:{direction:this.keyLight.position.clone().sub(this.keyLight.target.position).normalize().toArray()}};
+        const common={version:1,selected_body_id:this.selectedBody?.id??null,floor_visible:this.grid.visible,camera:{position:this.camera.position.toArray(),target:this.orbit.target.toArray(),fov:this.camera.fov},lighting:{direction:this.keyLight.position.clone().sub(this.keyLight.target.position).normalize().toArray()}};
+        if(validCameraView(this.savedCamera))common.saved_camera=copyCameraView(this.savedCamera);
         // Preserve the original one-body format for existing workflows/callers.
         return bodies.length===1?{...bodies[0],...common}:{...common,bodies,openpose:{version:2,width:this.widget('width').value,height:this.widget('height').value,people:bodies.map(body=>body.openpose)}};
     }
     validBodyState(data,body=this.bodyContext){
+        if(data?.root_transform?.scale!==undefined&&!validScale(data.root_transform.scale))return false;
         if(data?.joints?.some(j=>j?.scale!==undefined&&(!finiteVector(j.scale,3)||!j.scale.every(s=>s>1e-6&&s<=1000))))return false;
         if(data?.procedural_offsets!==undefined&&(!Array.isArray(data.procedural_offsets)||data.procedural_offsets.length!==(body?.proceduralRotations?.length??body?.proceduralCount??0)||!data.procedural_offsets.every(q=>finiteVector(q,4)&&q.some(x=>x!==0))))return false;
         return !!body&&data?.version===1&&data.body===body.gender&&data.source===body.source&&(data.body_color===undefined||validBodyColor(data.body_color))&&(data.shape===undefined||validMHRShape(data.shape))&&(data.root_transform===undefined||(finiteVector(data.root_transform?.position,3)&&finiteVector(data.root_transform?.quaternion,4)&&data.root_transform.quaternion.some(x=>x!==0)))&&Array.isArray(data.joints)&&data.joints.length===body.bones.length&&data.joints.every((j,i)=>j?.name===body.bones[i].name&&finiteVector(j.position,3)&&finiteVector(j.quaternion,4)&&j.quaternion.some(x=>x!==0))&&Array.isArray(data.ik)&&data.ik.length===body.chains.length&&data.ik.every((c,i)=>c?.name===body.chains[i].name&&typeof c.enabled==='boolean'&&finiteVector(c.target,3)&&finiteVector(c.pole,3));
     }
     validPose(data){
+        if(data?.camera?.fov!==undefined&&!validFov(data.camera.fov))return false;
         if(data?.version!==1||!finiteVector(data.camera?.position,3)||!finiteVector(data.camera?.target,3)||(data.floor_visible!==undefined&&typeof data.floor_visible!=='boolean')||(data.lighting!==undefined&&(!finiteVector(data.lighting?.direction,3)||!data.lighting.direction.some(x=>x!==0))))return false;
         const description=state=>this.bodies.find(body=>body.id===state.id&&body.source===state.source&&body.gender===state.body)??this.bodyAssets.get(`${state.source}:${state.body}`)?.validation;
         if(!Array.isArray(data.bodies))return this.validBodyState(data,description(data)??this.bodyContext);
@@ -490,13 +560,16 @@ export class Pose3DEditorUI {
     restoreBody(body,data){this.withBody(body,()=>{
         this.setBodyColor(data.body_color??DEFAULT_BODY_COLOR);this.shapeControl.restore(data.shape);
         this.rootControl.position.fromArray(data.root_transform?.position??[0,0,0]);this.rootControl.quaternion.fromArray(data.root_transform?.quaternion??[0,0,0,1]).normalize();
+        this.rootControl.scale.fromArray(data.root_transform?.scale??[1,1,1]);
         this.proceduralRotations.forEach((rule,index)=>{rule.offset=new T.Quaternion().fromArray(data.procedural_offsets?.[index]??[0,0,0,1]).normalize();});
         data.joints?.forEach((joint,index)=>{this.bones[index].position.fromArray(joint.position);this.bones[index].quaternion.fromArray(joint.quaternion).normalize();this.bones[index].scale.fromArray(joint.scale??Array(3).fill(body.prepared.data.localTransforms?.[index]?.scale??1));});
         data.ik?.forEach((chain,index)=>{this.chains[index].enabled=chain.enabled;this.chains[index].target.position.fromArray(chain.target);this.chains[index].pole.position.fromArray(chain.pole);this.chains[index].lastTarget.copy(this.chains[index].target.position);});
         this.updateProceduralRotations();this.refreshChainLengths();for(const chain of this.chains){this.rememberChainPose(chain);chain.poleDistance=Math.max(.01,chain.pole.position.distanceTo(chain.fkFrame.points[1]));}
-        this.solveIK();this.updateMarkers();
+        this.solveIK();this.updateMarkers();this.shapeControl.syncRootSize(true);
     });}
     restoreSceneSettings(data){
+        this.savedCamera=validCameraView(data.saved_camera)?copyCameraView(data.saved_camera):null;this.updateCameraViewButtons();
+        this.camera.fov=validFov(data.camera?.fov)?data.camera.fov:DEFAULT_FOV;this.camera.updateProjectionMatrix();this.fovSlider.value=this.fovInput.value=this.camera.fov;
         if(finiteVector(data.camera?.position,3)&&finiteVector(data.camera?.target,3)){this.camera.position.fromArray(data.camera.position);this.orbit.target.fromArray(data.camera.target);this.orbit.update();}
         if(finiteVector(data.lighting?.direction,3)&&data.lighting.direction.some(x=>x!==0))this.setLightDirection(v(...data.lighting.direction));
         this.setFloorVisible(data.floor_visible??true);
@@ -518,18 +591,37 @@ export class Pose3DEditorUI {
         const selected=data.selected_body_id===null?null:this.bodies.find(body=>body.id===data.selected_body_id)??this.bodies[0];
         if(selected){this.activateBody(selected);this.selectObject(selected.rootControl);}else{this.activeBody=this.bodies[0]??null;this.useBody(this.activeBody);this.selectScene();}
     }
-    commit(){if(this.loading)return;this.widget('pose_data').value=JSON.stringify(this.snapshot());this.widget('render_data').value='';this.node.setDirtyCanvas?.(true,true);}
+    invalidateRegionPainter(){this.regionRevision=(this.regionRevision??0)+1;notifyPoseRegions(this.node);}
+    commit(){if(this.loading)return;const value=JSON.stringify(this.snapshot()),changed=value!==this.widget('pose_data').value;this.widget('pose_data').value=value;this.widget('render_data').value='';this.node.setDirtyCanvas?.(true,true);if(changed)this.invalidateRegionPainter();}
     record(){if(this.loading)return;const data=this.snapshot();if(JSON.stringify(data)===JSON.stringify(this.history?.at(-1)))return;this.history??=[];this.history.push(data);if(this.history.length>50)this.history.shift();this.future=[];}
     undo(){if(this.loading||this.history?.length<2)return;this.restore(this.history.at(-2));this.future.push(this.history.pop());this.commit();}
     redo(){if(this.loading||!this.future?.length)return;const data=this.future.at(-1);this.restore(data);this.future.pop();this.history.push(data);this.commit();}
-    resize(){if(this.disposed)return;const width=this.widget('width').value,height=this.widget('height').value,availableW=this.view.clientWidth||500,availableH=this.view.clientHeight||440;const w=Math.min(availableW,availableH*width/height),h=w*height/width;this.camera.aspect=width/height;this.camera.updateProjectionMatrix();this.renderer.setSize(w,h);this.renderer.domElement.style.margin='auto';}
-    capture(){if(this.loading)throw Error('Wait for the pose body to finish loading.');for(const body of this.bodies)body.shapeControl.assertRenderable();this.updateAllMarkers();this.commit();const width=this.widget('width').value,height=this.widget('height').value;const visible=[...this.bodies.flatMap(body=>[body.markers,body.handles,body.poleLinks,body.rootMarker]),this.grid,this.gizmo.getHelper()];const saved=visible.map(o=>o.visible);const size=this.renderer.getSize(new T.Vector2()),pixel=this.renderer.getPixelRatio();try{visible.forEach(o=>o.visible=false);this.renderer.setPixelRatio(1);this.renderer.setSize(width,height,false);this.renderer.render(this.scene,this.camera);const png=this.renderer.domElement.toDataURL('image/png');const maps=this.renderPasses.capture(this.renderer,this.scene,this.camera,this.bodies.map(body=>body.bodyRoot),this.floor);this.widget('render_data').value=JSON.stringify({version:1,render:png,...maps});return png;}finally{visible.forEach((o,i)=>o.visible=saved[i]);this.renderer.setPixelRatio(pixel);this.renderer.setSize(size.x,size.y,false);this.renderer.render(this.scene,this.camera);}}
+    resize(){
+        if(this.disposed)return;
+        const width=this.widget('width').value,height=this.widget('height').value;
+        this.camera.aspect=width/height;this.camera.updateProjectionMatrix();
+        const availableW=this.view.clientWidth,availableH=this.view.clientHeight;
+        // Hidden/collapsed or not-yet-mounted widgets have no display area.
+        // ResizeObserver will fit them once visible; output resolution never
+        // comes from the DOM size, including captures made while hidden.
+        if(!availableW||!availableH)return;
+        const fit=Math.min(availableW/width,availableH/height);
+        this.renderer.setSize(width*fit,height*fit);
+    }
+    regionSourceId(){this.node.properties??={};this.node.properties.pose_region_source_id??=crypto.randomUUID();return this.node.properties.pose_region_source_id;}
+    captureRegionPainter(){
+        if(this.loading||this.disposed)throw Error('Wait for the pose body to finish loading.');if(this.camera.aspect!==this.widget('width').value/this.widget('height').value)this.resize();for(const body of this.bodies)body.shapeControl.assertRenderable();this.updateAllMarkers();
+        const objects=[...this.bodies.flatMap(body=>[body.markers,body.handles,body.poleLinks,body.rootMarker]),this.grid,this.gizmo.getHelper()],visible=objects.map(object=>object.visible);
+        try{objects.forEach(object=>object.visible=false);return this.renderPasses.captureBodyIds(this.renderer,this.scene,this.camera,this.bodies,this.widget('width').value,this.widget('height').value,this.regionSourceId());}finally{objects.forEach((object,index)=>object.visible=visible[index]);}
+    }
+    capture(){if(this.loading)throw Error('Wait for the pose body to finish loading.');if(this.camera.aspect!==this.widget('width').value/this.widget('height').value)this.resize();for(const body of this.bodies)body.shapeControl.assertRenderable();this.updateAllMarkers();this.commit();const width=this.widget('width').value,height=this.widget('height').value;const visible=[...this.bodies.flatMap(body=>[body.markers,body.handles,body.poleLinks,body.rootMarker]),this.grid,this.gizmo.getHelper()];const saved=visible.map(o=>o.visible);const size=this.renderer.getSize(new T.Vector2()),pixel=this.renderer.getPixelRatio();try{visible.forEach(o=>o.visible=false);this.renderer.setPixelRatio(1);this.renderer.setSize(width,height,false);this.renderer.render(this.scene,this.camera);const png=this.renderer.domElement.toDataURL('image/png');const maps=this.renderPasses.capture(this.renderer,this.scene,this.camera,this.bodies.map(body=>body.bodyRoot)),region_painter=this.captureRegionPainter();this.widget('render_data').value=JSON.stringify({version:1,render:png,...maps,region_painter});return png;}finally{visible.forEach((o,i)=>o.visible=saved[i]);this.renderer.setPixelRatio(pixel);this.renderer.setSize(size.x,size.y,false);this.renderer.render(this.scene,this.camera);}}
     reset(){
         if(this.loading||!this.selectedBody)return;
         const scene=this.snapshot(),shape=this.shapeControl.snapshot();
         const reset={id:this.selectedBody.id,...(shape?{source:this.source,body:this.gender,shape}:{}),body_color:`#${this.material.color.getHexString()}`};
-        if(Array.isArray(scene.bodies)){reset.root_transform={position:this.rootControl.position.toArray(),quaternion:[0,0,0,1]};scene.bodies=scene.bodies.map(body=>body.id===reset.id?reset:body);}
-        else Object.assign(scene,reset,{joints:undefined,ik:undefined,root_transform:undefined,source:shape?this.source:undefined});
+        const scale=this.rootControl.scale.toArray();
+        if(Array.isArray(scene.bodies)){reset.root_transform={position:this.rootControl.position.toArray(),quaternion:[0,0,0,1],scale};scene.bodies=scene.bodies.map(body=>body.id===reset.id?reset:body);}
+        else Object.assign(scene,reset,{joints:undefined,ik:undefined,root_transform:{position:[0,0,0],quaternion:[0,0,0,1],scale},source:shape?this.source:undefined});
         this.widget('pose_data').value=JSON.stringify(scene);this.ready=this.load(scene);
     }
     dispose(){this.disposed=true;api.removeEventListener?.('executing',this.poseExecuting);cancelAnimationFrame(this.frame);this.resizeObserver.disconnect();this.clearBodies();this.lightControl.dispose();this.renderPasses.dispose();this.orbit.dispose();this.gizmo.dispose();this.scene.traverse(o=>{o.geometry?.dispose();o.material?.dispose();});this.renderer.dispose();}
@@ -547,7 +639,9 @@ app.registerExtension({name:'toyxyz.pose3d',beforeConfigureGraph(data){migratePo
         created?.apply(this,arguments);ensureOpenPoseOutput(this);ensureSAMInput(this);
         const root=document.createElement('div');let ui;
         try{ui=this._pose3d=new Pose3DEditorUI(this,root);}catch(e){root.textContent=`3D editor failed: ${e.message}`;return;}
-        const dom=this.addDOMWidget('pose_editor','div',root,{serialize:false,hideOnZoom:false,getMinHeight:()=>620,getMaxHeight:()=>620});dom.serialize=false;
+        // Fill the height ComfyUI allocates after the node's sockets/widgets.
+        // A fixed max height kept vertical node resizing from reaching the view.
+        const dom=this.addDOMWidget('pose_editor','div',root,{serialize:false,hideOnZoom:false,getMinHeight:()=>360});dom.serialize=false;
         for(const name of ['pose_data','render_data']){
             const widget=this.widgets.find(w=>w.name===name);widget.hidden=true;widget.options??={};widget.options.hidden=true;widget.computeSize=()=>[0,-4];
             widget.serializeValue=async()=>{await ui.ready;if(name==='render_data')ui.capture();else ui.commit();return widget.value;};

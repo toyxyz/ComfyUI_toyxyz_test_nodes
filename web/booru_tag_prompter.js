@@ -4,6 +4,7 @@ import { currentTagRange, formatSelectedTag, insertTag, matchRanges } from "./ut
 import { textareaCaretRect } from "./util/textarea_caret.js";
 import { currentWildcardRange, insertWildcard, installWildcards, matchingWildcards } from "./util/booru_wildcards.js";
 import { installWiki } from "./util/booru_wiki.js";
+import { NodeTextAutocomplete } from "./util/node_text_autocomplete.js";
 
 if (!document.querySelector('link[data-toyxyz-booru-style]')) {
     const style = document.createElement("link");
@@ -16,6 +17,9 @@ if (!document.querySelector('link[data-toyxyz-booru-style]')) {
 const TYPE = "ToyxyzBooruTagPrompter";
 const WILDCARD_PATH_SETTING='toyxyz_test_nodes.WildcardPath';
 const FAVORITE_PATH_SETTING='toyxyz_test_nodes.FavoritePath';
+const OTHER_NODES_AUTOCOMPLETE_SETTING='toyxyz_test_nodes.BooruAutocomplete.OtherNodes';
+let otherNodesAutocomplete;
+const suggestionControllers = new WeakMap();
 let wildcardPathTimer,favoritePathTimer;
 async function syncWildcardPath(value) {
     const response=await api.fetchApi('/toyxyz/booru-tags/wildcards/settings',{
@@ -77,14 +81,16 @@ function favoritePathControl(name,setter,value) {
     return folderPathControl(name,setter,value,'Default: this node’s favorites folder',browseFavoritePath);
 }
 
-function attachSuggestions(node) {
-    const widget = node.widgets?.find(item => item.name === "tags");
-    const input = widget?.inputEl;
-    if (!(input instanceof HTMLTextAreaElement) || input.dataset.toyxyzBooruAttached) return;
+function attachSuggestions(node, widget = node.widgets?.find(item => item.name === "tags"),
+        input = widget?.element || widget?.inputEl, { panels = true } = {}) {
+    if (!(input instanceof HTMLTextAreaElement || input instanceof HTMLInputElement) || suggestionControllers.has(input)) return;
     input.dataset.toyxyzBooruAttached = "true";
+    const previousAutocomplete = input.getAttribute("autocomplete");
     input.setAttribute("autocomplete", "off");
-    installWildcards(node,widget,input,api);
-    installWiki(node,widget,input,api);
+    if (panels) {
+        installWildcards(node,widget,input,api);
+        installWiki(node,widget,input,api);
+    }
 
     const list = document.createElement("div");
     list.className = "toyxyz-booru-suggestions";
@@ -132,14 +138,24 @@ function attachSuggestions(node) {
             ? Math.max(rect.left, Math.min(wordStart.left, rect.right)) : caret.left;
         const scale = caret.scale;
         const fontSize = Number.parseFloat(style.fontSize) || 13;
-        list.style.fontSize = `${fontSize * scale}px`;
+        const displayFont = fontSize * scale;
+        const availableWidth = Math.max(0, window.innerWidth - 16);
+        list.style.fontSize = `${displayFont}px`;
         list.style.width = "max-content";
-        list.style.maxWidth = `${Math.min(420, rect.width * 0.5, window.innerWidth - 16)}px`;
+        // This body-level popup is not confined to the node's textarea. Give
+        // tag names room at the actual graph zoom, capped only by the viewport.
+        list.style.minWidth = `${Math.min(30 * displayFont, availableWidth)}px`;
+        list.style.maxWidth = `${Math.min(64 * displayFont, availableWidth)}px`;
         const width = list.getBoundingClientRect().width;
         list.style.left = `${Math.max(8, Math.min(anchorLeft, window.innerWidth - width - 8))}px`;
         const top = caret.bottom + 2;
-        list.style.top = `${top}px`;
-        list.style.maxHeight = `${Math.max(32, Math.min(300 * scale, window.innerHeight - top - 8))}px`;
+        const below = Math.max(0, window.innerHeight - top - 8);
+        const above = Math.max(0, Math.min(caret.top - 2, window.innerHeight - 8) - 8);
+        const desiredHeight = Math.min(300 * scale, list.scrollHeight + 2);
+        const flip = below < Math.min(120 * scale, desiredHeight) && above > below;
+        list.style.maxHeight = `${Math.min(300 * scale, flip ? above : below)}px`;
+        const height = list.getBoundingClientRect().height;
+        list.style.top = `${Math.max(8, Math.min(flip ? caret.top - height - 2 : top, window.innerHeight - height - 8))}px`;
     };
 
     const watchPosition = () => {
@@ -161,6 +177,7 @@ function attachSuggestions(node) {
     };
 
     const insert = index => {
+        if (removed || input.readOnly || input.disabled) { hide(); return; }
         const choice = suggestions[index];
         const range = activeKind === "wildcard"
             ? currentWildcardRange(input.value, input.selectionStart, input.selectionEnd)
@@ -172,7 +189,7 @@ function attachSuggestions(node) {
         input.value = next.value;
         input.setSelectionRange(next.caret, next.caret);
         input.dispatchEvent(new Event("input", { bubbles: true }));
-        if (widget.value !== input.value) {
+        if (widget && widget.value !== input.value) {
             widget.value = input.value;
             widget.callback?.(widget.value);
         }
@@ -222,6 +239,7 @@ function attachSuggestions(node) {
                 appendHighlighted(detail, result.alias, activeRange.query);
             }
             button.append(name, detail);
+            button.title = `${name.textContent} — ${detail.textContent}`;
             button.addEventListener("pointerdown", event => event.preventDefault());
             button.addEventListener("click", () => insert(index));
             list.append(button);
@@ -251,7 +269,8 @@ function attachSuggestions(node) {
                 data = await response.json();
             }
             if (currentRequest !== requestId ||
-                    (document.activeElement !== input && !pointerInsideList) || removed) return;
+                    (document.activeElement !== input && !pointerInsideList) || removed ||
+                    input.readOnly || input.disabled) return;
             const page = Array.isArray(data.suggestions) ? data.suggestions : [];
             nextOffset = offset + page.length;
             hasMore = Boolean(data.has_more);
@@ -275,7 +294,8 @@ function attachSuggestions(node) {
         const range = wildcardRange || currentTagRange(input.value, input.selectionStart, input.selectionEnd);
         activeRange = range;
         const currentRequest = ++requestId;
-        if (!range || (activeKind === "tag" && range.query.includes('__')) || composing || removed) return;
+        if (!range || (activeKind === "tag" && range.query.includes('__')) || composing || removed ||
+                input.readOnly || input.disabled || document.activeElement !== input) return;
         timer = setTimeout(() => loadPage(range, currentRequest, 0, false), 100);
     };
 
@@ -297,8 +317,10 @@ function attachSuggestions(node) {
     });
 
     const onKeyDown = event => {
+        if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
+        if (event.metaKey || event.altKey || (event.shiftKey && event.key === "Enter")) return;
         // Leave ComfyUI's Ctrl+arrow weights and Ctrl+Enter action untouched.
-        if (event.ctrlKey && (event.key.startsWith("Arrow") || event.key === "Enter")) return;
+        if ((event.ctrlKey || event.metaKey) && (event.key.startsWith("Arrow") || event.key === "Enter")) return;
         if (!list.isConnected || !suggestions.length) return;
         if (event.key === "ArrowDown" || event.key === "ArrowUp") {
             event.preventDefault();
@@ -333,27 +355,26 @@ function attachSuggestions(node) {
         if (!pointerInsideList && !list.contains(document.activeElement)) hide();
     }, 120);
 
-    input.addEventListener("input", update);
-    input.addEventListener("click", update);
-    input.addEventListener("keyup", event => {
-        if (event.ctrlKey && event.key.startsWith("Arrow")) return;
+    const onKeyUp = event => {
+        if ((event.ctrlKey || event.metaKey) && event.key.startsWith("Arrow")) return;
         if (["ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"].includes(event.key)) {
             update();
         }
-    });
-    input.addEventListener("keydown", onKeyDown);
-    input.addEventListener("compositionstart", () => { composing = true; hide(); });
-    input.addEventListener("compositionend", () => { composing = false; update(); });
-    input.addEventListener("blur", onBlur);
-    input.addEventListener("scroll", position);
+    };
+    const inputListeners = {
+        input: update, click: update, keyup: onKeyUp, keydown: onKeyDown,
+        compositionstart: () => { composing = true; hide(); },
+        compositionend: () => { composing = false; update(); }, blur: onBlur, scroll: position,
+    };
+    for (const [event, handler] of Object.entries(inputListeners)) input.addEventListener(event, handler);
     document.addEventListener("pointerdown", onOutsidePointer);
     window.addEventListener("resize", position);
     window.addEventListener("scroll", position, true);
     window.addEventListener("toyxyz-wildcard-list-updated", onWildcardListChanged);
     window.addEventListener("toyxyz-wildcards-changed", onWildcardListChanged);
 
-    const originalRemoved = node.onRemoved;
-    node.onRemoved = function (...args) {
+    const dispose = () => {
+        if (removed) return;
         removed = true;
         clearTimeout(timer);
         hide();
@@ -362,20 +383,33 @@ function attachSuggestions(node) {
         window.removeEventListener("scroll", position, true);
         window.removeEventListener("toyxyz-wildcard-list-updated", onWildcardListChanged);
         window.removeEventListener("toyxyz-wildcards-changed", onWildcardListChanged);
-        input.removeEventListener("scroll", position);
-        return originalRemoved?.apply(this, args);
+        for (const [event, handler] of Object.entries(inputListeners)) input.removeEventListener(event, handler);
+        delete input.dataset.toyxyzBooruAttached;
+        suggestionControllers.delete(input);
+        if (previousAutocomplete === null) input.removeAttribute("autocomplete");
+        else input.setAttribute("autocomplete", previousAutocomplete);
     };
+    if (panels) {
+        const originalRemoved = node.onRemoved;
+        node.onRemoved = function (...args) {
+            dispose();
+            return originalRemoved?.apply(this, args);
+        };
+    }
+    const controller = { update, hide, dispose };
+    suggestionControllers.set(input, controller);
+    return controller;
 }
 
 app.registerExtension({
     name: "toyxyz.booru_tag_prompter",
     settings: [{
         id: WILDCARD_PATH_SETTING,
-        name: 'Wildcard folder path',
-        category: ['toyxyz_test_nodes', 'Wildcards', 'Wildcard folder path'],
+        name: 'Wildcards folder path',
+        category: ['toyxyz_test_nodes', 'Booru tag prompter', 'Wildcards folder path'],
         type: wildcardPathControl,
         defaultValue: '',
-        tooltip: 'Enter an existing absolute folder path or choose Browse on the ComfyUI computer. Leave blank to use this custom node’s wildcards folder.',
+        tooltip: 'Booru tag prompter — W (Wildcards): folder containing wildcard text files. Enter an existing absolute folder path or choose Browse on the ComfyUI computer. Leave blank to use this custom node’s wildcards folder.',
         onChange(value) {
             clearTimeout(wildcardPathTimer);
             wildcardPathTimer=setTimeout(async()=>{
@@ -386,11 +420,11 @@ app.registerExtension({
         },
     },{
         id: FAVORITE_PATH_SETTING,
-        name: 'Favorite folder path',
-        category: ['toyxyz_test_nodes', 'Favorites', 'Favorite folder path'],
+        name: 'Favorites folder path',
+        category: ['toyxyz_test_nodes', 'Booru tag prompter', 'Favorites folder path'],
         type: favoritePathControl,
         defaultValue: '',
-        tooltip: 'Enter an existing absolute folder path or choose Browse on the ComfyUI computer. Leave blank to use this custom node’s favorites folder.',
+        tooltip: 'Booru tag prompter — F (Favorites): folder used to store saved prompts. Enter an existing absolute folder path or choose Browse on the ComfyUI computer. Leave blank to use this custom node’s favorites folder.',
         onChange(value) {
             clearTimeout(favoritePathTimer);
             favoritePathTimer=setTimeout(async()=>{
@@ -398,8 +432,18 @@ app.registerExtension({
                 catch(error){console.warn('Favorite folder path was not applied:',error);}
             },400);
         },
+    },{
+        id: OTHER_NODES_AUTOCOMPLETE_SETTING,
+        name: 'Autocomplete in other nodes',
+        category: ['toyxyz_test_nodes', 'Booru tag prompter', 'Autocomplete in other nodes'],
+        type: 'boolean',
+        defaultValue: false,
+        tooltip: 'Booru tag prompter — show tag and wildcard suggestions in other nodes’ editable text fields (including CLIP prompts). Turn off other text-autocomplete extensions to avoid overlapping suggestions. The Booru tag prompter node always retains its own autocomplete.',
+        onChange(value) { otherNodesAutocomplete?.setEnabled(value === true); },
     }],
     async setup(app) {
+        otherNodesAutocomplete ??= new NodeTextAutocomplete(app, attachSuggestions, TYPE);
+        otherNodesAutocomplete.setEnabled(app.ui.settings.getSettingValue(OTHER_NODES_AUTOCOMPLETE_SETTING, false) === true);
         const saved=app.ui.settings.getSettingValue(WILDCARD_PATH_SETTING);
         if(typeof saved==='string'&&saved.trim()) {
             try {await syncWildcardPath(saved);}catch(error){console.warn('Saved wildcard folder path was not applied:',error);}
@@ -423,5 +467,6 @@ app.registerExtension({
     },
     nodeCreated(node) {
         if (node.comfyClass === TYPE || node.type === TYPE) attachSuggestions(node);
+        otherNodesAutocomplete?.track(node);
     },
 });

@@ -150,6 +150,10 @@ def build_messages(prompt: str, prompt_type: str, analysis: str | None = None,
     if not isinstance(prompt, str) or (not prompt.strip() and analysis is None):
         raise ValueError("Image prompter: enter a prompt before running the queue.")
     profile = PROMPT_PROFILES[prompt_type]
+    if profile.output_mode == "custom":
+        if not prompt.strip():
+            raise ValueError("Image prompter: enter your instructions for custom mode.")
+        return [{"role": "user", "content": prompt}]
     if profile.output_mode == "anima":
         if enhance not in ENHANCE_LEVELS:
             raise ValueError(f"Unsupported image enhancement level: {enhance}")
@@ -493,13 +497,13 @@ def prepare_references(legacy_image=None, **images):
     return references
 
 
-def clean_response(text: str) -> str:
+def clean_response(text: str, preserve_format: bool = False) -> str:
     """Remove transport/reasoning wrappers only, never rewrite visual semantics."""
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.S | re.I).strip()
     if re.search(r"</?think\b", text, re.I):
         raise RuntimeError("Image prompter: model returned an incomplete reasoning block.")
     fence = re.fullmatch(r"```(?:text|json)?\s*(.*?)\s*```", text, flags=re.S | re.I)
-    if fence:
+    if fence and not preserve_format:
         text = fence[1].strip()
     if not text:
         raise RuntimeError("Image prompter: the LLM returned an empty prompt.")
@@ -525,7 +529,7 @@ class ImagePrompter:
         choices = list(model_choices())
         return {"required": {
             "prompt": ("STRING", {"default": "", "multiline": True,
-                                  "tooltip": "Without an image, describe what you want to create. For anima, enter tags, natural language, or both; recognized tags lead the output and English scene sentences retain your placement, pose, gaze, and expression. With a reference image, describe what to change and keep."}),
+                                  "tooltip": "Without an image, describe what you want to create. For anima, enter tags, natural language, or both; recognized tags lead the output and English scene sentences retain your placement, pose, gaze, and expression. With a reference image, describe what to change and keep. In custom mode, enter the instructions the LLM should follow, including output language and format."}),
             "llm_model": (choices, {"default": choices[0],
                           "tooltip": "Qwen3.8 Uncensored, shared with H3 prompter. Missing weights download automatically on queue execution (about 16.8 GB)."}),
             "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFE, "control_after_generate": "fixed",
@@ -534,11 +538,11 @@ class ImagePrompter:
             "builder": (SOCKET_TYPE, {"tooltip": "JSON caption from json prompter builder. The builder selects the target format; only descriptions are enhanced. Geometry, structure, colors and visible text remain locked."}),
             # Optional with a default also keeps old API graphs (target_model)
             # executable; positional UI widget order remains unchanged.
-            "prompt_type": (list(PROMPT_PROFILES), {"default": "default", "tooltip": "anima: dictionary-validated Danbooru tags followed by concise pose and spatial scene sentences; no default quality tags. default: image-generation prose. qwen_image_2.1: reference editing instructions."}),
+            "prompt_type": (list(PROMPT_PROFILES), {"default": "default", "tooltip": "anima: dictionary-validated Danbooru tags followed by concise pose and spatial scene sentences; no default quality tags. default: image-generation prose. qwen_image_2.1: reference editing instructions. custom: run your prompt directly without built-in system instructions, enhancement, presets or weight restoration."}),
             "preset": ("TOYXYZ_IMAGE_CAMERA", {"tooltip": "Optional guidance from image prompter preset. Explicit user instructions override the preset; compatible settings override reference framing."}),
             **{f"image_{i}": ("IMAGE", {"tooltip": f"Reference <image{i}>. One image per socket (first batch frame). Connect to reveal the next input, up to 10. Keep source numbering consistent with the downstream editor."}) for i in range(1,11)},
             "image": ("IMAGE", {"tooltip": "Legacy image input; migrated to image_1 in the UI."}),
-            "enhance": (list(ENHANCE_LEVELS), {"default": "none", "tooltip": "none: translate and organize. normal: develop compatible details. strong: expand open details richly. All levels preserve explicit user information. In edit mode, enhancement never widens the requested edit or alters protected content."}),
+            "enhance": (list(ENHANCE_LEVELS), {"default": "none", "tooltip": "none: translate and organize. normal: develop compatible details. strong: expand open details richly. All levels preserve explicit user information. In edit mode, enhancement never widens the requested edit or alters protected content. Ignored in custom mode."}),
             "edited_prompt": ("STRING", {"default": "", "multiline": True, "tooltip": "Edited output override. Clear to generate again from inputs."}),
         }}
 
@@ -556,7 +560,7 @@ class ImagePrompter:
     RETURN_NAMES = ("prompt",) + tuple(f"image_{i}" for i in range(1, 11))
     FUNCTION = "generate"
     CATEGORY = "ToyxyzTestNodes/Prompt"
-    DESCRIPTION = "Write tag-forward Anima prompts with source-faithful pose and spatial scene sentences, English scene prompts, or reference-edit instructions. Explicit user choices take priority. Numbered image outputs pass through unchanged."
+    DESCRIPTION = "Write tag-forward Anima prompts with source-faithful pose and spatial scene sentences, English scene prompts, or reference-edit instructions. Custom mode runs your instructions without built-in system prompts. Explicit user choices take priority. Numbered image outputs pass through unchanged."
 
     def generate(self, prompt, llm_model, seed, prompt_type=None, image=None, enhance="none", target_model=None, camera=None, edited_prompt="", _edit_instruction=None, preset=None, builder=None, **images):
         # `camera` is a legacy Python-call alias, not an exposed input socket.
@@ -599,7 +603,8 @@ class ImagePrompter:
                                and bool(profile.camera_resolution_prompt and
                                    (profile.camera_intent_prompt and (prompt.strip() or camera_guidance(camera))
                                     or camera_guidance(camera) and not profile.camera_system_prompt)))
-            progress = comfy.utils.ProgressBar((4 if reference else 3) + int(use_camera_plan))
+            custom = profile.output_mode == "custom"
+            progress = comfy.utils.ProgressBar((4 if reference and not custom else 3) + int(use_camera_plan))
             mm.throw_exception_if_processing_interrupted()
             last_download_step = None
             def download_progress(**event):
@@ -647,28 +652,31 @@ class ImagePrompter:
                     for index,(label,source) in enumerate(references):
                         path=os.path.join(folder,f'reference_{index}.png')
                         source.save(path); paths.append(path); labels.append(label)
-                    analysis_prompt=profile.image_analysis_prompt
+                    analysis_prompt=prompt if custom else profile.image_analysis_prompt
                     if profile.output_mode == 'scene' and len(references)>1:
                         analysis_prompt += '\n\n' + MULTI_ANALYSIS
-                    if profile.output_mode == 'edit' or len(references)>1:
+                    if not custom and (profile.output_mode == 'edit' or len(references)>1):
                         analysis_prompt += '\nReport each supplied reference separately under its exact label. Never merge sources.\n' + json.dumps({'user_request':prompt,'available_references':labels},ensure_ascii=False)
                     analysis = session.analyze_images(paths, labels,
-                        analysis_prompt, max_tokens=min(8192,MAX_ANALYSIS_TOKENS*len(references)), seed=seed)
+                        analysis_prompt, max_tokens=MAX_OUTPUT_TOKENS if custom else min(8192,MAX_ANALYSIS_TOKENS*len(references)), seed=seed)
                 mm.throw_exception_if_processing_interrupted()
                 LOG.info("Image prompter analysis: %s", getattr(session, "last_metrics", {}))
                 if getattr(session, "last_metrics", {}).get("finish_reason") == "length":
+                    if custom:
+                        raise RuntimeError("Image prompter: output hit the model/context token limit; incomplete text was not sent downstream.")
                     raise RuntimeError("Image prompter: image analysis hit the token limit; incomplete evidence was not used.")
-                analysis_text = clean_response(analysis)
-                if profile.output_mode == 'edit' or len(references)>1:
-                    analysis_text = json.dumps({'available_references':labels,'observations':analysis_text},ensure_ascii=False)
-                messages = build_messages(prompt, prompt_type, analysis_text, enhance, camera)
-                progress.update(1)
+                if not custom:
+                    analysis_text = clean_response(analysis)
+                    if profile.output_mode == 'edit' or len(references)>1:
+                        analysis_text = json.dumps({'available_references':labels,'observations':analysis_text},ensure_ascii=False)
+                    messages = build_messages(prompt, prompt_type, analysis_text, enhance, camera)
+                    progress.update(1)
             if use_camera_plan:
                 plan = resolve_camera_plan(session, prompt, prompt_type, camera, analysis_text, seed)
                 mm.throw_exception_if_processing_interrupted()
                 messages = build_messages(prompt, prompt_type, analysis_text, enhance, camera, plan)
                 progress.update(1)
-            if _edit_instruction is not None and prompt_type != "anima":
+            if _edit_instruction is not None and prompt_type not in {"anima", "custom"}:
                 # Resolve edits separately from full-text reproduction, including
                 # source-dependent contradictions. No scene-specific rules/retries.
                 delta = session.chat(build_edit_intent_messages(_edit_instruction, prompt),
@@ -681,8 +689,11 @@ class ImagePrompter:
                     'Apply the following interpretation of my edit to the supplied source. '
                     'My original request wins if this interpretation conflicts. Return the FULL revised prompt.\n' +
                     json.dumps({'original_edit_request':_edit_instruction,'edit_interpretation':delta},ensure_ascii=False)})
-            output = session.chat(messages, max_tokens=MAX_OUTPUT_TOKENS,
-                                  **generation_sampling(enhance, reference), seed=seed)
+            # Custom vision requests are already answered by the single user-only
+            # multimodal call. No analysis policy or second writer is inserted.
+            output = analysis if custom and reference else session.chat(
+                messages, max_tokens=MAX_OUTPUT_TOKENS,
+                **generation_sampling("none" if custom else enhance, reference and not custom), seed=seed)
             mm.throw_exception_if_processing_interrupted()
             progress.update(1)
             metrics = getattr(session, "last_metrics", {})
@@ -706,7 +717,7 @@ class ImagePrompter:
                 raise RuntimeError("Image prompter: output hit the model/context token limit; incomplete text was not sent downstream.")
             anima_clean_error = None
             try:
-                result = clean_response(output)
+                result = clean_response(output, preserve_format=custom)
             except RuntimeError as exc:
                 if prompt_type != "anima":
                     raise
@@ -795,7 +806,7 @@ class ImagePrompter:
                         LOG.warning("Image prompter Anima: unusable writer output; using source-based fallback: %s", exc)
                         result = (prompt if _edit_instruction is not None else
                                   fallback_anima_from_input(prompt, input_tags, natural_language))
-            if _edit_instruction is None:
+            if _edit_instruction is None and not custom:
                 result = preserve_weighted_tags(prompt, result)
             if _edit_instruction is not None and ' '.join(result.split()) == ' '.join(prompt.split()):
                 LOG.warning('Image prompter: edit returned unchanged text; no requested change was detected.')
@@ -921,6 +932,9 @@ def build_edit_messages(current, instruction, prompt_type='default'):
         raise ValueError("Current prompt and edit request are required.")
     if len(current) > 18000 or len(instruction) > 6000:
         LOG.warning("Image prompter: long edit input; continuing unchanged (actual model context limit may apply).")
+    if resolve_prompt_type(prompt_type) == "custom":
+        return [{"role": "assistant", "content": current},
+                {"role": "user", "content": instruction}]
     if resolve_prompt_type(prompt_type) == "anima":
         return [{"role": "system", "content": anima_profile.EDIT_PROMPT},
                 {"role": "user", "content": json.dumps({"current_prompt": current,

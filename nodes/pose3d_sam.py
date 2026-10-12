@@ -5,8 +5,125 @@ Local TRS follows Meta MHR's parameter transform (Apache-2.0), in meters/xyzw.
 """
 import numpy as np
 import torch
+import hashlib
+import os
+from pathlib import Path
+import shutil
+import tempfile
+import threading
+import urllib.request
+import uuid
 
 DEFAULT_MODEL = "sam_3d_body_dinov3_bf16.safetensors"
+# Pin the official checkpoint and verify its published LFS size/SHA256.
+DEFAULT_MODEL_URL = "https://huggingface.co/Comfy-Org/sam-3d-body/resolve/3d7eeedcb3fe5ab03235438b9e67c9b889eb97c1/detection/" + DEFAULT_MODEL
+DEFAULT_MODEL_SIZE = 2830737652
+DEFAULT_MODEL_SHA256 = "59fa45200c504c5b56625004d7d3385daf48c616613e88099e43bf83b3e249cf"
+_download_lock = threading.Lock()
+_status_lock = threading.Lock()
+_download_status = {"state": "idle", "downloaded": 0, "total": DEFAULT_MODEL_SIZE}
+
+
+def ensure_default_model(progress=None):
+    """Only the known default can be fetched; existing configured models win."""
+    import folder_paths
+    with _download_lock:
+        existing = folder_paths.get_full_path("detection", DEFAULT_MODEL)
+        if existing:
+            return existing
+        target = Path(folder_paths.models_dir) / "detection" / DEFAULT_MODEL
+        temp_path = None
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if shutil.disk_usage(target.parent).free < DEFAULT_MODEL_SIZE:
+                raise OSError("Not enough free disk space for the SAM checkpoint (about 2.83 GB).")
+            request = urllib.request.Request(DEFAULT_MODEL_URL, headers={"User-Agent": "ComfyUI-Toyxyz-Pose3D", "Accept-Encoding": "identity"})
+            with urllib.request.urlopen(request, timeout=60) as response:
+                length = response.headers.get("Content-Length")
+                if length is not None and int(length) != DEFAULT_MODEL_SIZE:
+                    raise ValueError("The official SAM checkpoint has an unexpected file size.")
+                with tempfile.NamedTemporaryFile(dir=target.parent, prefix=".sam3d-", suffix=".download", delete=False) as output:
+                    temp_path = Path(output.name)
+                    digest, received = hashlib.sha256(), 0
+                    while chunk := response.read(4 * 1024 * 1024):
+                        received += len(chunk)
+                        if received > DEFAULT_MODEL_SIZE:
+                            raise ValueError("The SAM checkpoint exceeds the expected size.")
+                        output.write(chunk); digest.update(chunk)
+                        if progress:
+                            progress(received, DEFAULT_MODEL_SIZE)
+                    output.flush(); os.fsync(output.fileno())
+            if received != DEFAULT_MODEL_SIZE or digest.hexdigest() != DEFAULT_MODEL_SHA256:
+                raise ValueError("SAM checkpoint verification failed (size or SHA-256 mismatch).")
+            # Publish atomically without overwriting a file created meanwhile.
+            try:
+                os.link(temp_path, target)
+            except FileExistsError:
+                pass
+            return str(target)
+        except Exception as exc:
+            raise RuntimeError(f"SAM 3D Body download failed: {exc}. Check network/disk access and retry Get pose, or place {DEFAULT_MODEL} in ComfyUI/models/detection.") from exc
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+
+
+def model_download_status():
+    with _status_lock:
+        return dict(_download_status)
+
+
+def start_model_download():
+    import folder_paths
+    core_nodes()  # Do not download a large file for an unsupported ComfyUI.
+    with _status_lock:
+        if _download_status["state"] == "downloading":
+            return dict(_download_status)
+        if folder_paths.get_full_path("detection", DEFAULT_MODEL):
+            _download_status.clear()
+            _download_status.update(state="ready", downloaded=0, total=DEFAULT_MODEL_SIZE)
+            return dict(_download_status)
+        job_id = uuid.uuid4().hex
+        _download_status.clear()
+        _download_status.update(state="downloading", id=job_id, downloaded=0, total=DEFAULT_MODEL_SIZE)
+
+        def update(received, total):
+            with _status_lock:
+                _download_status.update(downloaded=received, total=total)
+
+        def worker():
+            try:
+                ensure_default_model(update)
+                with _status_lock:
+                    _download_status.update(state="ready", downloaded=DEFAULT_MODEL_SIZE)
+            except Exception as exc:
+                with _status_lock:
+                    _download_status.update(state="error", error=str(exc))
+
+        threading.Thread(target=worker, name="toyxyz-sam-model-download", daemon=True).start()
+        return dict(_download_status)
+
+
+def register_download_routes():
+    try:
+        from server import PromptServer
+        from aiohttp import web
+    except ImportError:
+        return
+    if not getattr(PromptServer, "instance", None):
+        return
+
+    @PromptServer.instance.routes.post("/toyxyz/pose3d/sam-model")
+    async def start(request):
+        import asyncio
+        try:
+            return web.json_response(await asyncio.to_thread(start_model_download))
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+
+    @PromptServer.instance.routes.get("/toyxyz/pose3d/sam-model")
+    async def status(request):
+        return web.json_response(model_download_status())
 
 
 def core_nodes():
@@ -22,7 +139,8 @@ class Pose3DSAMLoader:
     def INPUT_TYPES(cls):
         import folder_paths
         files = folder_paths.get_filename_list("detection")
-        return {"required": {"model_file": (files or [DEFAULT_MODEL], {"default": DEFAULT_MODEL if DEFAULT_MODEL in files or not files else files[0]})}}
+        # Keep the downloadable default valid even if other detection files exist.
+        return {"required": {"model_file": (list(dict.fromkeys([DEFAULT_MODEL, *files])), {"default": DEFAULT_MODEL})}}
 
     RETURN_TYPES = ("SAM3D_BODY_MODEL",)
     RETURN_NAMES = ("sam3d_body_model",)
@@ -31,9 +149,12 @@ class Pose3DSAMLoader:
 
     def load_model(self, model_file):
         import folder_paths
-        if not folder_paths.get_full_path("detection", model_file):
-            raise FileNotFoundError(f"SAM 3D Body model missing: {model_file}. Place it in ComfyUI/models/detection (or a configured detection model path).")
         loader, _ = core_nodes()
+        if not folder_paths.get_full_path("detection", model_file):
+            if model_file == DEFAULT_MODEL:
+                ensure_default_model()
+            else:
+                raise FileNotFoundError(f"SAM 3D Body model missing: {model_file}. Place it in ComfyUI/models/detection (or a configured detection model path).")
         return (loader.execute(model_file)[0],)
 
 
@@ -132,3 +253,6 @@ class Pose3DSAMImport:
                 hook.remove()
         payload = import_payload(sam3d_body_model, data, request_id)
         return {"ui": {"toyxyz_sam_pose": [payload]}, "result": ()}
+
+
+register_download_routes()

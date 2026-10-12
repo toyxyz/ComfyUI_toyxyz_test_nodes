@@ -72,8 +72,9 @@ export class PoseShapeControl {
         this.modelSelected=selected;this.modelButton.setAttribute('aria-selected',String(selected));
         this.modelButton.style.backgroundColor=selected?'#36536b':'#333';this.modelButton.style.borderColor=selected?'#83a9c9':'#606060';
     }
-    bind(mesh,data,basis,error){
+    bind(mesh,data,basis,error,rootSize){
         this.mesh=mesh;this.modelKind=data.kind;this.basis=basis;this.rows=[];this.inspector.replaceChildren();
+        this.rootSize=rootSize;this.lastRootSize=undefined;
         this.modelButton.textContent=`◈ Human mesh (${data.kind??'Body'})`;
         this.defaults=data.shape?.coefficients?.slice();this.values=this.defaults?.slice();
         this.base=mesh?Float32Array.from(mesh.geometry.attributes.position.array):null;
@@ -84,6 +85,23 @@ export class PoseShapeControl {
         this.colorPicker.setAttribute('aria-label','Body color');this.colorPicker.title='Body material color in the preview and images output';
         this.colorPicker.oninput=()=>this.onColorChange?.(this.colorPicker.value,false);
         this.colorPicker.onchange=()=>this.onColorChange?.(this.colorPicker.value,true);
+        if(rootSize){
+            const row=element('div',this.inspector,'margin-bottom:10px'),top=element('div',row,'display:flex;align-items:center;gap:4px;margin-bottom:3px');
+            const label=element('label',top,'flex:1','Root size');label.title='Uniform overall body size; preserves axis proportions set by the Scale gizmo';
+            const number=this.rootSizeInput=element('input',top,inputStyle+';width:66px;padding:3px');number.type='number';number.min='0.001';number.max='1000';number.step='0.01';number.setAttribute('aria-label','Root size');number.title=label.title;
+            const reset=this.rootSizeReset=element('button',top,buttonStyle+';padding:2px 5px','↺');reset.title='Reset overall size to 1; keep axis proportions';reset.setAttribute('aria-label','Reset root size');reset.onclick=()=>{rootSize.onChange(1,true);this.syncRootSize(true);};
+            const slider=this.rootSizeSlider=element('input',row,'width:100%;margin:0;accent-color:#96b9d7;cursor:ew-resize');slider.type='range';slider.step='0.01';slider.setAttribute('aria-label','Root size slider');slider.title=label.title;
+            number.onfocus=slider.onfocus=slider.onpointerdown=()=>rootSize.onBegin();
+            slider.oninput=()=>rootSize.onChange(Number(slider.value),false);
+            number.oninput=()=>{if(number.value!==''&&Number.isFinite(number.valueAsNumber)&&number.valueAsNumber>0)rootSize.onChange(number.valueAsNumber,false);};
+            const finish=input=>{const value=input.valueAsNumber;if(Number.isFinite(value)&&value>0)rootSize.onChange(value,true);this.syncRootSize(true);};
+            number.onchange=()=>finish(number);slider.onchange=()=>finish(slider);
+            // Reordering tree entries during Undo can blur a focused field.
+            // Do not append history from blur while a snapshot is restoring.
+            number.onblur=()=>this.syncRootSize(true);
+            number.onkeydown=event=>{if(event.key==='Enter'){number.blur();event.stopPropagation();}};
+            this.syncRootSize(true);
+        }
         if(!this.enabled){element('div',this.inspector,'color:#d9b897;line-height:1.5',error?`Shape controls unavailable: ${error}`:'Shape controls require the MHR body. Reset pose to switch to MHR.');return;}
         const actions=element('div',this.inspector,'display:flex;gap:5px;flex-wrap:wrap;margin-bottom:7px');
         const reset=element('button',actions,buttonStyle,'Reset all');reset.title='Restore the default shape without changing the pose';reset.onclick=()=>this.setValues(this.defaults,true);
@@ -108,6 +126,12 @@ export class PoseShapeControl {
             }
         }
         this.syncRows();
+    }
+    syncRootSize(force=false){
+        if(!this.rootSize)return;const s=this.rootSize.scale,value=Math.cbrt(s.x*s.y*s.z);if(!Number.isFinite(value)||value<=0)return;
+        if(!force&&value===this.lastRootSize)return;this.lastRootSize=value;
+        if(force||document.activeElement!==this.rootSizeInput)this.rootSizeInput.value=String(Number(value.toPrecision(7)));
+        this.rootSizeSlider.min=String(Math.min(.1,value));this.rootSizeSlider.max=String(Math.max(3,Math.ceil(value)));this.rootSizeSlider.value=String(value);
     }
     syncRows(exclude){
         for(const {index,row,number,slider} of this.rows){const value=this.values[index],limit=Math.max(3,Math.ceil(Math.abs(value)));for(const input of [number,slider]){input.min=String(-limit);input.max=String(limit);}slider.value=String(value);if(number!==exclude)number.value=value.toFixed(2);row.style.backgroundColor=Math.abs(value-this.defaults[index])>.00001?'#303b43':'';}

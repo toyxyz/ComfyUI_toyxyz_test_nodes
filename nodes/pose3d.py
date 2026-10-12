@@ -8,6 +8,13 @@ import numpy as np
 import torch
 import cv2
 from PIL import Image
+if __package__:
+    from .pose_region_transport import REGION_PAINTER_TYPE, read_pose_regions
+else:  # Standalone local test loading, without importing ComfyUI's extension registry.
+    import importlib.util
+    _spec = importlib.util.spec_from_file_location("pose_region_transport", Path(__file__).with_name("pose_region_transport.py"))
+    _transport = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(_transport)
+    REGION_PAINTER_TYPE, read_pose_regions = _transport.REGION_PAINTER_TYPE, _transport.read_pose_regions
 
 MODEL_ROOT = Path(__file__).resolve().parents[1] / "models" / "pose3d"
 
@@ -117,8 +124,8 @@ class Pose3DEditor:
         # This socket is consumed by Get pose's separate mini-workflow, not render.
         return []
 
-    RETURN_TYPES = ("IMAGE", "IMAGE", "IMAGE", "IMAGE")
-    RETURN_NAMES = ("images", "openpose", "depth", "normal")
+    RETURN_TYPES = ("IMAGE", "IMAGE", "IMAGE", "IMAGE", "IMAGE", REGION_PAINTER_TYPE)
+    RETURN_NAMES = ("images", "openpose", "depth", "normal", "color_id", "region painter")
     FUNCTION = "render_pose"
     CATEGORY = "ToyxyzTestNodes/Pose"
 
@@ -136,9 +143,16 @@ class Pose3DEditor:
             raise ValueError("Depth/normal captures are missing. Refresh the editor and queue again.") from error
         if not isinstance(bundle, dict) or bundle.get("version") != 1:
             raise ValueError("Invalid browser capture bundle. Refresh the editor and queue again.")
-        image, depth, normal = (decode_browser_pass(bundle.get(name), width, height, name)
-                                for name in ("render", "depth", "normal"))
-        return (image, draw_openpose(pose.get("openpose"), width, height), depth, normal)
+        image, depth, normal, color_id = (decode_browser_pass(bundle.get(name), width, height, name)
+                                         for name in ("render", "depth", "normal", "color_id"))
+        transport = bundle.get("region_painter")
+        # Old API captures can still use the original five outputs. Only a
+        # consumer of the new transport reports the missing-capture error.
+        regions = read_pose_regions(transport) if transport is not None else {
+            "version": 1, "error": "Refresh 3D Pose Editor and queue again to capture body regions."}
+        if transport is not None and (regions["width"], regions["height"]) != (width, height):
+            raise ValueError("Pose-region capture resolution changed. Refresh and queue again.")
+        return (image, draw_openpose(pose.get("openpose"), width, height), depth, normal, color_id, regions)
 
 
 def register_routes():

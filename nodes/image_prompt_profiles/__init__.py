@@ -54,4 +54,10 @@ PROMPT_PROFILES = MappingProxyType({
         enhancement_prompts=MappingProxyType(qwen_image_2_1.ENHANCEMENT_PROMPTS),
         output_mode="edit",
     ),
+    "custom": ImagePromptProfile(
+        system_prompt="",
+        image_analysis_prompt="",
+        reference_policy="",
+        output_mode="custom",
+    ),
 })

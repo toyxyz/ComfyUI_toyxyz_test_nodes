@@ -1,7 +1,9 @@
 .toyxyz-booru-suggestions {
     position: fixed;
+    box-sizing: border-box;
     z-index: 10000;
     overflow-y: auto;
+    overflow-x: hidden;
     max-height: min(300px, 45vh);
     border: 1px solid var(--border-color, #666);
     border-radius: 0.45em;
@@ -13,6 +15,8 @@
 
 .toyxyz-booru-suggestion {
     display: flex;
+    box-sizing: border-box;
+    font: inherit;
     align-items: baseline;
     gap: 0.6em;
     width: 100%;
@@ -39,7 +43,7 @@
 }
 
 .toyxyz-booru-suggestion-name {
-    flex: 1;
+    flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -47,6 +51,8 @@
 }
 
 .toyxyz-booru-suggestion-detail {
+    flex: 0 3 auto;
+    max-width: min(42%, 24em);
     color: var(--descrip-text, #aaa);
     font-size: 0.82em;
     min-width: 0;

@@ -31,6 +31,10 @@ export function textareaCaretRect(input, index = input.selectionStart) {
     mirror.style.visibility = "hidden";
     mirror.style.whiteSpace = "pre-wrap";
     mirror.style.overflowWrap = "break-word";
+    if (input.tagName === "INPUT") {
+        mirror.style.whiteSpace = "pre";
+        mirror.style.overflowWrap = "normal";
+    }
     for (const property of MIRROR_PROPERTIES) mirror.style[property] = style[property];
     mirror.style.overflowY = style.overflowY === "scroll" || input.scrollHeight > input.clientHeight
         ? "scroll" : "hidden";

@@ -8,6 +8,8 @@ https://github.com/toyxyz/ComfyUI_toyxyz_test_nodes/assets/8006000/8536e96a-514a
 
 Update 
 
+2026/10/13 Add 3D Pose Editor and ComfyCouple Region painter nodes
+
 2026/09/29 Add booru tag prompter node
 
 2026/09/16 Add image prompter node

@@ -1,5 +1,7 @@
 import {PAINT_CORNERS,MAX_PAINT_AXIS,validPaintFrame,paintFramePoint,hitPaintFrame,resizePaintFrame,transformedPaintBounds} from './couple_painter_geometry.js';
 import {PainterPoseSource,parsePoseSource,parsePoseArchive} from './couple_pose_source.js';
+import {PainterLayerMasks,maskWouldCycle,validateLayerMasks} from './couple_layer_masks.js';
+import {MaskLayerPicker} from './couple_mask_picker.js';
 
 const MAX_LAYERS = 32, MAX_PIXELS = 64 * 1024 * 1024;
 const BACKGROUND_ID='__painter_background__';
@@ -12,7 +14,9 @@ const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
 const makeCanvas = (w, h) => Object.assign(document.createElement('canvas'), {width:w, height:h});
 const validColor = color => /^#[0-9a-f]{6}$/i.test(color);
 const TOOL_ICONS={
+    select:['M4 3l7 17 3-7 7-3L4 3Z','M14 14l6 6'],
     brush:['M14 6l4-4a2.83 2.83 0 0 1 4 4l-4 4-4-4Z','M14 6l-6 6 4 4 6-6','M8 12c-3 0-5 2-5 5 0 2-1 3-2 4 2 0 3 1 5 1 3 0 5-2 5-5 0-3-2-5-5-5Z'],
+    line:['M5 19L19 5','M3 17l4 4M17 3l4 4'],
     box:['M4 5h16v14H4Z'],
     ellipse:['M21 12a9 6 0 1 0-18 0 9 6 0 1 0 18 0Z'],
     eraser:['M7 21l-4.5-4.5a2.1 2.1 0 0 1 0-3l10-10a2.1 2.1 0 0 1 3 0l6 6a2.1 2.1 0 0 1 0 3L14 21H7Z','M9 7l8 8','M7 21h15'],
@@ -48,6 +52,7 @@ export class CoupleRegionPainterUI {
     constructor(node, root) {
         this.node=node;this.root=root;this.layers=[];this.background=makeBackground();this.base=makeBase();this.selected=null;this.history=[];this.future=[];this.tool='brush';this.brushSize=40;
         this.poseSource=new PainterPoseSource(this);
+        this.layerMasks=new PainterLayerMasks(this);
         root.className='toyxyz-couple-painter';
         root.style.cssText='height:100%;width:100%;display:flex;gap:6px;padding:10px;box-sizing:border-box;background:#262626;color:#ddd;font:13px sans-serif;overflow:hidden;min-height:0';
         const style=document.createElement('style');
@@ -57,11 +62,13 @@ export class CoupleRegionPainterUI {
         this.toolbar=document.createElement('div');this.toolbar.style.cssText='display:flex;gap:5px;flex-wrap:wrap;align-items:center';
         const button=(title,fn,parent=this.toolbar)=>{const b=document.createElement('button');b.type='button';b.textContent=title;b.onclick=fn;parent.append(b);return b;};
         this.toolRail=document.createElement('div');this.toolRail.setAttribute('aria-label','Painting tools');this.toolRail.style.cssText='display:flex;flex-direction:column;gap:6px;flex-shrink:0;width:32px';
+        this.selectButton=button('',()=>this.setTool('select'),this.toolRail);this.selectButton.append(toolIcon('select'));this.selectButton.title='Select layer · Click a visible mask to select its layer. Hidden, covered and clipped-out pixels are ignored.';this.selectButton.setAttribute('aria-label','Select layer');this.selectButton.style.cssText='width:32px;height:32px;flex-shrink:0;display:flex;align-items:center;justify-content:center';
         this.brushButton=button('',()=>this.setTool('brush'),this.toolRail);
+        this.lineButton=button('',()=>this.setTool('line'),this.toolRail);
         this.boxButton=button('',()=>this.setTool('box'),this.toolRail);this.ellipseButton=button('',()=>this.setTool('ellipse'),this.toolRail);
         this.eraserButton=button('',()=>this.setTool('eraser'),this.toolRail);
         this.transformButton=button('',()=>this.setTool('transform'),this.toolRail);
-        for(const [control,tool,label,tip] of [[this.brushButton,'brush','Brush','Brush · Scroll over the canvas to adjust size. Shift + scroll: fine adjustment.'],[this.boxButton,'box','Box','Box · Drag to draw a filled rectangle. Shift: square. Escape: cancel.'],[this.ellipseButton,'ellipse','Ellipse','Ellipse · Drag to draw a filled ellipse. Shift: circle. Escape: cancel.'],[this.eraserButton,'eraser','Eraser','Eraser · Scroll over the canvas to adjust size. Shift + scroll: fine adjustment.'],[this.transformButton,'transform','Transform','Transform · Drag inside to move, a corner for free resize, or the round handle to rotate. Shift: keep resize proportions / snap rotation to 15°. Escape: cancel.']]){control.append(toolIcon(tool));control.title=tip;control.setAttribute('aria-label',label);control.style.cssText='width:32px;height:32px;flex-shrink:0;display:flex;align-items:center;justify-content:center';}
+        for(const [control,tool,label,tip] of [[this.brushButton,'brush','Brush','Brush · Scroll over the canvas to adjust size. Shift + scroll: fine adjustment.'],[this.lineButton,'line','Line','Line · Drag to draw a straight line. Scroll: thickness. Shift: 45° angle steps. Escape: cancel.'],[this.boxButton,'box','Box','Box · Drag to draw a filled rectangle. Shift: square. Escape: cancel.'],[this.ellipseButton,'ellipse','Ellipse','Ellipse · Drag to draw a filled ellipse. Shift: circle. Escape: cancel.'],[this.eraserButton,'eraser','Eraser','Eraser · Scroll over the canvas to adjust size. Shift + scroll: fine adjustment.'],[this.transformButton,'transform','Transform','Transform · Drag inside to move, a corner for free resize, or the round handle to rotate. Shift: keep resize proportions / snap rotation to 15°. Escape: cancel.']]){control.append(toolIcon(tool));control.title=tip;control.setAttribute('aria-label',label);control.style.cssText='width:32px;height:32px;flex-shrink:0;display:flex;align-items:center;justify-content:center';}
         this.sizeDisplay=document.createElement('span');this.sizeDisplay.style.cssText='white-space:nowrap;min-width:70px';this.sizeDisplay.title='Brush / eraser diameter in canvas pixels. Scroll over the canvas to adjust; Shift + scroll for fine adjustment.';this.toolbar.append(this.sizeDisplay);
         this.undoButton=button('',()=>this.undo());this.redoButton=button('',()=>this.redo());
         for(const [control,icon,label] of [[this.undoButton,'undo','Undo'],[this.redoButton,'redo','Redo']]){control.append(toolIcon(icon));control.title=label;control.setAttribute('aria-label',label);control.style.cssText='width:32px;height:32px;display:flex;align-items:center;justify-content:center';}
@@ -139,10 +146,15 @@ export class CoupleRegionPainterUI {
         });
         this.layerSettings=document.createElement('section');this.layerSettings.setAttribute('aria-label','Layer settings');
         this.layerSettings.style.cssText='display:flex;flex-direction:column;gap:8px;flex:1;min-height:0;padding:8px;box-sizing:border-box;border:1px solid #484848;border-radius:5px;background:#292929;overflow:auto;overscroll-behavior:contain';
-        this.colorStrengthRow=document.createElement('div');this.colorStrengthRow.style.cssText='display:flex;gap:10px;align-items:center;flex-shrink:0';
+        this.colorStrengthRow=document.createElement('div');this.colorStrengthRow.style.cssText='display:flex;flex-wrap:wrap;gap:10px;align-items:center;flex-shrink:0';
         const colorRow=document.createElement('label');colorRow.textContent='Color';colorRow.style.cssText='white-space:nowrap;flex-shrink:0';this.colorInput=Object.assign(document.createElement('input'),{type:'color'});this.colorInput.style.cssText='width:52px;height:32px;padding:2px;flex-shrink:0';colorRow.append(this.colorInput);
         const strengthRow=document.createElement('label');strengthRow.textContent='Strength';strengthRow.style.cssText='white-space:nowrap;min-width:0';this.strengthInput=Object.assign(document.createElement('input'),{type:'number',min:0,max:10,step:.01});this.strengthInput.style.cssText='width:60px;flex-shrink:0';strengthRow.append(this.strengthInput);
         this.colorStrengthRow.append(colorRow,strengthRow);
+        this.maskRow=document.createElement('label');this.maskRow.textContent='Mask';this.maskRow.style.cssText='flex:1;min-width:150px';
+        this.maskInput=document.createElement('select');this.maskInput.setAttribute('aria-label','Layer Mask');this.maskInput.style.cssText='flex:1;min-width:0;width:100%;font:inherit;color:inherit;background:#353535;border:1px solid #666;border-radius:4px;padding:5px';
+        this.maskInput.title='Clip this layer to another layer’s mask. None restores the original painting. Hidden layers can still be used as masks.';this.maskRow.append(this.maskInput);this.colorStrengthRow.append(this.maskRow);
+        this.maskPicker=new MaskLayerPicker(this.maskInput,this.maskRow);
+        this.maskInput.onchange=()=>{const layer=this.current(),id=this.maskInput.value;if(this.loading||this.error||!layer||this.isFixed(layer))return;if(id&&(!this.layers.some(l=>l.id===id)||maskWouldCycle(this.layers,layer.id,id))){this.renderMaskOptions();return;}this.finishEdit();if(id)layer.mask_layer_id=id;else delete layer.mask_layer_id;this.changed();};
         this.backgroundModeRow=document.createElement('label');this.backgroundModeRow.style.cssText='display:none;flex-direction:column;align-items:stretch;flex-shrink:0';this.backgroundModeRow.textContent='Background mode';
         this.backgroundModeInput=document.createElement('select');this.backgroundModeInput.setAttribute('aria-label','Background mode');this.backgroundModeInput.style.cssText='font:inherit;color:inherit;background:#353535;border:1px solid #666;border-radius:4px;padding:5px;width:100%;min-width:0';
         this.backgroundModeInput.title='region_and_background: append to each region prompt and use for uncovered background. background_only: use only for uncovered background. Leave the prompt blank to keep any incoming background settings.';
@@ -169,7 +181,7 @@ export class CoupleRegionPainterUI {
             e.stopPropagation();if(e.key==='Escape'&&this.shapeDrag){e.preventDefault();this.endShape(null,true);}else if(e.key==='Escape'&&this.transformDrag){e.preventDefault();this.endTransform(null,true);}else if(e.target===this.canvas&&(e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){e.preventDefault();e.shiftKey?this.redo():this.undo();}else if(!this.isTextField(e.target)&&(e.ctrlKey||e.metaKey)&&!e.shiftKey&&!e.altKey&&e.key.toLowerCase()==='c'){e.preventDefault();this.copyMask();}
         });
         root.addEventListener('paste',e=>this.handleMaskPaste(e));
-        this.canvas.addEventListener('pointerdown',e=>{this.updateBrushCursor(e);this.tool==='transform'?this.beginTransform(e):['box','ellipse'].includes(this.tool)?this.beginShape(e):this.beginStroke(e);});
+        this.canvas.addEventListener('pointerdown',e=>{this.updateBrushCursor(e);this.tool==='select'?this.pickCanvasLayer(e):this.tool==='transform'?this.beginTransform(e):['line','box','ellipse'].includes(this.tool)?this.beginShape(e):this.beginStroke(e);});
         this.canvas.addEventListener('pointerenter',e=>this.updateBrushCursor(e));
         this.canvas.addEventListener('pointerleave',()=>this.hideBrushCursor());
         this.canvas.addEventListener('pointermove',e=>{this.updateBrushCursor(e);this.moveTransform(e);this.moveShape(e);this.moveStroke(e);});
@@ -184,7 +196,14 @@ export class CoupleRegionPainterUI {
     isBase(layer=this.current()){return layer===this.base;}
     isFixed(layer=this.current()){return this.isBackground(layer)||this.isBase(layer);}
     layerLabel(layer=this.current()){return !layer?'Add a layer to paint':this.isFixed(layer)?layer.name:layer.prompt.trim().replace(/\s+/gu,' ')||this.poseSource.label(layer)||'Empty prompt';}
-    isTextField(target){return !!target?.closest?.('input,textarea,select,[contenteditable]:not([contenteditable=false])');}
+    renderMaskOptions(){
+        const layer=this.current();this.maskInput.replaceChildren();const none=document.createElement('option');none.value='';none.textContent='None';this.maskInput.append(none);
+        if(layer&&!this.isFixed(layer))for(const candidate of [...this.layers].reverse()){if(candidate===layer)continue;const option=document.createElement('option'),label=candidate.prompt.trim().replace(/\s+/gu,' ')||this.poseSource.label(candidate)||`Layer ${this.layers.indexOf(candidate)+1}`;option.value=candidate.id;option.textContent=label.length>60?label.slice(0,60)+'…':label;option.title=label;option.disabled=maskWouldCycle(this.layers,layer.id,candidate.id);this.maskInput.append(option);}
+        this.maskInput.value=this.layers.some(l=>l.id===layer?.mask_layer_id)?layer.mask_layer_id:'';
+        this.maskInput.disabled=this.loading||!!this.error||!layer||this.isFixed(layer);
+        this.maskPicker.sync(new Map(this.layers.map(layer=>[layer.id,layer.color])));
+    }
+    isTextField(target){return !!target?.closest?.('input,textarea,select,[role=combobox],[contenteditable]:not([contenteditable=false])');}
     clipboardContext(){
         const layer=this.current();
         if(this.disposed||this.loading||this.error||!layer||this.isFixed(layer))throw Error('Select a painted region layer first.');
@@ -320,7 +339,7 @@ export class CoupleRegionPainterUI {
     dimensions(){return ['width','height'].map(name=>clamp(Math.round(Number(this.widget(name).value)||1024),64,4096));}
     limit(count,w=this.width,h=this.height){if(count>MAX_LAYERS||w*h*Math.max(1,count)>MAX_PIXELS)throw Error('Limit: 32 layers / 64 million layer pixels. Reduce layers or resolution.');}
     snapshotLayer(l){
-        const item={id:l.id,name:l.name,color:l.color,prompt:l.prompt,strength:l.strength,visible:l.visible,mask:l._mask??(l._mask=l.canvas.toDataURL('image/png'))};
+        const item={id:l.id,name:l.name,color:l.color,prompt:l.prompt,strength:l.strength,visible:l.visible,mask:l._mask??(l._mask=l.canvas.toDataURL('image/png'))};if(l.mask_layer_id)item.mask_layer_id=l.mask_layer_id;
         // The backend still consumes only the canvas-sized visible mask. The
         // optional content preserves the unclipped artwork in saved workflows.
         if(l._content){const c=l._content;item.content={x:c.x,y:c.y,width:c.canvas.width,height:c.canvas.height,mask:c.mask??(c.mask=c.canvas.toDataURL('image/png'))};}if(l._frame)item.transform_frame={...l._frame};if(l.pose_source)item.pose_source={...l.pose_source};return item;
@@ -374,6 +393,7 @@ export class CoupleRegionPainterUI {
                 if(layer._frame&&!validPaintFrame(layer._frame))throw Error('Resized transform frame exceeds the editable limit.');
                 return layer;
             }));
+            validateLayerMasks(layers);
             if(token!==this.loadToken||this.disposed)return;
             this.poseSource.restore(sourceState,sourceArchive);
             if(sourceState){this.widget('width').value=w;this.widget('height').value=h;}
@@ -384,9 +404,15 @@ export class CoupleRegionPainterUI {
             if(resetHistory){this.history=[];this.future=[];}this.commit();if(resetHistory)this.record();this.renderPanel();this.draw();this.fit();
         }catch(e){if(token===this.loadToken){this.loading=false;this.error=e;this.status.textContent=`Painter error: ${e.message}`;this.updateHistory();}throw e;}
     }
-    async serialize(){await this.ready;if(this.error)throw this.error;this.endPanelResize();this.endListResize();this.endStroke();this.endTransform();this.endShape();this.resizeCanvas();this.commit();return this.widget('paint_data').value;}
-    addLayer(record=true){if(this.loading||this.error)return;try{this.limit(this.layers.length+1);const pixels=this.width*this.height*(this.layers.length+1)+this.layers.reduce((n,l)=>n+(l._content?.canvas.width||0)*(l._content?.canvas.height||0),0);if(pixels>MAX_PIXELS)throw Error('Adding a layer exceeds the editable pixel limit.');}catch(e){this.status.textContent=e.message;return;}this.finishEdit();const layer={id:crypto.randomUUID(),name:`Region ${this.layers.length+1}`,color:nextColor(this.layers),prompt:'',strength:1,visible:true,canvas:makeCanvas(this.width,this.height)};this.layers.push(layer);this.selected=layer.id;if(record)this.changed();else this.renderPanel();}
-    deleteLayer(){if(this.loading||this.error||this.isFixed()||this.poseSource.isImported(this.current()))return;this.finishEdit();const i=this.layers.findIndex(l=>l.id===this.selected);if(i<0)return;this.layers.splice(i,1);this.selected=this.layers[Math.min(i,this.layers.length-1)]?.id??BACKGROUND_ID;this.changed();}
+    async serialize(){await this.ready;if(this.error)throw this.error;this.poseBinding?.detachIfUnlinked();this.endPanelResize();this.endListResize();this.endStroke();this.endTransform();this.endShape();this.resizeCanvas();this.commit();return this.widget('paint_data').value;}
+    addLayer(record=true){
+        if(this.loading||this.error)return;try{this.limit(this.layers.length+1);const pixels=this.width*this.height*(this.layers.length+1)+this.layers.reduce((n,l)=>n+(l._content?.canvas.width||0)*(l._content?.canvas.height||0),0);if(pixels>MAX_PIXELS)throw Error('Adding a layer exceeds the editable pixel limit.');}catch(e){this.status.textContent=e.message;return;}
+        this.finishEdit();const index=this.layers.findIndex(layer=>layer.id===this.selected);
+        const layer={id:crypto.randomUUID(),name:`Region ${this.layers.length+1}`,color:nextColor(this.layers),prompt:'',strength:1,visible:true,canvas:makeCanvas(this.width,this.height)};
+        // Storage is back-to-front; the list displays the reverse order.
+        this.layers.splice(index<0?this.layers.length:index+1,0,layer);this.selected=layer.id;if(record)this.changed();else this.renderPanel();
+    }
+    deleteLayer(){if(this.loading||this.error||this.isFixed()||this.poseSource.isImported(this.current()))return;this.finishEdit();const i=this.layers.findIndex(l=>l.id===this.selected);if(i<0)return;const removed=this.layers.splice(i,1)[0];for(const layer of this.layers)if(layer.mask_layer_id===removed.id)delete layer.mask_layer_id;this.selected=this.layers[Math.min(i,this.layers.length-1)]?.id??BACKGROUND_ID;this.changed();}
     reorder(direction){if(this.loading||this.error||this.isFixed())return;this.finishEdit();const i=this.layers.findIndex(l=>l.id===this.selected),j=i+direction;if(i<0||j<0||j>=this.layers.length)return;[this.layers[i],this.layers[j]]=[this.layers[j],this.layers[i]];this.changed();}
     finishEdit(){this.endStroke();this.endTransform();this.endShape();this.record();}
     select(id){if(this.loading||this.error)return;this.finishEdit();this.selected=id;this.commit();this.renderPanel();}
@@ -408,12 +434,12 @@ export class CoupleRegionPainterUI {
         this.width=w;this.height=h;this.canvas.width=w;this.canvas.height=h;if(record)this.changed();else{this.commit();this.renderPanel();this.draw();}this.fit();
     }
     fit(){if(!this.width)return;const w=this.viewport.clientWidth,h=this.viewport.clientHeight,scale=Math.min(w/this.width,h/this.height);this.canvas.style.width=`${this.width*scale}px`;this.canvas.style.height=`${this.height*scale}px`;this.updateTransformOverlay();this.updateBrushCursor();}
-    setBrushSize(value){this.brushSize=clamp(Math.round(Number(value)||1),1,512);this.sizeDisplay.textContent=`Size: ${this.brushSize} px`;if(this.stroke)this.stroke.size=this.brushSize;this.updateBrushCursor();}
+    setBrushSize(value){this.brushSize=clamp(Math.round(Number(value)||1),1,512);this.sizeDisplay.textContent=`Size: ${this.brushSize} px`;if(this.stroke)this.stroke.size=this.brushSize;if(this.shapeDrag?.tool==='line'){const drag=this.shapeDrag;drag.size=this.brushSize;drag.bounds=this.lineBounds(drag.start,drag.bounds.end,drag.size);this.draw();}this.updateBrushCursor();}
     resizeBrushFromWheel(event){
         // Consume wheel only over the drawing viewport, never over the layer
         // list/settings. Diameter is measured in canvas pixels, not graph zoom.
         event.preventDefault();event.stopPropagation();
-        if(this.disposed||this.loading||this.error||!['brush','eraser'].includes(this.tool)||event.ctrlKey||!Number.isFinite(event.deltaY)||!event.deltaY)return;
+        if(this.disposed||this.loading||this.error||!['brush','line','eraser'].includes(this.tool)||event.ctrlKey||!Number.isFinite(event.deltaY)||!event.deltaY)return;
         const delta=event.deltaY*(event.deltaMode===1?40:event.deltaMode===2?100:1);
         if(Math.sign(delta)!==Math.sign(this.wheelRemainder)||this.wheelFine!==event.shiftKey)this.wheelRemainder=0;
         this.wheelFine=event.shiftKey;this.wheelRemainder+=delta;
@@ -421,10 +447,11 @@ export class CoupleRegionPainterUI {
         if(steps)this.setBrushSize(this.brushSize-steps*(event.shiftKey?1:4));
         this.updateBrushCursor(event);
     }
-    setTool(tool){if(!['brush','box','ellipse','eraser','transform'].includes(tool))return;this.endStroke();this.endTransform();this.endShape();this.tool=tool;this.wheelRemainder=0;for(const [control,name] of [[this.brushButton,'brush'],[this.boxButton,'box'],[this.ellipseButton,'ellipse'],[this.eraserButton,'eraser'],[this.transformButton,'transform']])control.setAttribute('aria-pressed',tool===name);this.sizeDisplay.style.opacity=['brush','eraser'].includes(tool)?'1':'.4';this.centerButton.style.display=tool==='transform'?'':'none';this.updateTransformOverlay();this.updateBrushCursor();}
-    hideBrushCursor(){this.cursorPointer=null;this.brushCursor.style.display='none';this.canvas.style.cursor=this.tool==='transform'?'default':'crosshair';}
+    setTool(tool){if(!['select','brush','line','box','ellipse','eraser','transform'].includes(tool))return;this.endStroke();this.endTransform();this.endShape();this.tool=tool;this.wheelRemainder=0;for(const [control,name] of [[this.selectButton,'select'],[this.brushButton,'brush'],[this.lineButton,'line'],[this.boxButton,'box'],[this.ellipseButton,'ellipse'],[this.eraserButton,'eraser'],[this.transformButton,'transform']])control.setAttribute('aria-pressed',tool===name);this.sizeDisplay.style.opacity=['brush','line','eraser'].includes(tool)?'1':'.4';this.centerButton.style.display=tool==='transform'?'':'none';this.updateTransformOverlay();this.updateBrushCursor();}
+    hideBrushCursor(){this.cursorPointer=null;this.brushCursor.style.display='none';this.canvas.style.cursor=['select','transform'].includes(this.tool)?'default':'crosshair';}
     updateBrushCursor(event){
         if(event)this.cursorPointer={clientX:event.clientX,clientY:event.clientY};
+        if(this.tool==='select'){this.brushCursor.style.display='none';this.canvas.style.cursor='default';return;}
         const pointer=this.cursorPointer,layer=this.current(),r=this.canvas.getBoundingClientRect();
         if(!pointer||this.disposed||this.loading||this.error||this.isFixed(layer)||!layer?.visible||!this.width||r.width<=0||r.height<=0||pointer.clientX<r.left||pointer.clientX>r.right||pointer.clientY<r.top||pointer.clientY>r.bottom){
             this.brushCursor.style.display='none';this.canvas.style.cursor=this.tool==='transform'?'default':'crosshair';return;
@@ -436,6 +463,23 @@ export class CoupleRegionPainterUI {
         const localHeight=Number.parseFloat(this.canvas.style.height)||this.canvas.clientHeight;
         Object.assign(this.brushCursor.style,{display:'block',left:`${x*localWidth}px`,top:`${y*localHeight}px`,width:`${size*localWidth/this.width}px`,height:`${size*localHeight/this.height}px`});
         this.canvas.style.cursor='none';
+    }
+    pickCanvasLayer(event){
+        if(event.button!==0||this.tool!=='select'||this.loading||this.error||this.disposed)return;
+        event.preventDefault();this.canvas.focus({preventScroll:true});const point=this.point(event),x=Math.floor(point.x),y=Math.floor(point.y);
+        if(!Number.isFinite(x)||!Number.isFinite(y)||x<0||y<0||x>=this.width||y>=this.height)return;
+        // Pick by effective alpha, not RGB: same-color and black bodies stay
+        // distinct. Only read the clicked pixel, never the whole mask image.
+        const rendered=this.layerMasks.render();
+        for(let index=this.layers.length-1;index>=0;index--){const layer=this.layers[index];if(!layer.visible)continue;
+            if(!rendered.get(layer).canvas.getContext('2d').getImageData(x,y,1,1).data[3])continue;
+            this.select(layer.id);this.revealSelectedLayer();return;
+        }
+    }
+    revealSelectedLayer(){
+        const row=this.list.querySelector('button[aria-pressed=true]')?.parentElement;if(!row)return;
+        const bounds=this.list.getBoundingClientRect(),item=row.getBoundingClientRect(),scale=bounds.height/this.list.offsetHeight;if(!(scale>0))return;
+        if(item.top<bounds.top)this.list.scrollTop+=(item.top-bounds.top)/scale;else if(item.bottom>bounds.bottom)this.list.scrollTop+=(item.bottom-bounds.bottom)/scale;
     }
     point(e){const r=this.canvas.getBoundingClientRect();return {x:(e.clientX-r.left)*this.width/r.width,y:(e.clientY-r.top)*this.height/r.height};}
     rotationAnchor(bounds){const frame={angle:0,...bounds},sx=(Number.parseFloat(this.canvas.style.width)||this.width)/this.width,sy=(Number.parseFloat(this.canvas.style.height)||this.height)/this.height,w=this.width*sx,h=this.height*sy;let point=paintFramePoint(frame,0,-frame.h/2-24/sy);if(point.x*sx<10||point.x*sx>w-10||point.y*sy<10||point.y*sy>h-10)point=paintFramePoint(frame,0,-frame.h/2+24/sy);return {x:clamp(point.x*sx,10,Math.max(10,w-10))/sx,y:clamp(point.y*sy,10,Math.max(10,h-10))/sy};}
@@ -499,17 +543,21 @@ export class CoupleRegionPainterUI {
         if(cancel){this.commit();this.draw();}else this.changed();
     }
     shapeBounds(start,end,square=false){let dx=end.x-start.x,dy=end.y-start.y;if(square){const size=Math.max(Math.abs(dx),Math.abs(dy));dx=(dx<0?-1:1)*size;dy=(dy<0?-1:1)*size;}return {x:Math.min(start.x,start.x+dx),y:Math.min(start.y,start.y+dy),w:Math.abs(dx),h:Math.abs(dy)};}
-    fillShape(context,tool,bounds,color){if(!bounds?.w||!bounds.h)return;context.fillStyle=color;context.beginPath();if(tool==='ellipse')context.ellipse(bounds.x+bounds.w/2,bounds.y+bounds.h/2,bounds.w/2,bounds.h/2,0,0,Math.PI*2);else context.rect(bounds.x,bounds.y,bounds.w,bounds.h);context.fill();}
-    beginShape(event){
-        if(event.button!==0||!['box','ellipse'].includes(this.tool)||this.loading||this.error||this.disposed||this.shapeDrag)return;
-        const layer=this.current();if(!layer?.visible||this.isFixed(layer))return;this.finishEdit();event.preventDefault();this.canvas.focus();this.canvas.setPointerCapture(event.pointerId);
-        const point=this.point(event);this.shapeDrag={pointer:event.pointerId,layer,tool:this.tool,start:point,bounds:this.shapeBounds(point,point)};
+    lineBounds(start,end,size,snap=false){
+        if(snap){const dx=end.x-start.x,dy=end.y-start.y,length=Math.hypot(dx,dy),angle=Math.round(Math.atan2(dy,dx)/(Math.PI/4))*Math.PI/4;end={x:start.x+Math.cos(angle)*length,y:start.y+Math.sin(angle)*length};}
+        const pad=size/2;return {x:Math.min(start.x,end.x)-pad,y:Math.min(start.y,end.y)-pad,w:Math.abs(end.x-start.x)+size,h:Math.abs(end.y-start.y)+size,start,end,size};
     }
-    moveShape(event){const drag=this.shapeDrag;if(!drag||event.pointerId!==drag.pointer)return;event.preventDefault();drag.bounds=this.shapeBounds(drag.start,this.point(event),event.shiftKey);this.draw();}
+    fillShape(context,tool,bounds,color){if(!bounds?.w||!bounds.h)return;context.beginPath();if(tool==='line'){if(bounds.start.x===bounds.end.x&&bounds.start.y===bounds.end.y)return;context.strokeStyle=color;context.lineWidth=bounds.size;context.lineCap='round';context.moveTo(bounds.start.x,bounds.start.y);context.lineTo(bounds.end.x,bounds.end.y);context.stroke();return;}context.fillStyle=color;if(tool==='ellipse')context.ellipse(bounds.x+bounds.w/2,bounds.y+bounds.h/2,bounds.w/2,bounds.h/2,0,0,Math.PI*2);else context.rect(bounds.x,bounds.y,bounds.w,bounds.h);context.fill();}
+    beginShape(event){
+        if(event.button!==0||!['line','box','ellipse'].includes(this.tool)||this.loading||this.error||this.disposed||this.shapeDrag)return;
+        const layer=this.current();if(!layer?.visible||this.isFixed(layer))return;this.finishEdit();event.preventDefault();this.canvas.focus();this.canvas.setPointerCapture(event.pointerId);
+        const point=this.point(event);this.shapeDrag={pointer:event.pointerId,layer,tool:this.tool,start:point,size:this.brushSize,bounds:this.tool==='line'?this.lineBounds(point,point,this.brushSize):this.shapeBounds(point,point)};
+    }
+    moveShape(event){const drag=this.shapeDrag;if(!drag||event.pointerId!==drag.pointer)return;event.preventDefault();drag.bounds=drag.tool==='line'?this.lineBounds(drag.start,this.point(event),drag.size,event.shiftKey):this.shapeBounds(drag.start,this.point(event),event.shiftKey);this.draw();}
     endShape(event,cancel=false){
-        const drag=this.shapeDrag;if(!drag||(event&&event.pointerId!==drag.pointer))return;this.shapeDrag=null;
+        const drag=this.shapeDrag;if(!drag||(event&&event.pointerId!==drag.pointer))return;this.shapeDrag=null;drag.layer._shapeTint=null;
         if(this.canvas.hasPointerCapture(drag.pointer))this.canvas.releasePointerCapture(drag.pointer);
-        if(cancel||!drag.bounds.w||!drag.bounds.h){this.draw();return;}
+        if(cancel||!drag.bounds.w||!drag.bounds.h||(drag.tool==='line'&&drag.bounds.start.x===drag.bounds.end.x&&drag.bounds.start.y===drag.bounds.end.y)){this.draw();return;}
         try{
             const {layer,tool,bounds}=drag;let content=layer._content;
             if(content){
@@ -545,20 +593,14 @@ export class CoupleRegionPainterUI {
     draw(){
         if(this.drawFrame){cancelAnimationFrame(this.drawFrame);this.drawFrame=0;}
         this.updateTransformOverlay();this.updateBrushCursor();const ctx=this.canvas.getContext('2d');ctx.fillStyle='#000';ctx.fillRect(0,0,this.canvas.width,this.canvas.height);
-        for(const layer of this.layers){
-            if(!layer.visible)continue;
-            const source=this.poseSource.body(layer)?this.poseSource.state:null;
-            if(!layer._tint||layer._tintDirty||layer._tintSource!==source){
-                const tint=layer._tint??(layer._tint=makeCanvas(this.width,this.height)),c=tint.getContext('2d');c.globalCompositeOperation='source-over';c.clearRect(0,0,this.width,this.height);c.drawImage(layer.canvas,0,0);this.poseSource.drawSeed(layer,c);c.globalCompositeOperation='source-in';c.fillStyle=layer.color;c.fillRect(0,0,this.width,this.height);layer._tintDirty=false;layer._tintSource=source;
-            }
-            ctx.drawImage(layer._tint,0,0);if(this.shapeDrag?.layer===layer)this.fillShape(ctx,this.shapeDrag.tool,this.shapeDrag.bounds,layer.color);
-        }
-        if(this.error)return;this.status.textContent=this.loading?'Loading layers…':`${this.width} × ${this.height} · ${this.layers.length} layers · ${this.layerLabel()}`;
+        const rendered=this.layerMasks.render();for(const layer of this.layers)if(layer.visible)ctx.drawImage(rendered.get(layer).canvas,0,0);
+        if(this.error)return;this.status.textContent=this.loading?'Loading layers…':`${this.width} × ${this.height} · ${this.layers.length} layers`;
     }
     renderList(){const scrollTop=this.list.scrollTop;this.list.replaceChildren();for(const layer of [...this.layers].reverse()){const row=document.createElement('div');row.style.cssText='display:flex;gap:5px;align-items:center;flex-shrink:0';const visible=Object.assign(document.createElement('input'),{type:'checkbox',checked:layer.visible,title:'Include this layer in preview and outputs'});visible.onchange=()=>{if(this.loading)return;this.finishEdit();layer.visible=visible.checked;this.changed();};const select=document.createElement('button');select.type='button';select.style.cssText='flex:1;text-align:left;overflow:hidden;white-space:nowrap;text-overflow:ellipsis';select.setAttribute('aria-pressed',layer.id===this.selected);const swatch=document.createElement('span');swatch.style.cssText=`display:inline-block;width:12px;height:12px;background:${layer.color};margin-right:6px;border:1px solid #999`;select.title=layer.prompt||'Enter a region prompt';select.append(swatch,document.createTextNode(this.layerLabel(layer)));select.onclick=()=>{this.select(layer.id);this.canvas.focus({preventScroll:true});};row.append(visible,select);this.list.append(row);}this.list.scrollTop=scrollTop;}
     renderPanel(){
         const layer=this.current(),background=this.isBackground(layer),base=this.isBase(layer),fixed=this.isFixed(layer),busy=!!(this.loading||this.error);
         this.renderList();this.backgroundButton.setAttribute('aria-pressed',String(background));
+        this.renderMaskOptions();
         this.baseButton.setAttribute('aria-pressed',String(base));
         for(const [input,key] of [[this.colorInput,'color'],[this.strengthInput,'strength'],[this.promptInput,'prompt']]){
             input.disabled=!layer||busy||(fixed&&key!=='prompt');input.value=layer?.[key]??(key==='color'?'#ffffff':'');
@@ -573,9 +615,10 @@ export class CoupleRegionPainterUI {
         if(this.poseSource.isImported(layer)){this.colorInput.disabled=true;this.colorInput.title='Body color follows 3D Pose Editor. Only extra painting is editable.';}else this.colorInput.title='Layer color';
         this.backButton.disabled=busy||index<=0;this.frontButton.disabled=busy||index<0||index>=this.layers.length-1;
         this.addButton.disabled=busy||this.layers.length>=MAX_LAYERS;
-        for(const control of [this.brushButton,this.boxButton,this.ellipseButton,this.eraserButton,this.transformButton,this.clearButton])control.disabled=busy||!layer||fixed;
+        this.selectButton.disabled=busy||!this.layers.length;
+        for(const control of [this.brushButton,this.lineButton,this.boxButton,this.ellipseButton,this.eraserButton,this.transformButton,this.clearButton])control.disabled=busy||!layer||fixed;
         for(const control of [this.copyMaskButton,this.pasteMaskButton])control.disabled=busy||this.clipboardBusy||!layer||fixed;
         this.updateHistory();this.updateTransformOverlay();this.updateBrushCursor();
     }
-    dispose(){this.poseBinding?.dispose();this.endPanelResize(null,true);this.endListResize(null,true);this.disposed=true;if(this.drawFrame){cancelAnimationFrame(this.drawFrame);this.drawFrame=0;}this.loadToken++;this.observer.disconnect();window.removeEventListener('blur',this.blurCursor);this.hideBrushCursor();this.transformBox.style.display=this.rotationHandle.style.display=this.rotationLink.style.display='none';this.stroke=this.transformDrag=this.shapeDrag=null;this.layers=[];this.history=[];this.future=[];}
+    dispose(){this.maskPicker.dispose();this.poseBinding?.dispose();this.endPanelResize(null,true);this.endListResize(null,true);this.disposed=true;if(this.drawFrame){cancelAnimationFrame(this.drawFrame);this.drawFrame=0;}this.loadToken++;this.observer.disconnect();window.removeEventListener('blur',this.blurCursor);this.hideBrushCursor();this.transformBox.style.display=this.rotationHandle.style.display=this.rotationLink.style.display='none';this.stroke=this.transformDrag=this.shapeDrag=null;this.layers=[];this.history=[];this.future=[];}
 }

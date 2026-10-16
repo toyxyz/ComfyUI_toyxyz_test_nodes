@@ -343,6 +343,7 @@ Pose and customize multiple MHR human bodies in a 3D scene. The background is bl
 - **Undo / Redo**: arrow icons undo or redo edits, including adding or deleting bodies.
 - **Get pose**: choose an image to apply one person's shape and pose to the selected body. Requires SAM 3D Body; use a single-person image or crop. Connect a SAM body loader to `sam3d_body_model`, or use the default model at `ComfyUI/models/detection/sam_3d_body_dinov3_bf16.safetensors`. If missing, the default model downloads automatically from Comfy-Org (about 2.83 GB), with progress shown before inference. Existing files are reused; custom model filenames are not downloaded automatically. Download failures leave the body unchanged; retry after fixing network/disk access.
 - **Floor: On / Off**: show or hide the white floor grid in the preview only. There is no floor plane; the grid is excluded from all outputs.
+- **Outline: On / Off**: add vivid complementary-color body outlines, 4 pixels at the output resolution. Preview outlines scale with the displayed image; only `images` includes them, not OpenPose, depth, normals, color IDs or Region painter masks.
 - **Save / Load camera view**: disk / camera-return icons save one camera position, target and FOV, or restore it. Saving again replaces the stored view.
 - **FOV**: adjust the camera's field of view (10–120°); Reset view restores 36°.
 
@@ -439,11 +440,13 @@ Paint free-form regional masks on the left canvas and enter a prompt for each la
 
 **Canvas and layers**
 
-- **Brush / Box / Ellipse / Eraser**: left-side icons paint or erase the selected layer. Scroll to change brush/eraser size; hold Shift when drawing a box or ellipse for a square or circle.
+- **Select layer**: the arrow icon selects the frontmost visible mask at the clicked canvas position and reveals its row in the layer list. Hidden layers and clipped-out pixels are ignored; clicking empty background keeps the selection.
+- **Brush / Line / Box / Ellipse / Eraser**: left-side icons paint or erase the selected layer. Drag with Line to draw a straight stroke; scroll to change brush, line or eraser thickness. Shift snaps lines to 45° steps, or constrains boxes/ellipses to squares/circles.
 - **Transform**: move painting, freely resize with corner handles, or rotate with the round handle. Shift preserves proportions when resizing and snaps rotation to 15°. Painting can move outside the canvas; **Center layer** brings it back.
 - **Undo / Redo / Clear layer**: undo or redo edits, or clear the selected layer's painting. **Copy / Paste mask** icons copy a black-and-white mask or paste a clipboard image into the selected layer; external masks are supported (white = selected, black = empty). Ctrl+C / Ctrl+V also work outside text fields.
-- **+ / − / ↑ / ↓**: add, delete or reorder layers. Higher layers cover lower layers without deleting their painting. Toggle visibility with the checkbox; drag the divider below the list to adjust its height.
+- **+ / − / ↑ / ↓**: add, delete or reorder layers. New layers appear directly above the selected layer (at the top when Base / Background is selected). Higher layers cover lower layers without deleting their painting. Toggle visibility with the checkbox; drag the divider below the list to adjust its height.
 - **Color / Strength / Region prompt**: set the selected region's display color, conditioning strength and prompt. The prompt appears as its list label, shortened when long. Visible painted regions need a prompt.
+- **Mask** beside Strength: choose another layer to clip the selected layer to its mask, or **None** to restore all original painting. Hidden layers can supply masks; masking is independent of layer order. Mask chains are supported, but self-masking and cycles are not.
 - **Base / Background**: fixed, non-paintable entries that cannot be deleted or moved. Base supplies a shared prompt for all regions and the background. Background's `region_and_background` mode also adds its prompt to each region; `background_only` applies it only to uncovered areas.
 - **Prompt shortcuts**: Ctrl+Up / Down adjusts `(text:weight)` for selected text or the current word; Ctrl+Enter queues execution.
 
@@ -452,7 +455,7 @@ Paint free-form regional masks on the left canvas and enter a prompt for each la
 - Connect **clip** from the generation model. Optional **region** appends to an existing region or Base / Background Prompt chain.
 - **Width / height** set canvas resolution. Resizing the node only changes the preview size, keeping its aspect ratio; painting and prompts are saved with the workflow.
 - Drag the vertical divider between the canvas and the right panel to adjust the layer list and prompt width. Double-click to reset; the width is saved with the node.
-- **region_painter**: connect 3D Pose Editor's `region painter` output to import one layer per body and automatically follow its resolution and scene changes. Paint extra areas on these layers; Eraser, Clear, Paste and Transform affect only the added painting, not the original body masks. Higher layers can still cover lower body masks. Edit body colors and delete bodies in the Pose editor.
+- **region_painter**: connect 3D Pose Editor's `region painter` output to import one layer per body and automatically follow its resolution and scene changes. Paint extra areas on these layers; Eraser, Clear, Paste and Transform affect only the added painting, not the original body masks. Higher layers can still cover lower body masks. Edit body colors and delete bodies in the Pose editor. Disconnecting removes the imported body layers, including their extra painting and prompts; manually created layers and Base / Background prompts remain.
 - **images** outputs the colored composite on black; **region** connects to **ComfyCouple Mask**. Hidden, empty and fully covered layers are excluded from region output.
 
 ## Comfy Couple Region Extractor

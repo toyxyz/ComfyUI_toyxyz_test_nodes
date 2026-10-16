@@ -1,4 +1,5 @@
 import {validPaintFrame,MAX_PAINT_AXIS} from './couple_painter_geometry.js';
+import {maskWouldCycle} from './couple_layer_masks.js';
 const MAX_PIXELS=64*1024*1024,MAX_LAYERS=32;
 const canvas=(w,h)=>Object.assign(document.createElement('canvas'),{width:w,height:h});
 export const poseKey=owner=>JSON.stringify([owner.source_id,owner.body_id]);
@@ -31,6 +32,18 @@ export class PainterPoseSource {
     body(layer){return this.state&&layer?.pose_source?.source_id===this.state.payload.source_id?this.state.byId.get(layer.pose_source.body_id):null;}
     label(layer){return this.body(layer)?.name;}
     snapshot(){return this.state?this.state.payload:null;}
+    detach(){
+        const ui=this.ui;if(!this.state&&!this.archives.size&&!ui.layers.some(layer=>this.isImported(layer)))return false;
+        ui.finishEdit();
+        ui.layers=ui.layers.filter(layer=>!this.isImported(layer));this.state=null;this.archives.clear();
+        for(const layer of ui.layers){layer._tintSource=null;layer._tintDirty=true;}
+        if(!ui.isFixed()&&!ui.layers.some(layer=>layer.id===ui.selected))ui.selected=ui.layers.at(-1)?.id??ui.background.id;
+        // Keep manual painting history, but never resurrect a disconnected
+        // body layer, protected ID map or archived body via Undo / Redo.
+        const clean=value=>{const data=JSON.parse(value);data.layers=data.layers.filter(layer=>!this.isImported(layer));delete data.pose_source;delete data.pose_archive;if(![ui.base.id,ui.background.id].includes(data.selected)&&!data.layers.some(layer=>layer.id===data.selected))data.selected=data.layers.at(-1)?.id??ui.background.id;return JSON.stringify(data);};
+        const history=ui.history.map(clean);ui.history=history.filter((value,index)=>index===0||value!==history[index-1]);ui.future=ui.future.map(clean);
+        ui.commit();ui.record();ui.renderPanel();ui.draw();ui.fit();return true;
+    }
     seedPatch(layer){
         const state=this.state,body=this.body(layer);if(!body)return null;
         if(state.seeds.has(body.label))return state.seeds.get(body.label);
@@ -89,6 +102,9 @@ export class PainterPoseSource {
         // Hidden layers must not keep an old ID map / seed-cache alive solely
         // through their tint cache token after the upstream pose changes.
         if(this.state!==state)for(const layer of ui.layers)layer._tintSource=null;
+        // A restored body may complete a previously dangling Mask chain.
+        // Drop only that cyclic body reference instead of blocking live poses.
+        for(const layer of ui.layers)if(this.isImported(layer)&&maskWouldCycle(ui.layers,layer.id,layer.mask_layer_id))delete layer.mask_layer_id;
         this.state=state;if(!ui.layers.some(layer=>layer.id===ui.selected)&&!ui.isFixed())ui.selected=ui.layers.at(-1)?.id??ui.background.id;
         ui.commit();ui.renderPanel();ui.draw();ui.fit();return true;
     }

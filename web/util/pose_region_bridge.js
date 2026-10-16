@@ -10,6 +10,10 @@ export function linkedPoseEditor(node){
 export function notifyPoseRegions(node){for(const binding of bindings)if(linkedPoseEditor(binding.node)===node)binding.schedule();}
 export function bindPoseRegions(node,ui){
     const binding={node,ui,timer:0,promise:null,disposed:false,last:null,
+        detachIfUnlinked(){
+            if(this.disposed||ui.disposed||ui.loading||linkedPoseEditor(node))return false;
+            this.last=null;return ui.poseSource.detach();
+        },
         syncResolutionWidgets(){
             if(this.disposed||ui.disposed)return false;const editor=linkedPoseEditor(node)?._pose3d;if(!editor||editor.disposed)return false;
             const values=['width','height'].map(name=>editor.widget(name)?.value);if(!values.every(value=>Number.isInteger(value)&&value>=64&&value<=4096))return false;
@@ -20,7 +24,7 @@ export function bindPoseRegions(node,ui){
         async syncNow(force=false){
             if(this.disposed||ui.disposed||ui.error)return;if(this.promise){await this.promise;return this.syncNow(force);}
             this.syncResolutionWidgets();
-            const source=linkedPoseEditor(node),editor=source?._pose3d;if(!editor||editor.disposed)return;
+            const source=linkedPoseEditor(node),editor=source?._pose3d;if(!editor||editor.disposed){await ui.ready;this.detachIfUnlinked();return;}
             if(!force&&(ui.stroke||ui.shapeDrag||ui.transformDrag||ui.loading)){this.schedule();return;}
             this.promise=(async()=>{
                 await editor.ready;await ui.ready;if(ui.error)return;if(editor.loading||ui.loading){this.schedule();return;}
@@ -39,6 +43,6 @@ export function bindPoseRegions(node,ui){
     bindings.add(binding);ui.poseBinding=binding;
     // Also catch reroute reconnections and workflow/Undo reloads, which do not
     // necessarily generate an edit notification from the upstream scene.
-    binding.poll=setInterval(()=>{binding.syncResolutionWidgets();const source=linkedPoseEditor(node);if(source&&(binding.last?.source!==source||binding.last.key!==`${sourceStamp(source)}:${ui.loadToken}`))binding.schedule();},400);
+    binding.poll=setInterval(()=>{binding.syncResolutionWidgets();const source=linkedPoseEditor(node);if(source?(binding.last?.source!==source||binding.last.key!==`${sourceStamp(source)}:${ui.loadToken}`):(ui.poseSource.state||ui.poseSource.archives.size||ui.layers.some(layer=>ui.poseSource.isImported(layer))))binding.schedule();},400);
     binding.schedule();return binding;
 }

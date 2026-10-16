@@ -6,6 +6,7 @@ import {TransformControls} from "./vendor/three/TransformControls.js";
 import {PoseLightControl} from "./util/pose_light_control.js";
 import {PoseOpenPose} from "./util/pose_openpose.js";
 import {PoseRenderPasses} from "./util/pose_render_passes.js";
+import {PoseBodyOutlines} from "./util/pose_body_outline.js";
 import {PoseModelTree,PoseShapeControl,loadMHRShapeBasis,validMHRShape} from "./util/pose_shape_control.js";
 import {buildSAMPosePrompt,samBodyFingerprint,ensureSAMPoseModel} from "./util/pose_sam_import.js";
 import {notifyPoseRegions} from './util/pose_region_bridge.js';
@@ -116,6 +117,7 @@ export class Pose3DEditorUI {
         api.addEventListener?.('executing',this.poseExecuting);
         this.floorButton=this.button("Floor",()=>{this.setFloorVisible(!this.grid.visible);this.commit();this.record();});
         this.floorButton.title="Show or hide the white floor grid in the preview only";
+        this.outlineButton=this.button('Outline: Off',()=>{this.setOutlineVisible(!this.outlineEnabled);this.commit();this.record();});this.outlineButton.title='4-pixel contrasting body outlines in the preview and images only (output pixels).';this.outlineButton.setAttribute('aria-pressed','false');
         this.saveCameraButton=this.iconButton('cameraSave','Save camera view',()=>this.saveCameraView());this.saveCameraButton.title='Save current camera position, look-at target and FOV (overwrite saved view)';this.saveCameraButton.disabled=true;
         this.loadCameraButton=this.iconButton('cameraLoad','Load camera view',()=>this.loadCameraView());this.loadCameraButton.title='Return to saved camera position, look-at target and FOV';this.loadCameraButton.disabled=true;
         const fovLabel=document.createElement('label');fovLabel.style.cssText='display:flex;align-items:center;gap:4px;margin-left:4px';fovLabel.textContent='FOV';fovLabel.title='Vertical camera field of view in degrees (preview and all outputs)';this.bar.append(fovLabel);
@@ -145,6 +147,7 @@ export class Pose3DEditorUI {
         this.scene.add(new T.HemisphereLight(0xc9dcff,0x253044,1.7));const key=this.keyLight=new T.DirectionalLight(0xffffff,3.2);key.position.set(-2,4,3);key.target.position.set(0,.95,0);key.castShadow=true;key.shadow.mapSize.set(2048,2048);key.shadow.camera.left=-2;key.shadow.camera.right=2;key.shadow.camera.top=3;key.shadow.camera.bottom=-2;key.shadow.bias=-.0001;this.scene.add(key,key.target);
         this.lightControl=new PoseLightControl(this.view,this.camera,()=>key.position.clone().sub(key.target.position).normalize(),direction=>{this.setLightDirection(direction);this.commit();},()=>this.record());
         this.renderPasses=new PoseRenderPasses();
+        this.bodyOutlines=new PoseBodyOutlines();this.outlineEnabled=false;
         const rim=new T.DirectionalLight(0x87aaff,2);rim.position.set(2,2,-3);this.scene.add(rim);
         this.grid=new T.GridHelper(4,20,0xffffff,0xffffff);this.grid.position.y=.001;this.scene.add(this.grid);
         this.setFloorVisible(true);
@@ -171,7 +174,7 @@ export class Pose3DEditorUI {
         canvas.addEventListener("keydown",e=>{if(!e.ctrlKey&&!e.metaKey&&!e.altKey){if(e.key.toLowerCase()==="w")this.setMode("translate");if(e.key.toLowerCase()==="e")this.setMode("rotate");if(e.key.toLowerCase()==="r")this.setMode("scale");}e.stopPropagation();});
         for(const name of ["pointerdown","wheel","keydown"])root.addEventListener(name,e=>e.stopPropagation());
         this.resizeObserver=new ResizeObserver(()=>this.resize());this.resizeObserver.observe(this.view);
-        this.ready=this.load();this.loop=()=>{if(this.disposed)return;this.updateAllMarkers();this.renderer.render(this.scene,this.camera);this.lightControl.draw();this.frame=requestAnimationFrame(this.loop);};this.loop();
+        this.ready=this.load();this.loop=()=>{if(this.disposed)return;this.updateAllMarkers();this.renderBeauty();this.lightControl.draw();this.frame=requestAnimationFrame(this.loop);};this.loop();
     }
     button(text,action){const b=document.createElement("button");b.textContent=text;b.onclick=action;this.bar.append(b);return b;}
     iconButton(icon,label,action,parent=this.bar){
@@ -271,6 +274,8 @@ export class Pose3DEditorUI {
         this.floorButton.setAttribute('aria-pressed',String(visible));
         this.floorButton.style.backgroundColor=visible?'#36536b':'';
     }
+    setOutlineVisible(visible){this.outlineEnabled=!!visible;this.outlineButton.textContent=this.outlineEnabled?'Outline: On':'Outline: Off';this.outlineButton.setAttribute('aria-pressed',String(this.outlineEnabled));this.outlineButton.style.backgroundColor=this.outlineEnabled?'#36536b':'';}
+    renderBeauty(){this.bodyOutlines.render(this.renderer,this.scene,this.camera,this.bodies,this.widget('width').value,this.widget('height').value,this.outlineEnabled);}
     setLightDirection(direction){this.keyLight.position.copy(this.keyLight.target.position).addScaledVector(direction.clone().normalize(),5);this.lightControl?.draw();}
     setBodyColor(color){
         if(!validBodyColor(color)||!this.material)return false;
@@ -345,6 +350,7 @@ export class Pose3DEditorUI {
         this.updateMarkers();controls.syncRootSize(true);this.updateControllerVisibility();return body;
     }
     destroyBody(body){
+        this.bodyOutlines.remove(body);
         const geometries=new Set(),materials=new Set();
         for(const root of [body.rootControl,body.markers,body.poleLinks]){
             root.removeFromParent();root.traverse(object=>{
@@ -538,7 +544,7 @@ export class Pose3DEditorUI {
     });}
     snapshot(){
         const bodies=this.bodies.map(body=>this.bodySnapshot(body));
-        const common={version:1,selected_body_id:this.selectedBody?.id??null,floor_visible:this.grid.visible,camera:{position:this.camera.position.toArray(),target:this.orbit.target.toArray(),fov:this.camera.fov},lighting:{direction:this.keyLight.position.clone().sub(this.keyLight.target.position).normalize().toArray()}};
+        const common={version:1,selected_body_id:this.selectedBody?.id??null,floor_visible:this.grid.visible,outline_enabled:this.outlineEnabled,camera:{position:this.camera.position.toArray(),target:this.orbit.target.toArray(),fov:this.camera.fov},lighting:{direction:this.keyLight.position.clone().sub(this.keyLight.target.position).normalize().toArray()}};
         if(validCameraView(this.savedCamera))common.saved_camera=copyCameraView(this.savedCamera);
         // Preserve the original one-body format for existing workflows/callers.
         return bodies.length===1?{...bodies[0],...common}:{...common,bodies,openpose:{version:2,width:this.widget('width').value,height:this.widget('height').value,people:bodies.map(body=>body.openpose)}};
@@ -550,6 +556,7 @@ export class Pose3DEditorUI {
         return !!body&&data?.version===1&&data.body===body.gender&&data.source===body.source&&(data.body_color===undefined||validBodyColor(data.body_color))&&(data.shape===undefined||validMHRShape(data.shape))&&(data.root_transform===undefined||(finiteVector(data.root_transform?.position,3)&&finiteVector(data.root_transform?.quaternion,4)&&data.root_transform.quaternion.some(x=>x!==0)))&&Array.isArray(data.joints)&&data.joints.length===body.bones.length&&data.joints.every((j,i)=>j?.name===body.bones[i].name&&finiteVector(j.position,3)&&finiteVector(j.quaternion,4)&&j.quaternion.some(x=>x!==0))&&Array.isArray(data.ik)&&data.ik.length===body.chains.length&&data.ik.every((c,i)=>c?.name===body.chains[i].name&&typeof c.enabled==='boolean'&&finiteVector(c.target,3)&&finiteVector(c.pole,3));
     }
     validPose(data){
+        if(data?.outline_enabled!==undefined&&typeof data.outline_enabled!=='boolean')return false;
         if(data?.camera?.fov!==undefined&&!validFov(data.camera.fov))return false;
         if(data?.version!==1||!finiteVector(data.camera?.position,3)||!finiteVector(data.camera?.target,3)||(data.floor_visible!==undefined&&typeof data.floor_visible!=='boolean')||(data.lighting!==undefined&&(!finiteVector(data.lighting?.direction,3)||!data.lighting.direction.some(x=>x!==0))))return false;
         const description=state=>this.bodies.find(body=>body.id===state.id&&body.source===state.source&&body.gender===state.body)??this.bodyAssets.get(`${state.source}:${state.body}`)?.validation;
@@ -573,6 +580,7 @@ export class Pose3DEditorUI {
         if(finiteVector(data.camera?.position,3)&&finiteVector(data.camera?.target,3)){this.camera.position.fromArray(data.camera.position);this.orbit.target.fromArray(data.camera.target);this.orbit.update();}
         if(finiteVector(data.lighting?.direction,3)&&data.lighting.direction.some(x=>x!==0))this.setLightDirection(v(...data.lighting.direction));
         this.setFloorVisible(data.floor_visible??true);
+        this.setOutlineVisible(data.outline_enabled??false);
     }
     restore(data){
         if(!this.validPose(data))throw Error('Invalid saved pose scene.');
@@ -614,7 +622,7 @@ export class Pose3DEditorUI {
         const objects=[...this.bodies.flatMap(body=>[body.markers,body.handles,body.poleLinks,body.rootMarker]),this.grid,this.gizmo.getHelper()],visible=objects.map(object=>object.visible);
         try{objects.forEach(object=>object.visible=false);return this.renderPasses.captureBodyIds(this.renderer,this.scene,this.camera,this.bodies,this.widget('width').value,this.widget('height').value,this.regionSourceId());}finally{objects.forEach((object,index)=>object.visible=visible[index]);}
     }
-    capture(){if(this.loading)throw Error('Wait for the pose body to finish loading.');if(this.camera.aspect!==this.widget('width').value/this.widget('height').value)this.resize();for(const body of this.bodies)body.shapeControl.assertRenderable();this.updateAllMarkers();this.commit();const width=this.widget('width').value,height=this.widget('height').value;const visible=[...this.bodies.flatMap(body=>[body.markers,body.handles,body.poleLinks,body.rootMarker]),this.grid,this.gizmo.getHelper()];const saved=visible.map(o=>o.visible);const size=this.renderer.getSize(new T.Vector2()),pixel=this.renderer.getPixelRatio();try{visible.forEach(o=>o.visible=false);this.renderer.setPixelRatio(1);this.renderer.setSize(width,height,false);this.renderer.render(this.scene,this.camera);const png=this.renderer.domElement.toDataURL('image/png');const maps=this.renderPasses.capture(this.renderer,this.scene,this.camera,this.bodies.map(body=>body.bodyRoot)),region_painter=this.captureRegionPainter();this.widget('render_data').value=JSON.stringify({version:1,render:png,...maps,region_painter});return png;}finally{visible.forEach((o,i)=>o.visible=saved[i]);this.renderer.setPixelRatio(pixel);this.renderer.setSize(size.x,size.y,false);this.renderer.render(this.scene,this.camera);}}
+    capture(){if(this.loading)throw Error('Wait for the pose body to finish loading.');if(this.camera.aspect!==this.widget('width').value/this.widget('height').value)this.resize();for(const body of this.bodies)body.shapeControl.assertRenderable();this.updateAllMarkers();this.commit();const width=this.widget('width').value,height=this.widget('height').value;const visible=[...this.bodies.flatMap(body=>[body.markers,body.handles,body.poleLinks,body.rootMarker]),this.grid,this.gizmo.getHelper()];const saved=visible.map(o=>o.visible);const size=this.renderer.getSize(new T.Vector2()),pixel=this.renderer.getPixelRatio();try{visible.forEach(o=>o.visible=false);this.renderer.setPixelRatio(1);this.renderer.setSize(width,height,false);this.renderBeauty();const png=this.renderer.domElement.toDataURL('image/png');const maps=this.renderPasses.capture(this.renderer,this.scene,this.camera,this.bodies.map(body=>body.bodyRoot)),region_painter=this.captureRegionPainter();this.widget('render_data').value=JSON.stringify({version:1,render:png,...maps,region_painter});return png;}finally{visible.forEach((o,i)=>o.visible=saved[i]);this.renderer.setPixelRatio(pixel);this.renderer.setSize(size.x,size.y,false);this.renderBeauty();}}
     reset(){
         if(this.loading||!this.selectedBody)return;
         const scene=this.snapshot(),shape=this.shapeControl.snapshot();
@@ -624,7 +632,7 @@ export class Pose3DEditorUI {
         else Object.assign(scene,reset,{joints:undefined,ik:undefined,root_transform:{position:[0,0,0],quaternion:[0,0,0,1],scale},source:shape?this.source:undefined});
         this.widget('pose_data').value=JSON.stringify(scene);this.ready=this.load(scene);
     }
-    dispose(){this.disposed=true;api.removeEventListener?.('executing',this.poseExecuting);cancelAnimationFrame(this.frame);this.resizeObserver.disconnect();this.clearBodies();this.lightControl.dispose();this.renderPasses.dispose();this.orbit.dispose();this.gizmo.dispose();this.scene.traverse(o=>{o.geometry?.dispose();o.material?.dispose();});this.renderer.dispose();}
+    dispose(){this.disposed=true;api.removeEventListener?.('executing',this.poseExecuting);cancelAnimationFrame(this.frame);this.resizeObserver.disconnect();this.clearBodies();this.lightControl.dispose();this.renderPasses.dispose();this.bodyOutlines.dispose();this.orbit.dispose();this.gizmo.dispose();this.scene.traverse(o=>{o.geometry?.dispose();o.material?.dispose();});this.renderer.dispose();}
 }
 
 app.registerExtension({name:'toyxyz.pose3d',beforeConfigureGraph(data){migratePose3DWorkflow(data);},async beforeRegisterNodeDef(NodeType,data){

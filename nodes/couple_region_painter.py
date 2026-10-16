@@ -74,9 +74,11 @@ class ComfyCoupleRegionPainter:
         if not isinstance(base, dict) or not isinstance(base.get("prompt"), str):
             raise ValueError("Invalid painter base prompt.")
         layers = data["layers"]
-        source = read_pose_regions(region_painter if region_painter is not None else data.get("pose_source"))
-        if source is None and any(isinstance(layer, dict) and layer.get("pose_source") is not None for layer in layers):
-            raise ValueError("Protected pose layers need their saved source or a connected 3D Pose Editor.")
+        # Saved preview caches are not a connection. A disconnected/headless
+        # workflow must not render stale mannequin masks or their extra paint.
+        source = read_pose_regions(region_painter)
+        if region_painter is None:
+            layers = [layer for layer in layers if not (isinstance(layer, dict) and layer.get("pose_source") is not None)]
         mask_width, mask_height = data.get("width"), data.get("height")
         if type(mask_width) is not int or type(mask_height) is not int or not 64 <= mask_width <= 4096 or not 64 <= mask_height <= 4096:
             raise ValueError("Invalid saved painter resolution.")
@@ -95,6 +97,8 @@ class ComfyCoupleRegionPainter:
                     or layer["id"] in ("__painter_background__", "__painter_base__") or layer["id"] in ids):
                 raise ValueError("Painter layers need unique IDs.")
             ids.add(layer["id"])
+            if layer.get("mask_layer_id") is not None and not isinstance(layer["mask_layer_id"], str):
+                raise ValueError("Invalid layer Mask reference.")
             if not re.fullmatch(r"#[0-9a-fA-F]{6}", str(layer.get("color", ""))):
                 raise ValueError(f"Layer {index + 1} has an invalid color.")
             if not isinstance(layer.get("prompt", ""), str) or not isinstance(layer.get("visible", True), bool):
@@ -135,6 +139,28 @@ class ComfyCoupleRegionPainter:
                 protected.append((layer, alpha, color, strength))
             decoded = protected
 
+        # Clip to effective pre-occlusion alpha, including hidden providers and
+        # protected body seeds. Original PNGs remain untouched for unclipping.
+        by_id = {layer["id"]: (layer, alpha) for layer, alpha, _, _ in decoded}
+        effective, visiting = {}, set()
+
+        def clipped(layer_id):
+            if layer_id in effective:
+                return effective[layer_id]
+            if layer_id in visiting:
+                raise ValueError("Layer Mask references cannot form a cycle or mask themselves.")
+            visiting.add(layer_id)
+            layer, alpha = by_id[layer_id]
+            mask_id = layer.get("mask_layer_id")
+            if mask_id in by_id:
+                alpha = alpha * clipped(mask_id)
+            visiting.remove(layer_id)
+            effective[layer_id] = alpha
+            return alpha
+
+        for layer_id in by_id:
+            clipped(layer_id)
+        decoded = [(layer, effective[layer["id"]], color, strength) for layer, _, color, strength in decoded]
         image = np.zeros((height, width, 3), dtype=np.float32)
         uncovered = np.ones((height, width), dtype=np.float32)
         painted_regions = []

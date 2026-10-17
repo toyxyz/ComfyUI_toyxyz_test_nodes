@@ -1446,6 +1446,7 @@ class PrompterUI {
       if (!["Escape", "ArrowDown", "ArrowUp", "Enter", "Tab"].includes(event.key)) this.renderMentionMenu();
     });
     editor.addEventListener("keydown", event => {
+      if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || event.isComposing || event.keyCode === 229) return;
       if (event.key === "Escape") {
         this.hideMentionMenu();
         return;

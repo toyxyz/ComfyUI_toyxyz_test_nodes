@@ -318,9 +318,8 @@ function attachSuggestions(node, widget = node.widgets?.find(item => item.name =
 
     const onKeyDown = event => {
         if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
-        if (event.metaKey || event.altKey || (event.shiftKey && event.key === "Enter")) return;
-        // Leave ComfyUI's Ctrl+arrow weights and Ctrl+Enter action untouched.
-        if ((event.ctrlKey || event.metaKey) && (event.key.startsWith("Arrow") || event.key === "Enter")) return;
+        // Modified keys belong to ComfyUI/browser commands, never suggestions.
+        if (event.ctrlKey || event.metaKey || event.altKey || (event.shiftKey && event.key === "Enter")) return;
         if (!list.isConnected || !suggestions.length) return;
         if (event.key === "ArrowDown" || event.key === "ArrowUp") {
             event.preventDefault();

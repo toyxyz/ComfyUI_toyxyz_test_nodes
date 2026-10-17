@@ -2,6 +2,7 @@ import {PAINT_CORNERS,MAX_PAINT_AXIS,validPaintFrame,paintFramePoint,hitPaintFra
 import {PainterPoseSource,parsePoseSource,parsePoseArchive} from './couple_pose_source.js';
 import {PainterLayerMasks,maskWouldCycle,validateLayerMasks} from './couple_layer_masks.js';
 import {MaskLayerPicker} from './couple_mask_picker.js';
+import {ownsEditorKey,plainEditorKey} from './editor_keyboard.js';
 
 const MAX_LAYERS = 32, MAX_PIXELS = 64 * 1024 * 1024;
 const BACKGROUND_ID='__painter_background__';
@@ -49,7 +50,8 @@ function nextColor(layers) {
 }
 
 export class CoupleRegionPainterUI {
-    constructor(node, root) {
+    constructor(node, root, app) {
+        this.app=app;
         this.node=node;this.root=root;this.layers=[];this.background=makeBackground();this.base=makeBase();this.selected=null;this.history=[];this.future=[];this.tool='brush';this.brushSize=40;
         this.poseSource=new PainterPoseSource(this);
         this.layerMasks=new PainterLayerMasks(this);
@@ -105,8 +107,8 @@ export class CoupleRegionPainterUI {
         for(const type of ['pointerup','pointercancel','lostpointercapture'])this.panelSplitter.addEventListener(type,e=>{if(type==='pointerup')this.movePanelResize(e);this.endPanelResize(e,type==='pointercancel');});
         this.panelSplitter.addEventListener('dblclick',e=>{e.preventDefault();this.endPanelResize(null,true);this.setPanelWidth(DEFAULT_PANEL_WIDTH,true);});
         this.panelSplitter.addEventListener('keydown',e=>{
+            if(!plainEditorKey(e)||!ownsEditorKey(e,root,this.node,app))return;
             if(e.key==='Escape'&&this.panelResizeDrag){e.preventDefault();e.stopPropagation();this.endPanelResize(null,true);return;}
-            if(e.ctrlKey||e.metaKey||e.altKey)return;
             const {min,max}=this.panelWidthLimits(),width=this.panel.offsetWidth;
             const next={ArrowLeft:width+(e.shiftKey?40:10),ArrowRight:width-(e.shiftKey?40:10),Home:min,End:max}[e.key];
             if(next!==undefined){e.preventDefault();e.stopPropagation();this.setPanelWidth(next,true);}
@@ -140,9 +142,10 @@ export class CoupleRegionPainterUI {
         for(const type of ['pointerup','pointercancel','lostpointercapture'])this.listSplitter.addEventListener(type,e=>{if(type==='pointerup')this.moveListResize(e);this.endListResize(e,type==='pointercancel');});
         this.listSplitter.addEventListener('dblclick',e=>{e.preventDefault();this.endListResize(null,true);this.setListHeight(DEFAULT_LIST_HEIGHT,true);});
         this.listSplitter.addEventListener('keydown',e=>{
-            e.stopPropagation();if(e.key==='Escape'&&this.listResizeDrag){e.preventDefault();this.endListResize(null,true);return;}
+            if(!plainEditorKey(e)||!ownsEditorKey(e,root,this.node,app))return;
+            if(e.key==='Escape'&&this.listResizeDrag){e.preventDefault();e.stopPropagation();this.endListResize(null,true);return;}
             const {min,max}=this.listHeightLimits(),height=this.layerListPanel.offsetHeight;
-            const next={ArrowUp:height-10,ArrowDown:height+10,Home:min,End:max}[e.key];if(next!==undefined){e.preventDefault();this.setListHeight(next,true);}
+            const next={ArrowUp:height-10,ArrowDown:height+10,Home:min,End:max}[e.key];if(next!==undefined){e.preventDefault();e.stopPropagation();this.setListHeight(next,true);}
         });
         this.layerSettings=document.createElement('section');this.layerSettings.setAttribute('aria-label','Layer settings');
         this.layerSettings.style.cssText='display:flex;flex-direction:column;gap:8px;flex:1;min-height:0;padding:8px;box-sizing:border-box;border:1px solid #484848;border-radius:5px;background:#292929;overflow:auto;overscroll-behavior:contain';
@@ -168,17 +171,27 @@ export class CoupleRegionPainterUI {
             input.oninput=()=>{const layer=this.current();if(!layer||this.loading||this.error||(this.isFixed(layer)&&key!=='prompt')||(key==='color'&&this.poseSource.isImported(layer)))return;let value=input.value;if(key==='strength')value=clamp(Number(value)||0,0,10);layer[key]=value;if(key==='color')layer._tintDirty=true;this.commit();this.draw();if(key==='prompt'||key==='color')this.renderList();};
             input.onchange=()=>this.record();input.onblur=()=>this.record();
         }
-        // Do not let graph pan, shortcuts or wheel zoom steal editor interaction.
+        // Pointer gestures belong to the editor; keyboard shortcuts remain native
+        // unless the focused canvas is explicitly handling its own tool action.
         for(const type of ['pointerdown','pointermove','pointerup','wheel','dblclick'])root.addEventListener(type,e=>e.stopPropagation());
         this.viewport.addEventListener('wheel',e=>this.resizeBrushFromWheel(e),{passive:false});
         root.addEventListener('keydown',e=>{
-            // Native weight editing preserves text Undo/settings; native queue
-            // execution preserves ComfyUI's normal serialization/validation.
-            // Pass through only these shortcuts, not graph movement or editing.
-            if((e.ctrlKey||e.metaKey)&&!e.altKey&&!e.isComposing&&e.keyCode!==229&&!this.disposed&&(
-                e.key==='Enter'||(e.target===this.promptInput&&['ArrowUp','ArrowDown'].includes(e.key)&&!this.loading&&!this.error&&!this.promptInput.readOnly&&!this.promptInput.disabled)
-            ))return;
-            e.stopPropagation();if(e.key==='Escape'&&this.shapeDrag){e.preventDefault();this.endShape(null,true);}else if(e.key==='Escape'&&this.transformDrag){e.preventDefault();this.endTransform(null,true);}else if(e.target===this.canvas&&(e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){e.preventDefault();e.shiftKey?this.redo():this.undo();}else if(!this.isTextField(e.target)&&(e.ctrlKey||e.metaKey)&&!e.shiftKey&&!e.altKey&&e.key.toLowerCase()==='c'){e.preventDefault();this.copyMask();}
+            if(this.disposed||!ownsEditorKey(e,root,this.node,app))return;
+            // Native attention editing does not guard IME/read-only fields.
+            // Protect only this focused prompt, never other node shortcuts.
+            if(e.isComposing||e.keyCode===229){
+                if(e.target===this.promptInput&&(e.ctrlKey||e.metaKey)&&['Enter','ArrowUp','ArrowDown'].includes(e.key))e.stopPropagation();
+                return;
+            }
+            if(e.target===this.promptInput&&(e.ctrlKey||e.metaKey)&&!e.altKey&&['ArrowUp','ArrowDown'].includes(e.key)&&
+                (this.loading||this.error||this.promptInput.readOnly||this.promptInput.disabled)){e.stopPropagation();return;}
+            if(plainEditorKey(e)&&e.key==='Escape'&&(this.shapeDrag||this.transformDrag)){
+                e.preventDefault();e.stopPropagation();this.shapeDrag?this.endShape(null,true):this.endTransform(null,true);
+            }else if(e.target===this.canvas&&(e.ctrlKey||e.metaKey)&&!e.altKey){
+                const key=e.key.toLowerCase();
+                if(key==='z'){e.preventDefault();e.stopPropagation();e.shiftKey?this.redo():this.undo();}
+                else if(key==='c'&&!e.shiftKey){e.preventDefault();e.stopPropagation();this.copyMask();}
+            }
         });
         root.addEventListener('paste',e=>this.handleMaskPaste(e));
         this.canvas.addEventListener('pointerdown',e=>{this.updateBrushCursor(e);this.tool==='select'?this.pickCanvasLayer(e):this.tool==='transform'?this.beginTransform(e):['line','box','ellipse'].includes(this.tool)?this.beginShape(e):this.beginStroke(e);});
@@ -259,11 +272,11 @@ export class CoupleRegionPainterUI {
         finally{bitmap?.close();this.clipboardBusy=false;if(!this.disposed)this.renderPanel();}
     }
     handleMaskPaste(event){
-        // Preserve native text pasting, but keep clipboard events local to this
-        // editor so ComfyUI does not paste graph nodes instead of the mask.
-        event.stopPropagation();if(event.defaultPrevented||this.isTextField(event.target))return;
+        // Only consume an actual image paste into this active editor. Unrelated
+        // text/graph clipboard operations keep ComfyUI's native behavior.
+        if(this.disposed||this.isTextField(event.target)||!ownsEditorKey(event,this.root,this.node,this.app))return;
         const item=[...(event.clipboardData?.items??[])].find(item=>item.kind==='file'&&item.type.startsWith('image/'));
-        const blob=item?.getAsFile();if(!blob)return;event.preventDefault();this.pasteMask(blob);
+        const blob=item?.getAsFile();if(!blob)return;event.preventDefault();event.stopPropagation();this.pasteMask(blob);
     }
     panelWidthLimits(){const max=Math.max(0,this.root.clientWidth-PANEL_LAYOUT_SPACE-MIN_CANVAS_WIDTH);return {min:Math.min(DEFAULT_PANEL_WIDTH,max),max};}
     fitPanelWidth(){

@@ -39,7 +39,7 @@ export class PoseLightControl {
         this.canvas.addEventListener('pointercancel',finish,options);
         this.canvas.addEventListener('lostpointercapture',finish,options);
         this.canvas.addEventListener('dblclick',event=>{onChange(this.defaultDirection.clone());onFinish();this.draw();event.preventDefault();event.stopPropagation();},options);
-        for(const name of ['pointerdown','pointerup','pointermove','wheel','keydown'])this.root.addEventListener(name,event=>event.stopPropagation(),options);
+        for(const name of ['pointerdown','pointerup','pointermove','wheel'])this.root.addEventListener(name,event=>event.stopPropagation(),options);
         this.draw();
     }
     draw() {

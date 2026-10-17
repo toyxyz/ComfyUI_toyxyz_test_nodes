@@ -147,7 +147,7 @@ export class H3SceneEditor {
         this.config=config;this.renderConfig();
         const footer=el("div",{class:"bar"},this.root);
         this.status=el("div",{class:"status",text:"Proxy geometry only. Hold camera jumps create cuts; other keys remain continuous."},footer);
-        for(const event of ["pointerdown","pointerup","wheel","keydown"])this.root.addEventListener(event,e=>e.stopPropagation());
+        for(const event of ["pointerdown","pointerup","wheel"])this.root.addEventListener(event,e=>e.stopPropagation());
     }
     renderConfig() {
         this.config.replaceChildren();this.timelineConfig.replaceChildren();this.durationConfig.replaceChildren();

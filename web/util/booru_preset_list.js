@@ -251,6 +251,8 @@ export function installPresetList(node,data) {
         number.addEventListener('change',()=>apply(number.value));
         number.addEventListener('blur',()=>{number.readOnly=true;number.style.cursor='ew-resize';sync();});
         number.addEventListener('keydown',event=>{
+            if(event.ctrlKey||event.metaKey||event.altKey||event.isComposing||event.keyCode===229)return;
+            if(!['Enter','Escape','ArrowUp','ArrowDown'].includes(event.key))return;
             event.stopPropagation();
             if(event.key==='Enter'){apply(number.value);number.blur();}
             else if(event.key==='Escape'){sync();number.blur();}

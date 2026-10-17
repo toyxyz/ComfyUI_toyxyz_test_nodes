@@ -47,6 +47,7 @@ export function installCameraPanel(node) {
         const apply = v => set(name, Math.round(clamp(v, min, max) * 100) / 100);
         slider.addEventListener('input', () => apply(slider.value)); number.addEventListener('change', () => apply(number.value));
         number.addEventListener('keydown', event => {
+            if(event.ctrlKey||event.metaKey||event.altKey||event.isComposing||event.keyCode===229)return;
             if (event.key === 'Escape') { sync(); number.blur(); }
             if (event.key === 'Enter') { apply(number.value); number.blur(); }
             if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {

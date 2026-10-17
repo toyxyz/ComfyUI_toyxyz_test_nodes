@@ -1,5 +1,6 @@
 import {app} from "../../scripts/app.js";
 import {pointInRect,dragRegion,hitRegionHandle,squareGridLines,validateRegions} from "./util/json_builder_geometry.js";
+import {ownsEditorKey,plainEditorKey} from './util/editor_keyboard.js';
 
 const liveDocks=new Set();
 let installedCanvas=null, dockFrame=0, framesLeft=0;
@@ -139,7 +140,7 @@ app.registerExtension({
             node._jsonBuilderUpdateDock=updateDock;
             installDockWake();
             const stop=e=>e.stopPropagation();
-            for(const event of ["pointerdown","mousedown","wheel","keydown"]) root.addEventListener(event,stop);
+            for(const event of ["pointerdown","mousedown","wheel"]) root.addEventListener(event,stop);
             function button(label,title,action,parent=toolbar) {
                 const b=document.createElement("button"); b.textContent=label; b.title=title;
                 b.style.cssText="border:1px solid #666;border-radius:4px;background:#333;color:#ddd;padding:4px 7px;cursor:pointer";
@@ -252,7 +253,7 @@ app.registerExtension({
             canvas.addEventListener("pointerleave",()=>{if(!drag)canvas.style.cursor="crosshair";});
             const finish=()=>{if(!drag)return;const r=regions[drag.index];if(r.w<.002||r.h<.002){regions.splice(drag.index,1);selected=-1;}drag=null;persist();render();};
             canvas.addEventListener("pointerup",finish);canvas.addEventListener("pointercancel",finish);
-            canvas.addEventListener("keydown",e=>{if((e.key==="Delete"||e.key==="Backspace")&&selected>=0){e.preventDefault();regions.splice(selected,1);selected=Math.min(selected,regions.length-1);persist();render();}});
+            canvas.addEventListener("keydown",e=>{if(plainEditorKey(e)&&ownsEditorKey(e,root,node,app)&&(e.key==="Delete"||e.key==="Backspace")&&selected>=0){e.preventDefault();e.stopPropagation();regions.splice(selected,1);selected=Math.min(selected,regions.length-1);persist();render();}});
             function restore(){try{regions=validateRegions(JSON.parse(storage.value||"[]"));}catch(e){regions=[];status.textContent=`Could not restore regions: ${e.message}`;}selected=regions.length?0:-1;}
             const observer=new ResizeObserver(()=>draw());observer.observe(viewport);
             for(const name of ["target_model","width","height","scene","background","style_mode","style","aesthetics","lighting","medium"]){const w=widget(name);if(!w)continue;const cb=w.callback;w.callback=function(){const result=cb?.apply(this,arguments);persist();draw();if(name==="target_model")renderPanel();return result;};}

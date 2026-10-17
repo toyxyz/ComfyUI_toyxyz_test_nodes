@@ -8,7 +8,7 @@ app.registerExtension({name:'toyxyz.couple_region_painter',async beforeRegisterN
     const created=NodeType.prototype.onNodeCreated;
     NodeType.prototype.onNodeCreated=function(){
         created?.apply(this,arguments);
-        ensurePoseInput(this);const root=document.createElement('div'),ui=this._couplePainter=new CoupleRegionPainterUI(this,root),binding=bindPoseRegions(this,ui);
+        ensurePoseInput(this);const root=document.createElement('div'),ui=this._couplePainter=new CoupleRegionPainterUI(this,root,app),binding=bindPoseRegions(this,ui);
         // Let ComfyUI allocate the node's remaining height to this editor.
         // A fixed max height prevented vertical node resizing from reaching
         // the viewport. Its ResizeObserver only fits CSS display dimensions;

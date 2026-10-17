@@ -10,6 +10,7 @@ import {PoseBodyOutlines} from "./util/pose_body_outline.js";
 import {PoseModelTree,PoseShapeControl,loadMHRShapeBasis,validMHRShape} from "./util/pose_shape_control.js";
 import {buildSAMPosePrompt,samBodyFingerprint,ensureSAMPoseModel} from "./util/pose_sam_import.js";
 import {notifyPoseRegions} from './util/pose_region_bridge.js';
+import {ownsEditorKey,plainEditorKey} from './util/editor_keyboard.js';
 
 const names=["pelvis","left_hip","right_hip","spine1","left_knee","right_knee","spine2","left_ankle","right_ankle","spine3","left_foot","right_foot","neck","left_collar","right_collar","head","left_shoulder","right_shoulder","left_elbow","right_elbow","left_wrist","right_wrist"];
 const parents=[-1,0,0,0,1,2,3,4,5,6,7,8,9,9,9,12,13,14,16,17,18,19];
@@ -135,7 +136,7 @@ export class Pose3DEditorUI {
         }
         this.transformTools.get('scale').title='Scale (R): root / selected bone. Hand/foot targets scale the end bone; poles only move.';
         // DOM tools stay outside the WebGL canvas, so no icon enters captures.
-        for(const event of ['pointerdown','pointerup','pointermove','wheel','keydown'])this.transformBar.addEventListener(event,event=>event.stopPropagation());
+        for(const event of ['pointerdown','pointerup','pointermove','wheel'])this.transformBar.addEventListener(event,event=>event.stopPropagation());
         this.info=document.createElement("div");this.info.textContent="Click joint / IK target / pole · W: move · E: rotate · R: scale · Left drag: orbit · Middle drag: pan · Scroll: zoom";root.append(this.info);
         this.renderer=new T.WebGLRenderer({antialias:true,preserveDrawingBuffer:true,alpha:true});this.renderer.setPixelRatio(Math.min(devicePixelRatio,2));this.renderer.shadowMap.enabled=true;this.renderer.shadowMap.type=T.PCFSoftShadowMap;this.renderer.outputColorSpace=T.SRGBColorSpace;this.renderer.toneMapping=T.ACESFilmicToneMapping;this.renderer.domElement.style.cssText='display:block;flex:0 0 auto;margin:auto';this.view.append(this.renderer.domElement);
         this.scene=new T.Scene();this.scene.background=new T.Color("#000000");this.sceneBodies=new T.Group();this.scene.add(this.sceneBodies);this.camera=new T.PerspectiveCamera(DEFAULT_FOV,1,.01,100);this.camera.position.set(0,1.2,5.2);
@@ -171,8 +172,12 @@ export class Pose3DEditorUI {
             const object=this.pickObjectAt(e.clientX,e.clientY);if(object){this.selectObject(object);this.commit();}
         });
         canvas.addEventListener('pointercancel',()=>{restoreGizmo();start=null;middlePan=null;});
-        canvas.addEventListener("keydown",e=>{if(!e.ctrlKey&&!e.metaKey&&!e.altKey){if(e.key.toLowerCase()==="w")this.setMode("translate");if(e.key.toLowerCase()==="e")this.setMode("rotate");if(e.key.toLowerCase()==="r")this.setMode("scale");}e.stopPropagation();});
-        for(const name of ["pointerdown","wheel","keydown"])root.addEventListener(name,e=>e.stopPropagation());
+        canvas.addEventListener('keydown',e=>{
+            if(e.target!==canvas || this.disposed || !plainEditorKey(e) || !ownsEditorKey(e,root,this.node,app))return;
+            const mode={w:'translate',e:'rotate',r:'scale'}[e.key.toLowerCase()];
+            if(mode){e.preventDefault();e.stopPropagation();this.setMode(mode);}
+        });
+        for(const name of ['pointerdown','wheel'])root.addEventListener(name,e=>e.stopPropagation());
         this.resizeObserver=new ResizeObserver(()=>this.resize());this.resizeObserver.observe(this.view);
         this.ready=this.load();this.loop=()=>{if(this.disposed)return;this.updateAllMarkers();this.renderBeauty();this.lightControl.draw();this.frame=requestAnimationFrame(this.loop);};this.loop();
     }

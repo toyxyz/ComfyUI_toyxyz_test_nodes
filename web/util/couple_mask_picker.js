@@ -52,7 +52,7 @@ export class MaskLayerPicker {
         const item=this.items[index];if(!item||item.disabled)return;this.close();this.select.value=item.id;this.select.dispatchEvent(new Event('change',{bubbles:true}));
     }
     keydown(event){
-        if(event.ctrlKey||event.metaKey||event.altKey){if(event.key!=='Enter'||event.altKey)event.stopPropagation();return;}
+        if(event.ctrlKey||event.metaKey||event.altKey||event.isComposing||event.keyCode===229)return;
         if(!['ArrowDown','ArrowUp','Home','End','Enter',' ','Escape','Tab'].includes(event.key))return;
         if(event.key==='Tab'){this.close();return;}
         event.preventDefault();event.stopPropagation();

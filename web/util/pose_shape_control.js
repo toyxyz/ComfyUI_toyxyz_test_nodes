@@ -99,7 +99,7 @@ export class PoseShapeControl {
             // Reordering tree entries during Undo can blur a focused field.
             // Do not append history from blur while a snapshot is restoring.
             number.onblur=()=>this.syncRootSize(true);
-            number.onkeydown=event=>{if(event.key==='Enter'){number.blur();event.stopPropagation();}};
+            number.onkeydown=event=>{if(event.key==='Enter'&&!event.ctrlKey&&!event.metaKey&&!event.altKey&&!event.isComposing&&event.keyCode!==229){number.blur();event.stopPropagation();}};
             this.syncRootSize(true);
         }
         if(!this.enabled){element('div',this.inspector,'color:#d9b897;line-height:1.5',error?`Shape controls unavailable: ${error}`:'Shape controls require the MHR body. Reset pose to switch to MHR.');return;}
@@ -121,7 +121,7 @@ export class PoseShapeControl {
                 slider.oninput=()=>this.setOne(index,Number(slider.value),false);slider.onchange=()=>this.finish();slider.ondblclick=()=>this.setOne(index,this.defaults[index],true);
                 number.oninput=()=>{if(number.value!==''&&number.validity.valid)this.setOne(index,Number(number.value),false,number);};
                 number.onchange=()=>{const value=number.valueAsNumber;if(Number.isFinite(value))this.setOne(index,value,true);else{this.syncRows();this.finish();}};
-                number.onkeydown=event=>{if(event.key==='Enter'){number.blur();event.stopPropagation();}};
+                number.onkeydown=event=>{if(event.key==='Enter'&&!event.ctrlKey&&!event.metaKey&&!event.altKey&&!event.isComposing&&event.keyCode!==229){number.blur();event.stopPropagation();}};
                 this.rows.push({index,row,number,slider});
             }
         }

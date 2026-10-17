@@ -117,9 +117,11 @@ export function installWiki(nodeRef,widget,input,api) {
     layout.append(sidebar,browse,detail);panel.append(header,layout,resizeGrip);document.body.append(panel);
 
     const downloadDialog=node('div','toyxyz-wiki-download-backdrop');downloadDialog.hidden=true;
+    // ComfyUI tests the dialog element's own [hidden] attribute, not its
+    // ancestors. Keep modal semantics on the element whose visibility toggles.
+    downloadDialog.setAttribute('role','dialog');downloadDialog.setAttribute('aria-modal','true');
+    downloadDialog.setAttribute('aria-label','Download Tag Wiki');
     const downloadBox=node('section','toyxyz-wiki-download-box');
-    downloadBox.setAttribute('role','dialog');downloadBox.setAttribute('aria-modal','true');
-    downloadBox.setAttribute('aria-label','Download Tag Wiki');
     downloadBox.append(node('h2','','Download Tag Wiki'));
     const downloadMessage=node('p','','The offline Tag Wiki database is not installed. Download approximately 272 MiB from Hugging Face? The file will be saved in this custom node folder.');
     const progressRow=node('div','toyxyz-wiki-download-progress');progressRow.hidden=true;
@@ -232,6 +234,7 @@ export function installWiki(nodeRef,widget,input,api) {
     resizeGrip.addEventListener('pointerup',endResize);
     resizeGrip.addEventListener('pointercancel',endResize);
     resizeGrip.addEventListener('keydown',event=>{
+        if(event.ctrlKey||event.metaKey||event.altKey||event.isComposing||event.keyCode===229)return;
         const step=event.shiftKey?5:20;
         if(!['ArrowRight','ArrowLeft','ArrowDown','ArrowUp'].includes(event.key))return;
         resizeTo(panel.offsetWidth+(event.key==='ArrowRight'?step:event.key==='ArrowLeft'?-step:0),
@@ -436,6 +439,7 @@ export function installWiki(nodeRef,widget,input,api) {
         },220);
     });
     search.addEventListener('keydown',event=>{
+        if(event.ctrlKey||event.metaKey||event.altKey||event.isComposing||event.keyCode===229)return;
         if(event.key==='Enter'){
             event.preventDefault();clearTimeout(state.timer);
             state.query=search.value.trim();state.page=1;loadResults();

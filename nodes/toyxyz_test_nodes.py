@@ -12,13 +12,24 @@ from pathlib import Path
 from nodes import MAX_RESOLUTION, SaveImage, common_ksampler
 
 import mss #Screen Capture
-import win32gui
-import win32ui
-import win32con
-import win32api
-from win32gui import FindWindow, GetWindowRect #Get window size and location
-import ctypes #for Find window
-from ctypes import windll, wintypes
+try:
+    import win32gui
+    import win32ui
+    import win32con
+    import win32api
+    from win32gui import FindWindow, GetWindowRect #Get window size and location
+    import ctypes #for Find window
+    from ctypes import windll, wintypes
+except (ImportError, AttributeError):
+    win32gui = None
+    win32ui = None
+    win32con = None
+    win32api = None
+    import ctypes
+    FindWindow = None
+    GetWindowRect = None
+    windll = None
+    wintypes = None
 
 import trimesh
 
